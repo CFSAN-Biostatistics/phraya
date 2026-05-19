@@ -1,0 +1,39 @@
+# Rust
+/target
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test data
+/test-data/
+*.fastq
+*.fastq.gz
+*.fasta
+*.fna
+*.fa
+*.bam
+*.vcf
+*.vcf.gz
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+
+# CUDA
+*.cubin
+*.fatbin
+*.ptx

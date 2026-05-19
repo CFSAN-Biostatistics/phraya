@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "phraya-core",
+    "phraya-align",
+    "phraya-index",
+    "phraya-io",
+    "phraya-filter",
+    "phraya-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["Phraya Contributors"]
+license = "Unlicense"
+repository = "https://github.com/CFSAN-Biostatistics/phraya"
+
+[workspace.dependencies]
+# Internal crates
+phraya-core = { path = "phraya-core" }
+phraya-align = { path = "phraya-align" }
+phraya-index = { path = "phraya-index" }
+phraya-io = { path = "phraya-io" }
+phraya-filter = { path = "phraya-filter" }
+
+# Common deps
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+rayon = "1.10"
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.bench]
+inherits = "release"
