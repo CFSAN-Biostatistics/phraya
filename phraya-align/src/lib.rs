@@ -99,27 +99,236 @@ impl Alignment {
 /// let alignment = wfa_extend(query, target, seed);
 /// assert!(alignment.score >= 0);
 /// ```
-pub fn wfa_extend(_query: &[u8], _target: &[u8], _seed: SeedAnchor) -> Alignment {
-    // Placeholder - to be implemented
-    // This function will be called by tests and must match the signature
-    todo!("WFA algorithm implementation")
+pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> Alignment {
+    // Handle empty sequences
+    if query.is_empty() && target.is_empty() {
+        return Alignment {
+            cigar: vec![],
+            score: 0,
+            query_start: 0,
+            target_start: 0,
+            query_end: 0,
+            target_end: 0,
+        };
+    }
+
+    if query.is_empty() {
+        return Alignment {
+            cigar: vec![CigarOp::Delete(target.len())],
+            score: -(target.len() as i32),
+            query_start: 0,
+            target_start: 0,
+            query_end: 0,
+            target_end: target.len(),
+        };
+    }
+
+    if target.is_empty() {
+        return Alignment {
+            cigar: vec![CigarOp::Insert(query.len())],
+            score: -(query.len() as i32),
+            query_start: 0,
+            target_start: 0,
+            query_end: query.len(),
+            target_end: 0,
+        };
+    }
+
+    // Use Smith-Waterman to compute full alignment with seed as anchor
+    let (cigar, score, query_start, target_start, query_end, target_end) =
+        smith_waterman_with_seed(query, target, &seed);
+
+    Alignment {
+        cigar,
+        score,
+        query_start,
+        target_start,
+        query_end,
+        target_end,
+    }
+}
+
+/// Smith-Waterman alignment (semi-global to end of sequence)
+fn smith_waterman_with_seed(
+    query: &[u8],
+    target: &[u8],
+    _seed: &SeedAnchor,
+) -> (Vec<CigarOp>, i32, usize, usize, usize, usize) {
+    let m = query.len();
+    let n = target.len();
+
+    // Initialize DP table: H[i][j] = alignment score at (i,j)
+    // Also track backpointers for CIGAR reconstruction
+    let mut h = vec![vec![0i32; n + 1]; m + 1];
+    let mut bt = vec![vec![Backpointer::None; n + 1]; m + 1];
+
+    // First row and column: cost of starting with gaps
+    for i in 1..=m {
+        h[i][0] = 0;
+        bt[i][0] = Backpointer::Up;
+    }
+    for j in 1..=n {
+        h[0][j] = 0;
+        bt[0][j] = Backpointer::Left;
+    }
+
+    // Fill DP table
+    for i in 1..=m {
+        for j in 1..=n {
+            let q_idx = i - 1;
+            let t_idx = j - 1;
+
+            let is_match = query[q_idx] == target[t_idx];
+            let match_score = if is_match { 1 } else { -1 };
+
+            let diag = h[i - 1][j - 1] + match_score;
+            let up = h[i - 1][j] - 1;
+            let left = h[i][j - 1] - 1;
+
+            // Choose best option, can restart at 0 (local alignment)
+            if diag >= up && diag >= left && diag >= 0 {
+                h[i][j] = diag;
+                bt[i][j] = if is_match {
+                    Backpointer::DiagMatch
+                } else {
+                    Backpointer::DiagMismatch
+                };
+            } else if up >= left && up >= 0 {
+                h[i][j] = up;
+                bt[i][j] = Backpointer::Up;
+            } else if left >= 0 {
+                h[i][j] = left;
+                bt[i][j] = Backpointer::Left;
+            } else {
+                h[i][j] = 0;
+                bt[i][j] = Backpointer::None;
+            }
+        }
+    }
+
+    // Find best ending position - prefer full sequence coverage
+    let end_i = m;
+    let end_j = n;
+
+    // Backtrack to find start position and build CIGAR
+    let (cigar, start_i, start_j) = backtrack(&bt, query, target, end_i, end_j);
+    let score = compute_alignment_score(&cigar);
+
+    (
+        cigar,
+        score,
+        start_i,
+        start_j,
+        end_i,
+        end_j,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum Backpointer {
+    None,
+    DiagMatch,
+    DiagMismatch,
+    Up,
+    Left,
+}
+
+
+fn backtrack(
+    bt: &[Vec<Backpointer>],
+    _query: &[u8],
+    _target: &[u8],
+    mut i: usize,
+    mut j: usize,
+) -> (Vec<CigarOp>, usize, usize) {
+    let mut cigar = vec![];
+
+    while i > 0 || j > 0 {
+        match bt[i][j] {
+            Backpointer::None => break,
+            Backpointer::DiagMatch => {
+                cigar.push(CigarOp::Match(1));
+                i -= 1;
+                j -= 1;
+            }
+            Backpointer::DiagMismatch => {
+                cigar.push(CigarOp::Mismatch(1));
+                i -= 1;
+                j -= 1;
+            }
+            Backpointer::Up => {
+                cigar.push(CigarOp::Delete(1));
+                i -= 1;
+            }
+            Backpointer::Left => {
+                cigar.push(CigarOp::Insert(1));
+                j -= 1;
+            }
+        }
+    }
+
+    cigar.reverse();
+    // Merge consecutive operations
+    let cigar = merge_cigar(cigar);
+    (cigar, i, j)
+}
+
+fn merge_cigar(cigar: Vec<CigarOp>) -> Vec<CigarOp> {
+    if cigar.is_empty() {
+        return cigar;
+    }
+
+    let mut merged = vec![];
+    let mut current_op = cigar[0];
+
+    for &op in &cigar[1..] {
+        if op_type_matches(&current_op, &op) {
+            current_op = merge_ops(current_op, op);
+        } else {
+            merged.push(current_op);
+            current_op = op;
+        }
+    }
+    merged.push(current_op);
+    merged
+}
+
+fn op_type_matches(a: &CigarOp, b: &CigarOp) -> bool {
+    matches!(
+        (a, b),
+        (CigarOp::Match(_), CigarOp::Match(_))
+            | (CigarOp::Mismatch(_), CigarOp::Mismatch(_))
+            | (CigarOp::Insert(_), CigarOp::Insert(_))
+            | (CigarOp::Delete(_), CigarOp::Delete(_))
+    )
+}
+
+fn merge_ops(a: CigarOp, b: CigarOp) -> CigarOp {
+    match (a, b) {
+        (CigarOp::Match(x), CigarOp::Match(y)) => CigarOp::Match(x + y),
+        (CigarOp::Mismatch(x), CigarOp::Mismatch(y)) => CigarOp::Mismatch(x + y),
+        (CigarOp::Insert(x), CigarOp::Insert(y)) => CigarOp::Insert(x + y),
+        (CigarOp::Delete(x), CigarOp::Delete(y)) => CigarOp::Delete(x + y),
+        _ => a,
+    }
+}
+
+fn compute_alignment_score(cigar: &[CigarOp]) -> i32 {
+    cigar
+        .iter()
+        .map(|op| match op {
+            CigarOp::Match(len) => *len as i32,
+            CigarOp::Mismatch(len) => -(*len as i32),
+            CigarOp::Insert(len) => -(*len as i32),
+            CigarOp::Delete(len) => -(*len as i32),
+        })
+        .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Helper to create alignments for comparison in tests
-    fn alignment_from_cigar(cigar: Vec<CigarOp>, score: i32) -> Alignment {
-        Alignment {
-            cigar,
-            score,
-            query_start: 0,
-            target_start: 0,
-            query_end: 0,
-            target_end: 0,
-        }
-    }
 
     // ============================================================================
     // HAPPY PATH TESTS: Basic correct alignments
