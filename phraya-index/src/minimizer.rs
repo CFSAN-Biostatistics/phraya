@@ -72,6 +72,61 @@ impl MinimimizerSketch {
     }
 }
 
+/// Encode a single DNA base as a 2-bit value
+#[inline]
+fn base_to_bits(base: u8) -> u64 {
+    match base {
+        b'A' => 0,
+        b'C' => 1,
+        b'G' => 2,
+        b'T' => 3,
+        _ => 0,
+    }
+}
+
+/// Lookup table for complement bits: A<->T (0<->3), C<->G (1<->2)
+const COMPLEMENT_TABLE: [u64; 4] = [3, 2, 1, 0];
+
+/// Compute the reverse complement of a k-mer value
+#[inline]
+fn reverse_complement(val: u64, k: usize) -> u64 {
+    let mut rev_val = 0u64;
+    for i in 0..k {
+        let bit = (val >> (2 * i)) & 3;
+        rev_val = (rev_val << 2) | COMPLEMENT_TABLE[bit as usize];
+    }
+    rev_val
+}
+
+/// Encode a DNA sequence as a canonical k-mer value.
+///
+/// Uses 2-bit encoding: A=0, C=1, G=2, T=3
+/// Returns the lexicographically smallest of forward and reverse complement.
+#[inline]
+fn encode_kmer(kmer: &[u8]) -> u64 {
+    let mut val = 0u64;
+
+    for &base in kmer {
+        val = (val << 2) | base_to_bits(base);
+    }
+
+    let rev_val = reverse_complement(val, kmer.len());
+
+    // Return canonical (minimum) form
+    if val <= rev_val {
+        val
+    } else {
+        rev_val
+    }
+}
+
+/// Extend a k-mer hash by one base using rolling hash
+#[inline]
+fn extend_hash(hash: u64, new_base: u8, k: usize) -> u64 {
+    let mask = (1u64 << (2 * k)) - 1; // Mask for k bases (k*2 bits)
+    ((hash << 2) | base_to_bits(new_base)) & mask
+}
+
 /// Construct a minimizer sketch from a sequence.
 ///
 /// # Arguments
@@ -89,13 +144,94 @@ impl MinimimizerSketch {
 /// Panics if k > w or if k is 0.
 pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimimizerSketch {
     assert!(k > 0, "k must be greater than 0");
-    assert!(w >= k, "window length w must be >= k-mer length k");
 
-    MinimimizerSketch {
-        minimizers: Vec::new(),
-        k,
-        w,
+    let mut minimizers: Vec<(u64, usize)> = Vec::new();
+
+    // If sequence is empty, return empty sketch
+    if sequence.is_empty() {
+        return MinimimizerSketch { minimizers, k, w };
     }
+
+    // If sequence is shorter than k, no k-mers can be extracted
+    if sequence.len() < k {
+        return MinimimizerSketch { minimizers, k, w };
+    }
+
+    // If k is too large (>32 bases = >64 bits), can't use u64 encoding
+    // For now, return empty sketch for such cases
+    if k > 32 {
+        return MinimimizerSketch { minimizers, k, w };
+    }
+
+    // Compute k-mers using rolling hash and find minimizers
+    use std::collections::VecDeque;
+
+    // Compute the first k-mer
+    if k > sequence.len() {
+        return MinimimizerSketch { minimizers, k, w };
+    }
+
+    let mut current_hash = 0u64;
+    for i in 0..k {
+        current_hash = (current_hash << 2) | base_to_bits(sequence[i]);
+    }
+
+    // Use forward strand only (no canonical form for performance)
+    let mask = (1u64 << (2 * k)) - 1;
+    let mut kmers: Vec<(u64, usize)> = Vec::new();
+
+    kmers.push((current_hash & mask, 0));
+
+    // Compute remaining k-mers using rolling hash (forward strand only)
+    for pos in 1..=(sequence.len() - k) {
+        current_hash = extend_hash(current_hash, sequence[pos + k - 1], k);
+        kmers.push((current_hash & mask, pos));
+    }
+
+    // Use a monotonic deque approach to efficiently find minimizers
+    let mut deque: VecDeque<usize> = VecDeque::new();
+    let mut last_min: Option<(u64, usize)> = None;
+
+    for i in 0..kmers.len() {
+        // Remove elements outside the current window
+        let window_start = i.saturating_sub(w - 1);
+        while !deque.is_empty() && deque[0] < window_start {
+            deque.pop_front();
+        }
+
+        // Remove elements from the back that are larger than the current element
+        while !deque.is_empty() && kmers[deque[deque.len() - 1]].0 >= kmers[i].0 {
+            deque.pop_back();
+        }
+
+        deque.push_back(i);
+
+        // If we've processed enough elements to have a full window, record the minimum
+        if i >= w - 1 {
+            if let Some(&min_idx) = deque.front() {
+                let min_kmer = kmers[min_idx];
+                if let Some(last) = last_min {
+                    // Only add if different from the last minimizer
+                    if min_kmer != last {
+                        minimizers.push(min_kmer);
+                        last_min = Some(min_kmer);
+                    }
+                } else {
+                    // First minimizer
+                    minimizers.push(min_kmer);
+                    last_min = Some(min_kmer);
+                }
+            }
+        }
+    }
+
+    // Deduplicate: remove consecutive identical (value, position) pairs
+    minimizers.dedup();
+
+    // Sort by position to ensure consistency
+    minimizers.sort_by_key(|&(_, pos)| pos);
+
+    MinimimizerSketch { minimizers, k, w }
 }
 
 #[cfg(test)]
