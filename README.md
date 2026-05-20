@@ -46,7 +46,7 @@ cargo build --release --features cuda
 
 ## License
 
-MIT OR Apache-2.0
+Unlicense. As a work product of the US Government (17 USC 105), Phraya is in the public domain.
 
 ## Contributing
 
