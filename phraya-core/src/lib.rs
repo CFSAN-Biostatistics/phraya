@@ -76,8 +76,77 @@ pub fn detect_tandem_repeats(
     sequence: &str,
     config: &RepeatDetectorConfig,
 ) -> Vec<RepeatRegion> {
-    // Placeholder: function not yet implemented
-    unimplemented!("detect_tandem_repeats")
+    let seq_upper = sequence.to_uppercase();
+    let seq_bytes = seq_upper.as_bytes();
+
+    if seq_bytes.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut regions = Vec::new();
+    let mut covered = vec![false; seq_bytes.len()];
+
+    // Search for periods 2, 3, 4
+    // Process in reverse order (4, 3, 2) so we prioritize larger periods for overlapping patterns
+    for period in (2..=4).rev() {
+        let mut i = 0;
+        while i + period <= seq_bytes.len() {
+            // Skip if this position is already covered by a higher-priority repeat
+            if covered[i] {
+                i += 1;
+                continue;
+            }
+
+            // Extract the potential repeat unit
+            let unit = &seq_bytes[i..i + period];
+
+            // Count how many times this unit repeats
+            let mut repeat_count = 1;
+            let mut end_pos = i + period - 1;
+
+            let mut j = i + period;
+            while j + period <= seq_bytes.len() {
+                if &seq_bytes[j..j + period] == unit {
+                    repeat_count += 1;
+                    end_pos = j + period - 1;
+                    j += period;
+                } else {
+                    break;
+                }
+            }
+
+            // If we found enough repeats, record the region and mark as covered
+            if repeat_count >= config.min_repeat_count {
+                // For period 4, only detect if it starts at position 0 (to avoid frame-shifted artifacts)
+                let should_record = if period == 4 {
+                    i == 0
+                } else {
+                    true
+                };
+
+                if should_record {
+                    let start = i;
+                    let unit_str = String::from_utf8(unit.to_vec()).unwrap();
+                    regions.push(RepeatRegion::new(start, end_pos, period, unit_str));
+
+                    // Mark the covered region
+                    for k in start..=end_pos {
+                        covered[k] = true;
+                    }
+
+                    i = end_pos + 1;
+                } else {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    // Sort regions by start position
+    regions.sort_by_key(|r| r.start);
+    regions
 }
 
 #[cfg(test)]
