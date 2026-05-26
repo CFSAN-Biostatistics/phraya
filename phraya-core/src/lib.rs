@@ -72,12 +72,62 @@ impl Default for RepeatDetectorConfig {
 /// assert_eq!(regions[0].period, 2);
 /// assert_eq!(regions[0].unit, "AT");
 /// ```
-pub fn detect_tandem_repeats(
-    sequence: &str,
-    config: &RepeatDetectorConfig,
-) -> Vec<RepeatRegion> {
-    // Placeholder: function not yet implemented
-    unimplemented!("detect_tandem_repeats")
+pub fn detect_tandem_repeats(sequence: &str, config: &RepeatDetectorConfig) -> Vec<RepeatRegion> {
+    let seq_upper = sequence.to_uppercase();
+    let bytes = seq_upper.as_bytes();
+
+    if bytes.len() < config.min_repeat_count * 2 {
+        return Vec::new();
+    }
+
+    let mut regions = Vec::new();
+    let mut current_pos = 0;
+
+    // Scan through the sequence linearly, looking for repeats
+    while current_pos + (config.min_repeat_count * 2) <= bytes.len() {
+        let mut found_repeat = false;
+
+        // Try periods from largest to smallest (4, 3, 2) to prefer longer repeats
+        for period in (2..=4).rev() {
+            if current_pos + period * config.min_repeat_count > bytes.len() {
+                continue;
+            }
+
+            // Extract the potential unit starting at current position
+            let unit = &bytes[current_pos..current_pos + period];
+
+            // Check how many consecutive times this unit repeats
+            let mut repeat_count = 1;
+            let mut end_pos = current_pos + period;
+
+            while end_pos + period <= bytes.len() {
+                let next_unit = &bytes[end_pos..end_pos + period];
+                if unit == next_unit {
+                    repeat_count += 1;
+                    end_pos += period;
+                } else {
+                    break;
+                }
+            }
+
+            // Only add if meets minimum threshold
+            if repeat_count >= config.min_repeat_count {
+                let unit_str = String::from_utf8_lossy(unit).into_owned();
+                let region = RepeatRegion::new(current_pos, end_pos - 1, period, unit_str);
+                regions.push(region);
+
+                current_pos = end_pos;
+                found_repeat = true;
+                break; // Found a repeat at this position, move forward
+            }
+        }
+
+        if !found_repeat {
+            current_pos += 1;
+        }
+    }
+
+    regions
 }
 
 #[cfg(test)]
@@ -88,7 +138,7 @@ mod tests {
 
     #[test]
     fn detects_dinucleotide_repeat_at() {
-        let seq = "ATATATATAT";  // AT repeated 5 times
+        let seq = "ATATATATAT"; // AT repeated 5 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -102,7 +152,7 @@ mod tests {
 
     #[test]
     fn detects_trinucleotide_repeat_cag() {
-        let seq = "CAGCAGCAGCAG";  // CAG repeated 4 times
+        let seq = "CAGCAGCAGCAG"; // CAG repeated 4 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -116,7 +166,7 @@ mod tests {
 
     #[test]
     fn detects_tetranucleotide_repeat_gata() {
-        let seq = "GATAGATAGATA";  // GATA repeated 3 times
+        let seq = "GATAGATAGATA"; // GATA repeated 3 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -130,7 +180,7 @@ mod tests {
 
     #[test]
     fn detects_dinucleotide_repeat_gc() {
-        let seq = "GCGCGCGC";  // GC repeated 4 times
+        let seq = "GCGCGCGC"; // GC repeated 4 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -141,7 +191,7 @@ mod tests {
 
     #[test]
     fn detects_trinucleotide_repeat_aaa() {
-        let seq = "AAAAAAAAA";  // AAA repeated 3 times
+        let seq = "AAAAAAAAA"; // AAA repeated 3 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -155,7 +205,7 @@ mod tests {
 
     #[test]
     fn detects_repeat_at_sequence_start() {
-        let seq = "ATATATATATTGCAAA";  // AT repeat at start
+        let seq = "ATATATATATTGCAAA"; // AT repeat at start
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -164,7 +214,7 @@ mod tests {
 
     #[test]
     fn detects_repeat_at_sequence_end() {
-        let seq = "TGCAAATATATATAT";  // AT repeat at end
+        let seq = "TGCAAATATATATAT"; // AT repeat at end
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -173,7 +223,7 @@ mod tests {
 
     #[test]
     fn detects_repeat_in_sequence_middle() {
-        let seq = "TGCAATATATATACCC";  // AT repeat in middle
+        let seq = "TGCAATATATATACCC"; // AT repeat in middle
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -182,7 +232,7 @@ mod tests {
 
     #[test]
     fn detects_exactly_three_periods() {
-        let seq = "CAGCAGCAG";  // CAG repeated exactly 3 times
+        let seq = "CAGCAGCAG"; // CAG repeated exactly 3 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -193,7 +243,7 @@ mod tests {
 
     #[test]
     fn detects_multiple_repeats_in_sequence() {
-        let seq = "ATATATATAGCGCGCATATATAT";  // AT repeat + GC repeat + AT repeat
+        let seq = "ATATATATAGCGCGCATATATAT"; // AT repeat + GC repeat + AT repeat
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -206,7 +256,7 @@ mod tests {
     #[test]
     fn detects_with_adjacent_same_unit_as_separate_regions() {
         // When two repeat regions are adjacent or separated, they should be identified
-        let seq = "ATATATATAGCGCGC";  // AT repeat followed by GC repeat
+        let seq = "ATATATATAGCGCGC"; // AT repeat followed by GC repeat
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -217,7 +267,7 @@ mod tests {
 
     #[test]
     fn returns_empty_vector_for_sequence_without_repeats() {
-        let seq = "ATGCTAGCTAGCTAGC";  // No tandem repeats
+        let seq = "ATGCTAGCTAGCTAGC"; // No tandem repeats
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -244,7 +294,7 @@ mod tests {
 
     #[test]
     fn ignores_single_repeat_unit_when_min_is_three() {
-        let seq = "ATTGCATGC";  // Single AT, not a repeat
+        let seq = "ATTGCATGC"; // Single AT, not a repeat
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -254,7 +304,7 @@ mod tests {
 
     #[test]
     fn ignores_two_repeat_units_when_min_is_three() {
-        let seq = "ATATATGC";  // AT repeated 2 times, below threshold
+        let seq = "ATATATGC"; // AT repeated 2 times, below threshold
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -264,7 +314,7 @@ mod tests {
 
     #[test]
     fn case_insensitive_detection_lowercase() {
-        let seq = "atatatatat";  // lowercase
+        let seq = "atatatatat"; // lowercase
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -274,7 +324,7 @@ mod tests {
 
     #[test]
     fn case_insensitive_detection_mixed_case() {
-        let seq = "AtAtAtAtAt";  // mixed case
+        let seq = "AtAtAtAtAt"; // mixed case
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -287,7 +337,7 @@ mod tests {
     #[test]
     fn detects_huntingtons_cag_repeat() {
         // Huntington's disease marker: CAG repeat in HTT gene
-        let seq = "CAGCAGCAGCAGCAGCAGCAG";  // CAG repeated 7 times
+        let seq = "CAGCAGCAGCAGCAGCAGCAG"; // CAG repeated 7 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -299,7 +349,7 @@ mod tests {
     #[test]
     fn detects_fragile_x_cgg_repeat() {
         // Fragile X syndrome marker: CGG repeat
-        let seq = "CGGCGGCGGCGGCGGCGG";  // CGG repeated 6 times
+        let seq = "CGGCGGCGGCGGCGGCGG"; // CGG repeated 6 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -311,7 +361,7 @@ mod tests {
     #[test]
     fn detects_myotonic_dystrophy_ctg_repeat() {
         // Myotonic dystrophy marker: CTG repeat
-        let seq = "CTGCTGCTGCTGCTG";  // CTG repeated 5 times
+        let seq = "CTGCTGCTGCTGCTG"; // CTG repeated 5 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -323,7 +373,7 @@ mod tests {
     #[test]
     fn detects_real_str_marker_d5s818() {
         // D5S818 CODIS marker: AGAT tetranucleotide repeat
-        let seq = "AGATAGATAGATAGATAGATAGAT";  // AGAT repeated 6 times
+        let seq = "AGATAGATAGATAGATAGATAGAT"; // AGAT repeated 6 times
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
@@ -336,7 +386,7 @@ mod tests {
 
     #[test]
     fn respects_min_repeat_count_of_two() {
-        let seq = "ATATGC";  // AT repeated 2 times
+        let seq = "ATATGC"; // AT repeated 2 times
         let config = RepeatDetectorConfig {
             min_repeat_count: 2,
         };
@@ -348,7 +398,7 @@ mod tests {
 
     #[test]
     fn respects_min_repeat_count_of_four() {
-        let seq = "CAGCAGCAGCAG";  // CAG repeated 4 times
+        let seq = "CAGCAGCAGCAG"; // CAG repeated 4 times
         let config = RepeatDetectorConfig {
             min_repeat_count: 4,
         };
@@ -360,7 +410,7 @@ mod tests {
 
     #[test]
     fn excludes_repeats_below_min_threshold() {
-        let seq = "ATATCAGCAGCAG";  // AT repeated 2 times + CAG repeated 3 times
+        let seq = "ATATCAGCAGCAG"; // AT repeated 2 times + CAG repeated 3 times
         let config = RepeatDetectorConfig {
             min_repeat_count: 3,
         };
@@ -372,7 +422,7 @@ mod tests {
 
     #[test]
     fn high_threshold_returns_only_long_repeats() {
-        let seq = "ATATATATAGCGCGCGCGCGCAA";  // AT x5 + GC x7
+        let seq = "ATATATATAGCGCGCGCGCGCAA"; // AT x5 + GC x7
         let config = RepeatDetectorConfig {
             min_repeat_count: 6,
         };
@@ -439,7 +489,7 @@ mod tests {
 
     #[test]
     fn detects_mixed_repeats_no_false_positives() {
-        let seq = "ATGCATGCATGC";  // Not a true repeat (period doesn't match)
+        let seq = "ATGCATGCATGC"; // Not a true repeat (period doesn't match)
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
