@@ -6,12 +6,7 @@
 /// Format structure:
 /// - Header: version (u32), observation_count (u64), created_at (String)
 /// - Body: MessagePack-serialized Vec<VariantObservation>
-///
-/// Functions to be implemented:
-/// - `write_phraya(&[VariantObservation], &Path) -> Result<()>`
-/// - `read_phraya(&Path) -> Result<Vec<VariantObservation>>`
-/// - `read_phraya_metadata(&Path) -> Result<PhrayaMetadata>`
-use crate::Result;
+use crate::{IoError, Result};
 use phraya_core::VariantObservation;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -24,9 +19,12 @@ pub struct PhrayaMetadata {
     pub created_at: String,
 }
 
-// IMPLEMENTATION PLACEHOLDER
-// These functions are NOT implemented - tests will fail (RED phase)
-// Implementation agent will fill these in to make tests pass (GREEN phase)
+/// Internal file structure: header + observations
+#[derive(Debug, Serialize, Deserialize)]
+struct PhrayaFile {
+    metadata: PhrayaMetadata,
+    observations: Vec<VariantObservation>,
+}
 
 /// Write variant observations to .phraya binary format
 ///
@@ -36,9 +34,32 @@ pub struct PhrayaMetadata {
 ///
 /// # Format
 /// Uses MessagePack serialization with versioned header
-pub fn write_phraya(_observations: &[VariantObservation], _path: &Path) -> Result<()> {
-    // NOT IMPLEMENTED - tests will fail
-    unimplemented!("write_phraya not yet implemented")
+pub fn write_phraya(observations: &[VariantObservation], path: &Path) -> Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| IoError::WriteError(format!("Failed to get current time: {}", e)))?;
+
+    let created_at = format!("{:?}", timestamp);
+
+    let metadata = PhrayaMetadata {
+        version: 1,
+        observation_count: observations.len() as u64,
+        created_at,
+    };
+
+    let file = PhrayaFile {
+        metadata,
+        observations: observations.to_vec(),
+    };
+
+    let serialized =
+        rmp_serde::to_vec(&file).map_err(|e| IoError::SerializationError(e.to_string()))?;
+
+    std::fs::write(path, serialized).map_err(|e| IoError::WriteError(e.to_string()))?;
+
+    Ok(())
 }
 
 /// Read variant observations from .phraya binary format
@@ -48,9 +69,13 @@ pub fn write_phraya(_observations: &[VariantObservation], _path: &Path) -> Resul
 ///
 /// # Returns
 /// Vector of variant observations
-pub fn read_phraya(_path: &Path) -> Result<Vec<VariantObservation>> {
-    // NOT IMPLEMENTED - tests will fail
-    unimplemented!("read_phraya not yet implemented")
+pub fn read_phraya(path: &Path) -> Result<Vec<VariantObservation>> {
+    let bytes = std::fs::read(path).map_err(|e| IoError::ReadError(e.to_string()))?;
+
+    let file: PhrayaFile =
+        rmp_serde::from_slice(&bytes).map_err(|e| IoError::DeserializationError(e.to_string()))?;
+
+    Ok(file.observations)
 }
 
 /// Read only metadata from .phraya file without deserializing observations
@@ -60,9 +85,13 @@ pub fn read_phraya(_path: &Path) -> Result<Vec<VariantObservation>> {
 ///
 /// # Returns
 /// Metadata header information
-pub fn read_phraya_metadata(_path: &Path) -> Result<PhrayaMetadata> {
-    // NOT IMPLEMENTED - tests will fail
-    unimplemented!("read_phraya_metadata not yet implemented")
+pub fn read_phraya_metadata(path: &Path) -> Result<PhrayaMetadata> {
+    let bytes = std::fs::read(path).map_err(|e| IoError::ReadError(e.to_string()))?;
+
+    let file: PhrayaFile =
+        rmp_serde::from_slice(&bytes).map_err(|e| IoError::DeserializationError(e.to_string()))?;
+
+    Ok(file.metadata)
 }
 
 #[cfg(test)]
