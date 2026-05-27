@@ -2,9 +2,14 @@
 name = "phraya-io"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 phraya-core = { path = "../phraya-core" }
 thiserror = "2.0"
+flate2 = "1.0"
+bzip2 = "0.5"
+
+[build-dependencies]
 flate2 = "1.0"
 bzip2 = "0.5"

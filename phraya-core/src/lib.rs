@@ -1,14 +1,25 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use serde::{Deserialize, Serialize};
+
+/// Represents a biological sequence (DNA, RNA, or protein)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sequence {
+    /// Sequence identifier (first token in header)
+    pub id: Option<String>,
+    /// Full header description (everything after the first space)
+    pub description: Option<String>,
+    /// The sequence data as bytes
+    pub data: Vec<u8>,
+    /// Quality scores (FASTQ only), same length as data
+    pub quality: Option<Vec<u8>>,
+    /// Optional pairing information for paired-end reads
+    pub pairing_info: Option<PairingInfo>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+/// Information about paired-end reads
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingInfo {
+    /// R1 or R2
+    pub read_number: u8,
+    /// Optional mate pair identifier
+    pub mate_id: Option<String>,
 }
