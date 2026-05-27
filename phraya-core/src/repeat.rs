@@ -22,10 +22,87 @@ pub struct RepeatRegion {
 ///
 /// # Returns
 /// A vector of RepeatRegion structs representing detected repeats
-pub fn detect_repeats(_sequence: &[u8], _min_count: usize) -> Vec<RepeatRegion> {
-    // NOT IMPLEMENTED - this is a stub for test compilation
-    // The implementation agent will provide the actual algorithm
-    unimplemented!("detect_repeats is not yet implemented")
+pub fn detect_repeats(sequence: &[u8], min_count: usize) -> Vec<RepeatRegion> {
+    if sequence.is_empty() {
+        return Vec::new();
+    }
+
+    // Collect all candidate repeats first
+    let mut candidates = Vec::new();
+
+    for period in 2..=4 {
+        for i in 0..sequence.len() {
+            // Skip if doesn't have room for min_count
+            if i + min_count * period > sequence.len() {
+                continue;
+            }
+
+            // Extract the potential repeat unit at this position
+            let unit = &sequence[i..i + period];
+
+            // Count how many consecutive times this exact unit repeats
+            let mut count = 0;
+            let mut end = i;
+            while end + period <= sequence.len() && &sequence[end..end + period] == unit {
+                count += 1;
+                end += period;
+            }
+
+            // If we found enough repeats, add as candidate
+            if count >= min_count {
+                candidates.push((i, end, period, String::from_utf8_lossy(unit).to_string(), count));
+            }
+        }
+    }
+
+    // Greedy selection: pick non-overlapping repeats in order of:
+    // 1. Length (longer first)
+    // 2. Period (shorter first, to prefer dinucleotide over tetranucleotide, etc.)
+    // 3. Count of repetitions (higher first - more repetitions means more canonical)
+    // 4. Unit string (earlier in lex order - prefer canonical alphabetic units)
+    // 5. Starting position (EARLIER first)
+    candidates.sort_by(|a, b| {
+        let len_a = a.1 - a.0;
+        let len_b = b.1 - b.0;
+        len_b.cmp(&len_a)  // longer first
+            .then(a.2.cmp(&b.2))  // shorter period first
+            .then(b.4.cmp(&a.4))  // more repetitions first
+            .then(a.3.cmp(&b.3))  // lex order of unit (prefer canonical)
+            .then(a.0.cmp(&b.0))  // EARLIER start first
+    });
+
+    let mut repeats = Vec::new();
+    let mut covered = vec![false; sequence.len()];
+
+    for (start, end, period, unit, _count) in candidates {
+        // Check if this repeat overlaps with already selected repeats
+        let mut overlaps = false;
+        for j in start..end {
+            if covered[j] {
+                overlaps = true;
+                break;
+            }
+        }
+
+        if !overlaps {
+            // Mark these positions as covered
+            for j in start..end {
+                covered[j] = true;
+            }
+
+            repeats.push(RepeatRegion {
+                start,
+                end,
+                period,
+                unit,
+            });
+        }
+    }
+
+    // Sort repeats by start position for consistent output
+    repeats.sort_by_key(|r| r.start);
+
+    repeats
 }
 
 #[cfg(test)]
