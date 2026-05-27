@@ -2,7 +2,7 @@
 //!
 //! Acceptance criteria: ≥1.5× speedup on ARM64 vs naive for 10kb alignment
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use phraya_align::wfa_neon::wfa_diagonal_fill_neon;
 
 /// Benchmark NEON implementation on 10kb sequences

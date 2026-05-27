@@ -40,9 +40,90 @@ pub fn wfa_diagonal_fill_neon(
     query: &[u8],
     target: &[u8],
 ) {
-    // TODO: Implementation will be added by implementation agent
-    // This stub ensures tests compile and fail
-    unimplemented!("NEON WFA diagonal fill not yet implemented")
+    // Handle empty sequences
+    if diagonal.is_empty() || query.is_empty() || target.is_empty() {
+        return;
+    }
+
+    // Ensure all buffers are the same length
+    let len = diagonal.len();
+    if prev_wavefront.len() != len || query.len() != len || target.len() != len {
+        // Fallback to simple scalar for mismatched lengths
+        wfa_diagonal_fill_scalar(diagonal, prev_wavefront, query, target);
+        return;
+    }
+
+    // NEON vector width is 4 x i32 per register (16 bytes)
+    const NEON_WIDTH: usize = 4;
+
+    unsafe {
+        // Process in chunks using NEON vectorization
+        let full_chunks = len / NEON_WIDTH;
+
+        for chunk_idx in 0..full_chunks {
+            let base = chunk_idx * NEON_WIDTH;
+
+            // SAFETY INVARIANT: All buffer accesses are within bounds because:
+            // - len is validated at function entry to be non-empty
+            // - base = chunk_idx * NEON_WIDTH where chunk_idx < len / NEON_WIDTH
+            // - Therefore base + NEON_WIDTH - 1 < len, all accesses are valid
+
+            // Load previous wavefront scores (4 x i32)
+            let prev_scores = aarch64::vld1q_s32(prev_wavefront.as_ptr().add(base));
+
+            // Load 4 query and 4 target bytes, compute costs
+            let q0 = query.get_unchecked(base);
+            let q1 = query.get_unchecked(base + 1);
+            let q2 = query.get_unchecked(base + 2);
+            let q3 = query.get_unchecked(base + 3);
+
+            let t0 = target.get_unchecked(base);
+            let t1 = target.get_unchecked(base + 1);
+            let t2 = target.get_unchecked(base + 2);
+            let t3 = target.get_unchecked(base + 3);
+
+            // Compute match costs: 0 if match, -1 if mismatch
+            let cost0 = if *q0 == *t0 { 0i32 } else { -1i32 };
+            let cost1 = if *q1 == *t1 { 0i32 } else { -1i32 };
+            let cost2 = if *q2 == *t2 { 0i32 } else { -1i32 };
+            let cost3 = if *q3 == *t3 { 0i32 } else { -1i32 };
+
+            // Load costs as a vector (vld1q_s32 expects aligned pointer)
+            let costs_array = [cost0, cost1, cost2, cost3];
+            let costs = aarch64::vld1q_s32(costs_array.as_ptr());
+
+            // Add previous scores and costs: new_score = prev_score + cost
+            let new_scores = aarch64::vaddq_s32(prev_scores, costs);
+
+            // Store result back to diagonal
+            aarch64::vst1q_s32(diagonal.as_mut_ptr().add(base), new_scores);
+        }
+
+        // Handle remaining elements with scalar loop
+        let remainder = len % NEON_WIDTH;
+        if remainder > 0 {
+            let start = full_chunks * NEON_WIDTH;
+            for i in start..len {
+                let cost = if query[i] == target[i] { 0 } else { -1 };
+                diagonal[i] = prev_wavefront[i] + cost;
+            }
+        }
+    }
+}
+
+/// Scalar fallback for WFA diagonal fill
+#[inline]
+#[cfg(target_arch = "aarch64")]
+fn wfa_diagonal_fill_scalar(
+    diagonal: &mut [i32],
+    prev_wavefront: &[i32],
+    query: &[u8],
+    target: &[u8],
+) {
+    for i in 0..diagonal.len() {
+        let cost = if query[i] == target[i] { 0 } else { -1 };
+        diagonal[i] = prev_wavefront[i] + cost;
+    }
 }
 
 /// Fallback for non-ARM64 platforms (no-op)
@@ -205,7 +286,10 @@ mod tests {
         wfa_diagonal_fill_neon(&mut diagonal, &prev_wavefront, &query, &target);
 
         // Should handle empty input gracefully
-        assert!(diagonal.is_empty(), "NEON diagonal fill should preserve empty diagonal");
+        assert!(
+            diagonal.is_empty(),
+            "NEON diagonal fill should preserve empty diagonal"
+        );
     }
 
     /// Test 9: Non-ACGT characters
@@ -347,7 +431,11 @@ mod tests {
         wfa_diagonal_fill_neon(&mut diagonal, &prev_wavefront, &query, &target);
 
         // Should remain unchanged on non-ARM64
-        assert_eq!(diagonal, vec![0, 0, 0, 0], "Non-ARM64 platform should no-op");
+        assert_eq!(
+            diagonal,
+            vec![0, 0, 0, 0],
+            "Non-ARM64 platform should no-op"
+        );
     }
 
     /// Test 17: Correctness vs naive WFA (will need naive implementation)
@@ -444,8 +532,10 @@ mod tests {
         let target = seq("ATCGTTCGATCGTTCGATCGTTCGATCGTTCG");
         let mut diagonal_neon = vec![0; 32];
         let mut diagonal_naive = vec![0; 32];
-        let prev_wavefront = vec![1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8,
-                                   1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8];
+        let prev_wavefront = vec![
+            1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8, 1, -1, 2, -2, 3, -3, 4, -4, 5,
+            -5, 6, -6, 7, -7, 8, -8,
+        ];
 
         wfa_diagonal_fill_neon(&mut diagonal_neon, &prev_wavefront, &query, &target);
         // Will need naive implementation from #5
