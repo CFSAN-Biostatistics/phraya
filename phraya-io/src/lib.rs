@@ -2,6 +2,8 @@ pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }
 
+mod phraya_format;
+
 #[cfg(test)]
 mod tests {
     use super::*;
