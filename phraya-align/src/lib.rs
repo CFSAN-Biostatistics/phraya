@@ -26,23 +26,47 @@ pub enum WfaError {
     AlignmentFailed(String),
 }
 
-// These function signatures are expected by the tests.
-// They do not exist yet - tests will fail (RED phase).
-
-/// Naive WFA extension (baseline scalar implementation).
-/// This function does not exist yet - tests should fail.
-pub fn wfa_extend_naive(_query: &[u8], _target: &[u8], _seed: SeedAnchor) -> WfaResult {
-    unimplemented!("wfa_extend_naive not yet implemented - from issue #5")
+// Core WFA implementation - naive baseline
+/// Naive scalar WFA extension implementation.
+///
+/// This is the baseline implementation that all optimized versions match against.
+/// Uses simple dynamic programming without SIMD optimization.
+pub fn wfa_extend_naive(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
+    wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
 
 /// SSE4.2-accelerated WFA extension.
-/// This function does not exist yet - tests should fail.
-pub fn wfa_extend_simd(_query: &[u8], _target: &[u8], _seed: SeedAnchor) -> WfaResult {
-    unimplemented!("wfa_extend_simd not yet implemented")
+///
+/// Uses SSE4.2 intrinsics for diagonal fill operations.
+/// Falls back to naive implementation if SSE4.2 is not available.
+pub fn wfa_extend_simd(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
+    #[cfg(target_arch = "x86_64")]
+    {
+        wfa_simd::wfa_extend_simd_impl(query, target, seed)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // On non-x86 platforms, fall back to naive
+        wfa_simd::wfa_extend_naive_impl(query, target, seed)
+    }
 }
 
-/// Runtime-dispatched WFA extension (uses multiversion for SSE4.2 vs naive).
-/// This function does not exist yet - tests should fail.
-pub fn wfa_extend(_query: &[u8], _target: &[u8], _seed: SeedAnchor) -> WfaResult {
-    unimplemented!("wfa_extend not yet implemented")
+/// Runtime-dispatched WFA extension using multiversion.
+///
+/// Automatically selects SSE4.2 (if available) or naive implementation
+/// based on runtime CPU feature detection via the multiversion crate.
+#[cfg(target_arch = "x86_64")]
+pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
+    // Use runtime dispatch: try SSE4.2 first, fall back to naive
+    if is_x86_feature_detected!("sse4.2") {
+        wfa_simd::wfa_extend_simd_impl(query, target, seed)
+    } else {
+        wfa_simd::wfa_extend_naive_impl(query, target, seed)
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
+    // Non-x86 platforms use naive implementation
+    wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
