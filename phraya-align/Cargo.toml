@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+multiversion = "0.7"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "wfa_simd_bench"
+harness = false
