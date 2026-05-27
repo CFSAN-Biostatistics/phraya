@@ -17,10 +17,10 @@ pub struct SeedAnchor {
 /// Represents a CIGAR operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CigarOp {
-    Match(usize),     // M: sequence match
-    Mismatch(usize),  // X: sequence mismatch
-    Insert(usize),    // I: insertion to reference
-    Delete(usize),    // D: deletion from reference
+    Match(usize),    // M: sequence match
+    Mismatch(usize), // X: sequence mismatch
+    Insert(usize),   // I: insertion to reference
+    Delete(usize),   // D: deletion from reference
 }
 
 impl std::fmt::Display for CigarOp {
@@ -99,10 +99,185 @@ impl Alignment {
 /// let alignment = wfa_extend(query, target, seed);
 /// assert!(alignment.score >= 0);
 /// ```
-pub fn wfa_extend(_query: &[u8], _target: &[u8], _seed: SeedAnchor) -> Alignment {
-    // Placeholder - to be implemented
-    // This function will be called by tests and must match the signature
-    todo!("WFA algorithm implementation")
+pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> Alignment {
+    let qlen = query.len();
+    let tlen = target.len();
+
+    // Handle empty sequences
+    if qlen == 0 && tlen == 0 {
+        return Alignment {
+            cigar: vec![],
+            score: 0,
+            query_start: 0,
+            target_start: 0,
+            query_end: 0,
+            target_end: 0,
+        };
+    }
+
+    if qlen == 0 {
+        return Alignment {
+            cigar: vec![CigarOp::Delete(tlen)],
+            score: -(tlen as i32),
+            query_start: 0,
+            target_start: 0,
+            query_end: 0,
+            target_end: tlen,
+        };
+    }
+
+    if tlen == 0 {
+        return Alignment {
+            cigar: vec![CigarOp::Insert(qlen)],
+            score: -(qlen as i32),
+            query_start: 0,
+            target_start: 0,
+            query_end: qlen,
+            target_end: 0,
+        };
+    }
+
+    // Standard scoring
+    const MATCH: i32 = 1;
+    const MISMATCH: i32 = -1;
+    const GAP: i32 = -1;
+
+    // Simple Smith-Waterman DP approach
+    // DP table: dp[i][j] = (score, traceback_info)
+    let mut dp: Vec<Vec<i32>> = vec![vec![0; tlen + 1]; qlen + 1];
+
+    // Initialize DP table
+    for i in 0..=qlen {
+        dp[i][0] = -(i as i32);
+    }
+    for j in 0..=tlen {
+        dp[0][j] = -(j as i32);
+    }
+
+    // Fill DP table
+    for i in 1..=qlen {
+        for j in 1..=tlen {
+            let match_score = if query[i - 1] == target[j - 1] {
+                MATCH
+            } else {
+                MISMATCH
+            };
+
+            dp[i][j] = std::cmp::max(
+                std::cmp::max(
+                    dp[i - 1][j] + GAP, // Deletion
+                    dp[i][j - 1] + GAP, // Insertion
+                ),
+                dp[i - 1][j - 1] + match_score, // Match/mismatch
+            );
+        }
+    }
+
+    // Traceback from bottom-right
+    let mut cigar = Vec::new();
+    let mut i = qlen;
+    let mut j = tlen;
+    let final_score = dp[qlen][tlen];
+
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 {
+            let match_score = if query[i - 1] == target[j - 1] {
+                MATCH
+            } else {
+                MISMATCH
+            };
+
+            if dp[i][j] == dp[i - 1][j - 1] + match_score {
+                // Match or mismatch
+                let op = if query[i - 1] == target[j - 1] {
+                    CigarOp::Match(1)
+                } else {
+                    CigarOp::Mismatch(1)
+                };
+
+                if !cigar.is_empty() {
+                    let last = cigar.pop().unwrap();
+                    match (&op, &last) {
+                        (CigarOp::Match(a), CigarOp::Match(b)) => {
+                            cigar.push(CigarOp::Match(a + b));
+                        }
+                        (CigarOp::Mismatch(a), CigarOp::Mismatch(b)) => {
+                            cigar.push(CigarOp::Mismatch(a + b));
+                        }
+                        _ => {
+                            cigar.push(last);
+                            cigar.push(op);
+                        }
+                    }
+                } else {
+                    cigar.push(op);
+                }
+
+                i -= 1;
+                j -= 1;
+            } else if dp[i][j] == dp[i - 1][j] + GAP {
+                // Deletion
+                if !cigar.is_empty() {
+                    if let Some(CigarOp::Delete(len)) = cigar.last_mut() {
+                        *len += 1;
+                    } else {
+                        cigar.push(CigarOp::Delete(1));
+                    }
+                } else {
+                    cigar.push(CigarOp::Delete(1));
+                }
+                i -= 1;
+            } else {
+                // Insertion
+                if !cigar.is_empty() {
+                    if let Some(CigarOp::Insert(len)) = cigar.last_mut() {
+                        *len += 1;
+                    } else {
+                        cigar.push(CigarOp::Insert(1));
+                    }
+                } else {
+                    cigar.push(CigarOp::Insert(1));
+                }
+                j -= 1;
+            }
+        } else if i > 0 {
+            // Only query left
+            if !cigar.is_empty() {
+                if let Some(CigarOp::Delete(len)) = cigar.last_mut() {
+                    *len += 1;
+                } else {
+                    cigar.push(CigarOp::Delete(1));
+                }
+            } else {
+                cigar.push(CigarOp::Delete(1));
+            }
+            i -= 1;
+        } else {
+            // Only target left
+            if !cigar.is_empty() {
+                if let Some(CigarOp::Insert(len)) = cigar.last_mut() {
+                    *len += 1;
+                } else {
+                    cigar.push(CigarOp::Insert(1));
+                }
+            } else {
+                cigar.push(CigarOp::Insert(1));
+            }
+            j -= 1;
+        }
+    }
+
+    // Reverse CIGAR as we traced backwards
+    cigar.reverse();
+
+    Alignment {
+        cigar,
+        score: final_score,
+        query_start: seed.query_pos,
+        target_start: seed.target_pos,
+        query_end: qlen,
+        target_end: tlen,
+    }
 }
 
 #[cfg(test)]
@@ -163,7 +338,10 @@ mod tests {
 
         let alignment = wfa_extend(query, target, seed);
 
-        assert!(alignment.score >= 8, "8bp exact match should score at least 8");
+        assert!(
+            alignment.score >= 8,
+            "8bp exact match should score at least 8"
+        );
         assert_eq!(alignment.query_end - alignment.query_start, 8);
         assert_eq!(alignment.target_end - alignment.target_start, 8);
     }
@@ -188,7 +366,10 @@ mod tests {
         assert_eq!(alignment.query_end, 4);
         assert_eq!(alignment.target_end, 4);
         // Score should be less than 4 due to mismatch penalty
-        assert!(alignment.score < 4, "Alignment with mismatch should score less than 4");
+        assert!(
+            alignment.score < 4,
+            "Alignment with mismatch should score less than 4"
+        );
     }
 
     #[test]
@@ -335,7 +516,10 @@ mod tests {
 
         assert_eq!(alignment.query_end, 1);
         assert_eq!(alignment.target_end, 1);
-        assert!(alignment.score <= 0, "Mismatch should have zero or negative score");
+        assert!(
+            alignment.score <= 0,
+            "Mismatch should have zero or negative score"
+        );
     }
 
     #[test]
@@ -377,7 +561,10 @@ mod tests {
 
         assert_eq!(alignment.query_end, 100);
         assert_eq!(alignment.target_end, 100);
-        assert!(alignment.score >= 100, "100bp match should score at least 100");
+        assert!(
+            alignment.score >= 100,
+            "100bp match should score at least 100"
+        );
     }
 
     #[test]
@@ -426,7 +613,10 @@ mod tests {
         let alignment = wfa_extend(query, target, seed);
 
         let cigar_str = alignment.cigar_string();
-        assert_eq!(cigar_str, "4M", "CIGAR string should be '4M' for exact match");
+        assert_eq!(
+            cigar_str, "4M",
+            "CIGAR string should be '4M' for exact match"
+        );
         assert_eq!(alignment.score, 4);
     }
 
