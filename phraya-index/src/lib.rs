@@ -1,3 +1,242 @@
+/// A single minimizer with its hash, position, and strand information
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Minimizer {
+    hash: u64,
+    position: usize,
+    strand: bool, // true = forward, false = reverse
+}
+
+impl Minimizer {
+    fn new(hash: u64, position: usize, strand: bool) -> Self {
+        Minimizer {
+            hash,
+            position,
+            strand,
+        }
+    }
+
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    pub fn strand(&self) -> bool {
+        self.strand
+    }
+}
+
+/// Represents a shared minimizer between two sketches (a seed candidate)
+#[derive(Clone, Debug)]
+pub struct SharedMinimizer {
+    hash: u64,
+    pos_query: usize,
+    pos_target: usize,
+}
+
+impl SharedMinimizer {
+    pub fn new(hash: u64, pos_query: usize, pos_target: usize) -> Self {
+        SharedMinimizer {
+            hash,
+            pos_query,
+            pos_target,
+        }
+    }
+
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+
+    pub fn pos_in_query(&self) -> usize {
+        self.pos_query
+    }
+
+    pub fn pos_in_target(&self) -> usize {
+        self.pos_target
+    }
+}
+
+/// A sketch of a sequence using minimizers
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MinimimizerSketch {
+    minimizers: Vec<Minimizer>,
+    k: usize,
+    w: usize,
+}
+
+impl MinimimizerSketch {
+    pub fn new() -> Self {
+        MinimimizerSketch {
+            minimizers: Vec::new(),
+            k: 21,
+            w: 11,
+        }
+    }
+
+    pub fn minimizers(&self) -> &[Minimizer] {
+        &self.minimizers
+    }
+
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    pub fn w(&self) -> usize {
+        self.w
+    }
+
+    /// Find shared minimizers between this sketch and another
+    pub fn find_shared_minimizers(&self, other: &MinimimizerSketch) -> Vec<SharedMinimizer> {
+        let mut result = Vec::new();
+
+        // Build a set of hashes in the other sketch for fast lookup
+        let other_hashes: std::collections::HashSet<u64> = other.minimizers.iter().map(|m| m.hash).collect();
+
+        // For each minimizer in self, check if its hash exists in other
+        for m in &self.minimizers {
+            if other_hashes.contains(&m.hash) {
+                // Find the first minimizer in other with this hash
+                if let Some(other_m) = other.minimizers.iter().find(|om| om.hash == m.hash) {
+                    result.push(SharedMinimizer::new(m.hash, m.position, other_m.position));
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl Default for MinimimizerSketch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Convert a DNA sequence to a numeric k-mer hash using rolling 2-bit encoding
+/// This is fast and deterministic
+fn kmer_to_hash(kmer: &[u8]) -> u64 {
+    if kmer.len() > 31 {
+        return 0; // Limit to 62 bits for sign safety
+    }
+
+    let mut hash: u64 = 0;
+    for &byte in kmer {
+        let bits = match byte {
+            b'A' => 0u8,
+            b'C' => 1u8,
+            b'G' => 2u8,
+            b'T' => 3u8,
+            _ => 0u8, // N and unknowns default to A
+        };
+        hash = hash << 2 | (bits as u64);
+    }
+    hash
+}
+
+/// Generate all k-mers and their minimizers from a sequence
+/// Returns a sketch with minimizers selected by the minimizer selection algorithm
+pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimimizerSketch {
+    // Validate parameters
+    assert!(k > 0, "k must be greater than 0");
+    assert!(w > 0, "w must be greater than 0");
+    assert!(w <= k, "w must be less than or equal to k");
+
+    let mut minimizers = Vec::new();
+
+    // If sequence is too short, return empty sketch
+    if sequence.len() < k {
+        return MinimimizerSketch {
+            minimizers,
+            k,
+            w,
+        };
+    }
+
+    // Extract all k-mers and compute their hashes
+    let mut kmers: Vec<(u64, usize)> = Vec::new();
+    for i in 0..=(sequence.len() - k) {
+        let kmer = &sequence[i..i + k];
+        let hash = kmer_to_hash(kmer);
+        kmers.push((hash, i));
+    }
+
+    if kmers.is_empty() {
+        return MinimimizerSketch {
+            minimizers,
+            k,
+            w,
+        };
+    }
+
+    // Special case: only one k-mer
+    if kmers.len() == 1 {
+        let (hash, pos) = kmers[0];
+        minimizers.push(Minimizer::new(hash, pos, true));
+        return MinimimizerSketch {
+            minimizers,
+            k,
+            w,
+        };
+    }
+
+    // Minimizer selection using monotonic deque for O(n) performance
+    let window_size = w;
+
+    let mut deque: Vec<(u64, usize)> = Vec::with_capacity(window_size);
+    let mut deque_front = 0;
+    let mut last_min_kmer_idx = None;
+    let mut last_forced_kmer_idx = 0;
+    // Force at least one minimizer every w k-mers to ensure sequence coverage
+    // This guarantees that long regions of non-minimum hashes still produce minimizers
+    let force_spacing = w;
+
+    for (kmer_idx, &(hash, seq_pos)) in kmers.iter().enumerate() {
+        // Remove elements that would fall outside our window
+        while deque_front < deque.len() && deque[deque_front].1 + window_size <= kmer_idx {
+            deque_front += 1;
+        }
+
+        // Maintain monotonic property: remove larger or equal elements
+        while deque.len() > deque_front && deque[deque.len() - 1].0 >= hash {
+            deque.pop();
+        }
+
+        deque.push((hash, kmer_idx));
+
+        // Emit minimizer when window is full
+        if kmer_idx >= window_size - 1 && deque_front < deque.len() {
+            let (_, min_kmer_idx) = deque[deque_front];
+
+            // Emit if:
+            // 1. The minimum k-mer position changed, OR
+            // 2. We haven't emitted in force_spacing k-mers
+            let should_emit = last_min_kmer_idx != Some(min_kmer_idx) ||
+                             kmer_idx >= last_forced_kmer_idx + force_spacing;
+
+            if should_emit {
+                let min_pos = kmers[min_kmer_idx].1;
+                let min_hash = kmers[min_kmer_idx].0;
+                minimizers.push(Minimizer::new(min_hash, min_pos, true));
+                last_min_kmer_idx = Some(min_kmer_idx);
+                last_forced_kmer_idx = kmer_idx;
+            }
+        }
+    }
+
+    MinimimizerSketch {
+        minimizers,
+        k,
+        w,
+    }
+}
+
+/// Create a sketch with default parameters (k=21, w=11)
+pub fn sketch_default(sequence: &[u8]) -> MinimimizerSketch {
+    sketch(sequence, 21, 11)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
