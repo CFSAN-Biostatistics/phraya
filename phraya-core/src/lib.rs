@@ -1,3 +1,6 @@
+// Module declarations
+pub mod types;
+
 /// Represents a detected tandem repeat region in a sequence.
 ///
 /// A tandem repeat is a pattern of nucleotides that repeats multiple times in succession.
