@@ -1,6 +1,12 @@
 // Module declarations
 pub mod types;
 
+// Re-export main types for convenience
+pub use types::{
+    AlignmentError, CoverageTrack, EvidenceLayer, FilterError, IoError, ParseError, Sequence,
+    VariantObservation,
+};
+
 /// Represents a detected tandem repeat region in a sequence.
 ///
 /// A tandem repeat is a pattern of nucleotides that repeats multiple times in succession.
