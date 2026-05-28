@@ -1,6 +1,300 @@
 // This module will contain core types for Phraya.
 // Tests are written first (TDD RED phase).
 
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use thiserror::Error;
+
+/// Sequence type with DNA bytes, optional per-base quality scores (Phred), metadata (id, description).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Sequence {
+    /// Raw DNA bases as bytes (e.g., b"ACGT")
+    bases: Vec<u8>,
+    /// Optional per-base quality scores (Phred format)
+    quality_scores: Option<Vec<u8>>,
+    /// Sequence identifier (e.g., "seq1")
+    id: String,
+    /// Optional description
+    description: Option<String>,
+}
+
+impl Sequence {
+    /// Create a new sequence. Panics if quality_scores.len() != bases.len() when Some.
+    pub fn new(
+        bases: Vec<u8>,
+        quality_scores: Option<Vec<u8>>,
+        id: String,
+        description: Option<String>,
+    ) -> Self {
+        if let Some(ref scores) = quality_scores {
+            assert_eq!(
+                scores.len(),
+                bases.len(),
+                "quality scores length must match sequence length"
+            );
+        }
+        Sequence {
+            bases,
+            quality_scores,
+            id,
+            description,
+        }
+    }
+
+    /// Return the length of the sequence
+    pub fn len(&self) -> usize {
+        self.bases.len()
+    }
+
+    /// Check if the sequence is empty
+    pub fn is_empty(&self) -> bool {
+        self.bases.is_empty()
+    }
+
+    /// Get the sequence ID
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Get the sequence description if present
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    /// Get the quality score at a specific position (0-indexed), or None if out of bounds
+    pub fn quality_at(&self, pos: usize) -> Option<u8> {
+        self.quality_scores
+            .as_ref()
+            .and_then(|q| q.get(pos).copied())
+    }
+
+    /// Get all quality scores if present
+    pub fn quality_scores(&self) -> Option<&Vec<u8>> {
+        self.quality_scores.as_ref()
+    }
+
+    /// Calculate the average quality score, or None if no quality scores
+    pub fn avg_quality(&self) -> Option<f64> {
+        self.quality_scores.as_ref().map(|scores| {
+            if scores.is_empty() {
+                0.0
+            } else {
+                let sum: u32 = scores.iter().map(|&q| q as u32).sum();
+                sum as f64 / scores.len() as f64
+            }
+        })
+    }
+}
+
+/// Variant observation at a genomic position with full alignment metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VariantObservation {
+    /// Position in the reference (0-indexed)
+    position: u32,
+    /// Reference base
+    ref_base: u8,
+    /// All alleles with their counts
+    all_alleles: HashMap<u8, u32>,
+    /// Confidence score (0.0-1.0)
+    confidence: f64,
+    /// CIGAR string for this alignment
+    cigar: String,
+    /// Mapping quality (0-60)
+    mapq: u8,
+    /// Edit distance between query and reference
+    edit_distance: u32,
+    /// Local coverage (±50bp window) as a vector of counts
+    local_coverage: Vec<u32>,
+    /// Average per-base quality at this position
+    avg_base_quality: f64,
+    /// Provenance: identifies the sample and read (e.g., "sample1:read42")
+    provenance: String,
+}
+
+impl VariantObservation {
+    /// Create a new variant observation
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        position: u32,
+        ref_base: u8,
+        all_alleles: HashMap<u8, u32>,
+        confidence: f64,
+        cigar: String,
+        mapq: u8,
+        edit_distance: u32,
+        local_coverage: Vec<u32>,
+        avg_base_quality: f64,
+        provenance: String,
+    ) -> Self {
+        VariantObservation {
+            position,
+            ref_base,
+            all_alleles,
+            confidence,
+            cigar,
+            mapq,
+            edit_distance,
+            local_coverage,
+            avg_base_quality,
+            provenance,
+        }
+    }
+
+    /// Get the position of this variant
+    pub fn position(&self) -> u32 {
+        self.position
+    }
+
+    /// Get the reference base
+    pub fn ref_base(&self) -> u8 {
+        self.ref_base
+    }
+
+    /// Get all alleles with their counts
+    pub fn all_alleles(&self) -> &HashMap<u8, u32> {
+        &self.all_alleles
+    }
+
+    /// Get the confidence score
+    pub fn confidence(&self) -> f64 {
+        self.confidence
+    }
+
+    /// Get the CIGAR string
+    pub fn cigar(&self) -> &str {
+        &self.cigar
+    }
+
+    /// Get the mapping quality
+    pub fn mapq(&self) -> u8 {
+        self.mapq
+    }
+
+    /// Get the edit distance
+    pub fn edit_distance(&self) -> u32 {
+        self.edit_distance
+    }
+
+    /// Get the local coverage vector
+    pub fn local_coverage(&self) -> &Vec<u32> {
+        &self.local_coverage
+    }
+
+    /// Get the average base quality
+    pub fn avg_base_quality(&self) -> f64 {
+        self.avg_base_quality
+    }
+
+    /// Get the provenance string
+    pub fn provenance(&self) -> &str {
+        &self.provenance
+    }
+}
+
+/// Evidence layer containing k-mer and alignment-derived evidence
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EvidenceLayer {
+    /// K-mer uniqueness at each position (value 0.0-1.0)
+    kmer_uniqueness: HashMap<u32, f64>,
+    /// Polymorphic sites and their alleles
+    polymorphic_sites: HashMap<u32, Vec<u8>>,
+    /// Invariant positions (where all samples match reference)
+    invariant_positions: HashSet<u32>,
+    /// Multi-mapping fraction at each position (0.0-1.0)
+    multi_map_fraction: HashMap<u32, f64>,
+    /// Average score ratio gap to next-best alignment
+    avg_score_ratio_gap: HashMap<u32, f64>,
+}
+
+impl EvidenceLayer {
+    /// Create a new evidence layer
+    pub fn new(
+        kmer_uniqueness: HashMap<u32, f64>,
+        polymorphic_sites: HashMap<u32, Vec<u8>>,
+        invariant_positions: HashSet<u32>,
+        multi_map_fraction: HashMap<u32, f64>,
+        avg_score_ratio_gap: HashMap<u32, f64>,
+    ) -> Self {
+        EvidenceLayer {
+            kmer_uniqueness,
+            polymorphic_sites,
+            invariant_positions,
+            multi_map_fraction,
+            avg_score_ratio_gap,
+        }
+    }
+
+    /// Get the k-mer uniqueness map
+    pub fn kmer_uniqueness(&self) -> &HashMap<u32, f64> {
+        &self.kmer_uniqueness
+    }
+
+    /// Get the polymorphic sites map
+    pub fn polymorphic_sites(&self) -> &HashMap<u32, Vec<u8>> {
+        &self.polymorphic_sites
+    }
+
+    /// Get the invariant positions set
+    pub fn invariant_positions(&self) -> &HashSet<u32> {
+        &self.invariant_positions
+    }
+
+    /// Get the multi-mapping fraction map
+    pub fn multi_map_fraction(&self) -> &HashMap<u32, f64> {
+        &self.multi_map_fraction
+    }
+
+    /// Get the average score ratio gap map
+    pub fn avg_score_ratio_gap(&self) -> &HashMap<u32, f64> {
+        &self.avg_score_ratio_gap
+    }
+}
+
+/// Coverage track stub (RLE-compressed, quantized coverage).
+/// Full implementation is deferred to a separate slice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CoverageTrack {
+    // Stub for now - implementation in separate slice
+}
+
+/// Parse errors for FASTA, FASTQ, and other input formats
+#[derive(Debug, Clone, Error, Serialize, Deserialize, PartialEq)]
+pub enum ParseError {
+    #[error("invalid format: {0}")]
+    InvalidFormat(String),
+    #[error("invalid UTF-8: {0}")]
+    InvalidUtf8(String),
+}
+
+/// I/O errors for file operations
+#[derive(Debug, Clone, Error, Serialize, Deserialize, PartialEq)]
+pub enum IoError {
+    #[error("file not found: {0}")]
+    FileNotFound(String),
+    #[error("permission denied: {0}")]
+    PermissionDenied(String),
+    #[error("read error: {0}")]
+    ReadError(String),
+}
+
+/// Alignment errors during seeding, extension, or scoring
+#[derive(Debug, Clone, Error, Serialize, Deserialize, PartialEq)]
+pub enum AlignmentError {
+    #[error("no seeds found for sequence: {0}")]
+    NoSeeds(String),
+    #[error("alignment failed: {0}")]
+    AlignmentFailed(String),
+}
+
+/// Filter errors during threshold or expression evaluation
+#[derive(Debug, Clone, Error, Serialize, Deserialize, PartialEq)]
+pub enum FilterError {
+    #[error("invalid threshold for {0}: {1}")]
+    InvalidThreshold(String, f64),
+    #[error("invalid filter expression: {0}")]
+    InvalidExpression(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
