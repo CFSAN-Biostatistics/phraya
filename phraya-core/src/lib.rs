@@ -3,8 +3,8 @@ pub mod types;
 
 // Re-exports for convenience
 pub use types::{
-    AlignmentError, CoverageTrack, EvidenceLayer, FilterError, IoError, ParseError, Sequence,
-    VariantObservation,
+    AlignmentError, CoverageTrack, CoverageTrackIter, EvidenceLayer, FilterError, IoError,
+    ParseError, Sequence, VariantObservation,
 };
 
 /// Represents a detected tandem repeat region in a sequence.

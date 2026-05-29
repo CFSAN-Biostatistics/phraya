@@ -250,52 +250,138 @@ impl EvidenceLayer {
     }
 }
 
-/// Coverage track stub (RLE-compressed, quantized coverage).
-/// Full implementation is deferred to a separate slice.
+/// Coverage track with RLE (run-length encoding) compression.
+/// Coverage values are quantized to the nearest 5 before encoding.
+/// Stores full reference length, including zero-coverage regions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CoverageTrack {
-    // Stub for now - implementation in separate slice
+    /// RLE runs: (value, length) pairs in order
+    runs: Vec<(usize, usize)>,
+    /// Total number of positions (for bounds checking)
+    total_length: usize,
 }
 
 impl CoverageTrack {
+    /// Quantize a coverage value to the nearest 5.
+    /// Example: 7 → 5, 8 → 10, 12 → 10, 13 → 15.
+    fn quantize(value: usize) -> usize {
+        ((value + 2) / 5) * 5
+    }
+
     /// Create a CoverageTrack from raw coverage values.
     /// Values are quantized to nearest 5 and RLE-compressed.
-    pub fn from_coverage(_coverage: Vec<usize>) -> Self {
-        unimplemented!("CoverageTrack::from_coverage not yet implemented")
+    pub fn from_coverage(coverage: Vec<usize>) -> Self {
+        if coverage.is_empty() {
+            return CoverageTrack {
+                runs: Vec::new(),
+                total_length: 0,
+            };
+        }
+
+        let total_length = coverage.len();
+        let mut runs = Vec::new();
+        let mut current_value = Self::quantize(coverage[0]);
+        let mut current_count = 1;
+
+        for &value in &coverage[1..] {
+            let quantized = Self::quantize(value);
+            if quantized == current_value {
+                current_count += 1;
+            } else {
+                runs.push((current_value, current_count));
+                current_value = quantized;
+                current_count = 1;
+            }
+        }
+        // Add the last run
+        runs.push((current_value, current_count));
+
+        CoverageTrack { runs, total_length }
     }
 
     /// Decompress the RLE-encoded coverage to a full vector.
     pub fn to_vec(&self) -> Vec<usize> {
-        unimplemented!("CoverageTrack::to_vec not yet implemented")
+        let mut result = Vec::with_capacity(self.total_length);
+        for &(value, length) in &self.runs {
+            for _ in 0..length {
+                result.push(value);
+            }
+        }
+        result
     }
 
     /// Get coverage at a specific position via binary search.
     /// Returns 0 for out-of-bounds positions.
-    pub fn coverage_at(&self, _pos: usize) -> usize {
-        unimplemented!("CoverageTrack::coverage_at not yet implemented")
+    pub fn coverage_at(&self, pos: usize) -> usize {
+        if pos >= self.total_length {
+            return 0;
+        }
+
+        // Binary search through runs to find the run containing this position
+        let mut cumulative_pos = 0;
+        for &(value, length) in &self.runs {
+            if pos < cumulative_pos + length {
+                return value;
+            }
+            cumulative_pos += length;
+        }
+
+        0
     }
 
     /// Get the number of RLE runs in this track.
     pub fn run_count(&self) -> usize {
-        unimplemented!("CoverageTrack::run_count not yet implemented")
+        self.runs.len()
     }
 
     /// Iterator over (position, coverage) pairs.
     pub fn iter(&self) -> CoverageTrackIter {
-        unimplemented!("CoverageTrack::iter not yet implemented")
+        CoverageTrackIter {
+            runs: self.runs.clone(),
+            current_run_idx: 0,
+            current_pos_in_run: 0,
+            current_pos: 0,
+        }
     }
 }
 
 /// Iterator over coverage track positions.
+#[derive(Debug, Clone)]
 pub struct CoverageTrackIter {
-    // Stub for now - implementation in separate slice
+    runs: Vec<(usize, usize)>,
+    current_run_idx: usize,
+    current_pos_in_run: usize,
+    current_pos: usize,
 }
 
 impl Iterator for CoverageTrackIter {
     type Item = (usize, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        unimplemented!("CoverageTrackIter::next not yet implemented")
+        if self.current_run_idx >= self.runs.len() {
+            return None;
+        }
+
+        let (value, length) = self.runs[self.current_run_idx];
+
+        if self.current_pos_in_run >= length {
+            self.current_run_idx += 1;
+            self.current_pos_in_run = 0;
+            if self.current_run_idx >= self.runs.len() {
+                return None;
+            }
+            let (value, _length) = self.runs[self.current_run_idx];
+            let pos = self.current_pos;
+            self.current_pos += 1;
+            self.current_pos_in_run += 1;
+            return Some((pos, value));
+        }
+
+        let pos = self.current_pos;
+        self.current_pos += 1;
+        self.current_pos_in_run += 1;
+
+        Some((pos, value))
     }
 }
 
