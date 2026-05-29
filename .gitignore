@@ -37,3 +37,4 @@ Thumbs.db
 *.cubin
 *.fatbin
 *.ptx
+proptest-regressions/

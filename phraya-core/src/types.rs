@@ -257,6 +257,48 @@ pub struct CoverageTrack {
     // Stub for now - implementation in separate slice
 }
 
+impl CoverageTrack {
+    /// Create a CoverageTrack from raw coverage values.
+    /// Values are quantized to nearest 5 and RLE-compressed.
+    pub fn from_coverage(_coverage: Vec<usize>) -> Self {
+        unimplemented!("CoverageTrack::from_coverage not yet implemented")
+    }
+
+    /// Decompress the RLE-encoded coverage to a full vector.
+    pub fn to_vec(&self) -> Vec<usize> {
+        unimplemented!("CoverageTrack::to_vec not yet implemented")
+    }
+
+    /// Get coverage at a specific position via binary search.
+    /// Returns 0 for out-of-bounds positions.
+    pub fn coverage_at(&self, _pos: usize) -> usize {
+        unimplemented!("CoverageTrack::coverage_at not yet implemented")
+    }
+
+    /// Get the number of RLE runs in this track.
+    pub fn run_count(&self) -> usize {
+        unimplemented!("CoverageTrack::run_count not yet implemented")
+    }
+
+    /// Iterator over (position, coverage) pairs.
+    pub fn iter(&self) -> CoverageTrackIter {
+        unimplemented!("CoverageTrack::iter not yet implemented")
+    }
+}
+
+/// Iterator over coverage track positions.
+pub struct CoverageTrackIter {
+    // Stub for now - implementation in separate slice
+}
+
+impl Iterator for CoverageTrackIter {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        unimplemented!("CoverageTrackIter::next not yet implemented")
+    }
+}
+
 /// Parse errors for FASTA, FASTQ, and other input formats
 #[derive(Debug, Clone, Error, Serialize, Deserialize, PartialEq)]
 pub enum ParseError {
@@ -565,12 +607,324 @@ mod tests {
         assert_eq!(deserialized.kmer_uniqueness().get(&100), Some(&1.0));
     }
 
-    // ===== CoverageTrack type stub tests =====
+    // ===== CoverageTrack RLE compression tests =====
 
     #[test]
-    fn coverage_track_stub_exists() {
-        // Just verify the type exists - implementation is for a separate slice
-        let _track: CoverageTrack;
+    fn coverage_track_uniform_coverage_single_run() {
+        // Uniform coverage (e.g., all 10x) should compress to a single RLE run
+        let coverage = vec![10; 1000]; // 1000 positions with 10x coverage
+        let track = CoverageTrack::from_coverage(coverage.clone());
+
+        // Verify decompression matches original (modulo quantization to 10)
+        let decompressed = track.to_vec();
+        assert_eq!(decompressed.len(), coverage.len());
+        for val in &decompressed {
+            assert_eq!(*val, 10); // Quantized to nearest 5
+        }
+
+        // Verify efficient compression - should be single run
+        assert_eq!(track.run_count(), 1);
+    }
+
+    #[test]
+    fn coverage_track_alternating_coverage_many_runs() {
+        // Alternating coverage should result in many RLE runs
+        let mut coverage = Vec::new();
+        for i in 0..500 {
+            coverage.push(if i % 2 == 0 { 10 } else { 20 });
+        }
+        let track = CoverageTrack::from_coverage(coverage.clone());
+
+        let decompressed = track.to_vec();
+        assert_eq!(decompressed.len(), coverage.len());
+
+        // Verify alternating pattern preserved (with quantization)
+        for (i, &val) in decompressed.iter().enumerate() {
+            let expected = if i % 2 == 0 { 10 } else { 20 };
+            assert_eq!(val, expected);
+        }
+    }
+
+    #[test]
+    fn coverage_track_zero_coverage_regions() {
+        // Zero coverage regions should be preserved
+        let mut coverage = vec![0; 100];
+        coverage.extend(vec![15; 100]);
+        coverage.extend(vec![0; 100]);
+        coverage.extend(vec![30; 100]);
+
+        let track = CoverageTrack::from_coverage(coverage.clone());
+        let decompressed = track.to_vec();
+
+        assert_eq!(decompressed.len(), 400);
+        // First 100 positions should be 0
+        for i in 0..100 {
+            assert_eq!(decompressed[i], 0);
+        }
+        // Next 100 should be 15
+        for i in 100..200 {
+            assert_eq!(decompressed[i], 15);
+        }
+        // Next 100 should be 0
+        for i in 200..300 {
+            assert_eq!(decompressed[i], 0);
+        }
+        // Last 100 should be 30
+        for i in 300..400 {
+            assert_eq!(decompressed[i], 30);
+        }
+    }
+
+    #[test]
+    fn coverage_track_quantization_to_nearest_5() {
+        // Coverage values should be quantized to nearest 5
+        let coverage = vec![7, 8, 12, 13, 17, 18, 22, 23];
+        let track = CoverageTrack::from_coverage(coverage);
+        let decompressed = track.to_vec();
+
+        assert_eq!(decompressed, vec![5, 10, 10, 15, 15, 20, 20, 25]);
+    }
+
+    #[test]
+    fn coverage_track_quantization_exact_multiples_of_5() {
+        // Exact multiples of 5 should remain unchanged
+        let coverage = vec![0, 5, 10, 15, 20, 25, 30];
+        let track = CoverageTrack::from_coverage(coverage.clone());
+        let decompressed = track.to_vec();
+
+        assert_eq!(decompressed, coverage);
+    }
+
+    #[test]
+    fn coverage_track_quantization_boundary_cases() {
+        // Test rounding behavior at boundaries
+        // 2 rounds to 0, 3 rounds to 5, 7 rounds to 5, 8 rounds to 10
+        let coverage = vec![2, 3, 7, 8, 12, 13];
+        let track = CoverageTrack::from_coverage(coverage);
+        let decompressed = track.to_vec();
+
+        assert_eq!(decompressed, vec![0, 5, 5, 10, 10, 15]);
+    }
+
+    #[test]
+    fn coverage_track_random_access_via_binary_search() {
+        // Random access should work via binary search in O(log n) time
+        let mut coverage = Vec::new();
+        coverage.extend(vec![10; 100]);
+        coverage.extend(vec![20; 100]);
+        coverage.extend(vec![30; 100]);
+
+        let track = CoverageTrack::from_coverage(coverage);
+
+        // Test random access at various positions
+        assert_eq!(track.coverage_at(0), 10);
+        assert_eq!(track.coverage_at(50), 10);
+        assert_eq!(track.coverage_at(99), 10);
+        assert_eq!(track.coverage_at(100), 20);
+        assert_eq!(track.coverage_at(150), 20);
+        assert_eq!(track.coverage_at(199), 20);
+        assert_eq!(track.coverage_at(200), 30);
+        assert_eq!(track.coverage_at(250), 30);
+        assert_eq!(track.coverage_at(299), 30);
+    }
+
+    #[test]
+    fn coverage_track_random_access_out_of_bounds() {
+        // Out of bounds access should return None or 0
+        let coverage = vec![10; 100];
+        let track = CoverageTrack::from_coverage(coverage);
+
+        assert_eq!(track.coverage_at(100), 0); // Beyond last position
+        assert_eq!(track.coverage_at(1000), 0); // Way out of bounds
+    }
+
+    #[test]
+    fn coverage_track_iterator_over_positions() {
+        // Should be able to iterate over (position, coverage) pairs
+        let coverage = vec![10, 10, 20, 20, 30, 30];
+        let track = CoverageTrack::from_coverage(coverage.clone());
+
+        let positions: Vec<(usize, usize)> = track.iter().collect();
+        assert_eq!(positions.len(), coverage.len());
+
+        for (i, (pos, cov)) in positions.iter().enumerate() {
+            assert_eq!(*pos, i);
+            assert_eq!(*cov, coverage[i]);
+        }
+    }
+
+    #[test]
+    fn coverage_track_empty_coverage() {
+        // Empty coverage should be handled gracefully
+        let coverage: Vec<usize> = vec![];
+        let track = CoverageTrack::from_coverage(coverage);
+
+        assert_eq!(track.to_vec().len(), 0);
+        assert_eq!(track.run_count(), 0);
+    }
+
+    #[test]
+    fn coverage_track_single_position() {
+        // Single position coverage
+        let coverage = vec![15];
+        let track = CoverageTrack::from_coverage(coverage);
+
+        assert_eq!(track.to_vec(), vec![15]);
+        assert_eq!(track.coverage_at(0), 15);
+        assert_eq!(track.run_count(), 1);
+    }
+
+    #[test]
+    fn coverage_track_realistic_bacterial_genome() {
+        // Simulate realistic bacterial genome coverage (E. coli ~4.6Mbp)
+        // with mostly uniform 30x coverage with some variation
+        let mut coverage = Vec::new();
+
+        // Region 1: 1Mbp at 30x
+        coverage.extend(vec![30; 1_000_000]);
+
+        // Region 2: 500kbp at 10x (lower coverage region)
+        coverage.extend(vec![10; 500_000]);
+
+        // Region 3: 2Mbp at 35x
+        coverage.extend(vec![35; 2_000_000]);
+
+        // Region 4: 100kbp at 0x (no coverage)
+        coverage.extend(vec![0; 100_000]);
+
+        // Region 5: 1Mbp at 30x
+        coverage.extend(vec![30; 1_000_000]);
+
+        let track = CoverageTrack::from_coverage(coverage.clone());
+        let decompressed = track.to_vec();
+
+        assert_eq!(decompressed.len(), coverage.len());
+
+        // Should compress to 5 runs
+        assert_eq!(track.run_count(), 5);
+
+        // Verify some random positions
+        assert_eq!(track.coverage_at(500_000), 30);
+        assert_eq!(track.coverage_at(1_200_000), 10);
+        assert_eq!(track.coverage_at(3_000_000), 35);
+        assert_eq!(track.coverage_at(3_550_000), 0);
+        assert_eq!(track.coverage_at(4_000_000), 30);
+    }
+
+    #[test]
+    fn coverage_track_high_depth_sequencing() {
+        // Test high coverage values (100x)
+        let coverage = vec![100; 1000];
+        let track = CoverageTrack::from_coverage(coverage);
+        let decompressed = track.to_vec();
+
+        for val in &decompressed {
+            assert_eq!(*val, 100);
+        }
+    }
+
+    #[test]
+    fn coverage_track_serialization() {
+        // CoverageTrack should be serializable
+        let coverage = vec![10, 10, 20, 20, 30, 30];
+        let track = CoverageTrack::from_coverage(coverage);
+
+        let json = serde_json::to_string(&track).expect("serialization failed");
+        let deserialized: CoverageTrack =
+            serde_json::from_str(&json).expect("deserialization failed");
+
+        assert_eq!(deserialized.to_vec(), track.to_vec());
+    }
+
+    // ===== Property tests =====
+
+    #[test]
+    fn property_round_trip_encode_decode() {
+        // Property: encode → decode should equal original (modulo quantization)
+        use proptest::prelude::*;
+
+        proptest!(|(coverage in prop::collection::vec(0usize..200, 0..1000))| {
+            let track = CoverageTrack::from_coverage(coverage.clone());
+            let decompressed = track.to_vec();
+
+            // Check length matches
+            prop_assert_eq!(decompressed.len(), coverage.len());
+
+            // Check values match after quantization
+            for (i, &original) in coverage.iter().enumerate() {
+                let quantized = ((original + 2) / 5) * 5; // Round to nearest 5
+                prop_assert_eq!(decompressed[i], quantized);
+            }
+        });
+    }
+
+    #[test]
+    fn property_quantization_idempotence() {
+        // Property: quantizing twice should equal quantizing once
+        use proptest::prelude::*;
+
+        proptest!(|(coverage in prop::collection::vec(0usize..200, 0..1000))| {
+            let track1 = CoverageTrack::from_coverage(coverage.clone());
+            let decompressed1 = track1.to_vec();
+
+            // Quantize again
+            let track2 = CoverageTrack::from_coverage(decompressed1.clone());
+            let decompressed2 = track2.to_vec();
+
+            // Should be identical
+            prop_assert_eq!(decompressed1, decompressed2);
+        });
+    }
+
+    #[test]
+    fn property_coverage_at_matches_decompressed() {
+        // Property: coverage_at(i) should match to_vec()[i]
+        use proptest::prelude::*;
+
+        proptest!(|(coverage in prop::collection::vec(0usize..200, 10..100))| {
+            let track = CoverageTrack::from_coverage(coverage.clone());
+            let decompressed = track.to_vec();
+
+            for i in 0..coverage.len() {
+                prop_assert_eq!(track.coverage_at(i), decompressed[i]);
+            }
+        });
+    }
+
+    #[test]
+    fn property_quantization_always_multiple_of_5() {
+        // Property: all decompressed values should be multiples of 5
+        use proptest::prelude::*;
+
+        proptest!(|(coverage in prop::collection::vec(0usize..200, 0..1000))| {
+            let track = CoverageTrack::from_coverage(coverage);
+            let decompressed = track.to_vec();
+
+            for val in &decompressed {
+                prop_assert_eq!(val % 5, 0, "all values must be multiples of 5");
+            }
+        });
+    }
+
+    #[test]
+    fn property_quantization_within_2_of_original() {
+        // Property: quantized value should be within ±2 of original
+        use proptest::prelude::*;
+
+        proptest!(|(coverage in prop::collection::vec(0usize..200, 0..1000))| {
+            let track = CoverageTrack::from_coverage(coverage.clone());
+            let decompressed = track.to_vec();
+
+            for (i, &original) in coverage.iter().enumerate() {
+                let quantized = decompressed[i];
+                let diff = if original > quantized {
+                    original - quantized
+                } else {
+                    quantized - original
+                };
+                prop_assert!(diff <= 2, "quantized value should be within ±2 of original");
+            }
+        });
     }
 
     // ===== Error type tests =====
