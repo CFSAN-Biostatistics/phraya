@@ -20,6 +20,8 @@
 //! - k = 21: standard for bacterial genomics, good balance of specificity and coverage
 //! - w = 11: window length, results in ~1 minimizer per k bases on average for random sequence
 
+use phraya_core::types::Sequence;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinimimizerSketch {
     /// Sorted list of (minimizer_value, position) pairs
@@ -30,6 +32,38 @@ pub struct MinimimizerSketch {
     pub k: usize,
     /// Window length used to generate this sketch
     pub w: usize,
+}
+
+/// Public wrapper type for k-mer sketching of Sequence objects.
+///
+/// This is the primary API for sketching bacterial sequences with k-mer minimizers.
+/// It provides methods to query k, w, length, and check if empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sketch {
+    /// Internal minimizer sketch representation
+    inner: MinimimizerSketch,
+}
+
+impl Sketch {
+    /// Get the k-mer length used for this sketch
+    pub fn k(&self) -> usize {
+        self.inner.k
+    }
+
+    /// Get the window length used for this sketch
+    pub fn w(&self) -> usize {
+        self.inner.w
+    }
+
+    /// Get the number of minimizers in the sketch
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Check if the sketch is empty
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
 }
 
 impl MinimimizerSketch {
@@ -120,7 +154,44 @@ fn canonical_kmer(value: u64, k: usize) -> u64 {
     std::cmp::min(value, rc)
 }
 
-/// Construct a minimizer sketch from a sequence.
+/// Construct a minimizer sketch from a Sequence object with custom k and w parameters.
+///
+/// # Arguments
+///
+/// * `sequence` - Input Sequence object containing DNA bases
+/// * `k` - K-mer length (typical: 21 for bacterial genomics)
+/// * `w` - Window length (typical: 11)
+///
+/// # Returns
+///
+/// A `Sketch` containing the minimizers found in the sequence.
+///
+/// # Determinism
+///
+/// This function is deterministic: sketching the same sequence with the same parameters
+/// always produces identical results. The sketch depends only on the sequence bases,
+/// not on metadata like ID, description, or quality scores.
+pub fn sketch(sequence: &Sequence, k: usize, w: usize) -> Sketch {
+    let inner = sketch_bytes(sequence.bases(), k, w);
+    Sketch { inner }
+}
+
+/// Construct a minimizer sketch from a Sequence using default parameters (k=21, w=11).
+///
+/// Default parameters are suitable for bacterial genomics (E. coli genome size ~4.6Mbp).
+///
+/// # Arguments
+///
+/// * `sequence` - Input Sequence object containing DNA bases
+///
+/// # Returns
+///
+/// A `Sketch` containing the minimizers found in the sequence.
+pub fn sketch_default(sequence: &Sequence) -> Sketch {
+    sketch(sequence, 21, 11)
+}
+
+/// Internal function to construct a minimizer sketch from raw bytes.
 ///
 /// # Arguments
 ///
@@ -135,7 +206,7 @@ fn canonical_kmer(value: u64, k: usize) -> u64 {
 /// # Panics
 ///
 /// Panics if k > w or if k is 0.
-pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimimizerSketch {
+fn sketch_bytes(sequence: &[u8], k: usize, w: usize) -> MinimimizerSketch {
     assert!(k > 0, "k must be greater than 0");
 
     // NOTE: The contract specifies panicking when w < k, but this conflicts with

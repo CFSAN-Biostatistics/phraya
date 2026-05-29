@@ -84,6 +84,11 @@ impl Sequence {
             }
         })
     }
+
+    /// Get the raw DNA bases as a byte slice
+    pub fn bases(&self) -> &[u8] {
+        &self.bases
+    }
 }
 
 /// Variant observation at a genomic position with full alignment metadata.
