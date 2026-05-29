@@ -23,7 +23,6 @@
 /// // Produces CIGAR "8M" with edit_distance 0 for perfect match
 /// ```
 use crate::Alignment;
-use std::collections::HashMap;
 
 // Safety documentation flag
 // SAFETY: Set to true when all unsafe blocks have documented invariants.
@@ -193,7 +192,6 @@ fn build_cigar(dp: &[Vec<usize>], query: &[u8], target: &[u8], mut i: usize, mut
     // Compact CIGAR operations
     ops.reverse();
     let mut compact_cigar = String::new();
-    let mut count = 1;
     let mut i = 0;
 
     while i < ops.len() {
@@ -201,14 +199,13 @@ fn build_cigar(dp: &[Vec<usize>], query: &[u8], target: &[u8], mut i: usize, mut
         if ops[i].len() > 1 {
             compact_cigar.push_str(&ops[i]);
             i += 1;
-            count = 1;
         } else if i + 1 < ops.len()
             && ops[i].chars().next().unwrap() == ops[i + 1].chars().next().unwrap()
             && ops[i + 1].len() == 1
         {
             // Count consecutive single-char operations
-            count = 1;
             let op_char = ops[i].chars().next().unwrap();
+            let mut count = 1;
             i += 1;
             while i < ops.len() && ops[i].len() == 1 && ops[i].chars().next().unwrap() == op_char {
                 count += 1;
@@ -219,7 +216,6 @@ fn build_cigar(dp: &[Vec<usize>], query: &[u8], target: &[u8], mut i: usize, mut
             // Single operation
             compact_cigar.push_str(&format!("{}{}", 1, ops[i]));
             i += 1;
-            count = 1;
         }
     }
 
