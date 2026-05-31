@@ -1,5 +1,6 @@
 pub mod plan;
 pub mod phraya;
+pub mod queries;
 
 use phraya_core::types::{ParseError, Sequence};
 use std::io::{BufRead, BufReader, Read};
