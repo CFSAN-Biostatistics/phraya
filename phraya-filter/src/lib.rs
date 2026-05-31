@@ -1,6 +1,8 @@
 use phraya_core::types::VariantObservation;
 use std::collections::HashMap;
 
+pub mod vcf;
+
 /// Threshold-based filter configuration
 #[derive(Debug, Clone)]
 pub struct FilterBuilder {
