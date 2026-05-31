@@ -57,11 +57,12 @@ fn issue_80_merge_two_files() {
     let input2 = create_phraya_file(temp_path, "sample2.phraya", 200, "sample2", 3);
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             input1.to_str().unwrap(),
@@ -108,11 +109,12 @@ fn issue_80_merge_preserves_provenance() {
     let input2 = create_phraya_file(temp_path, "sample2.phraya", 100, "sample2", 2);
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             input1.to_str().unwrap(),
@@ -156,11 +158,12 @@ fn issue_80_merge_three_files() {
     let input3 = create_phraya_file(temp_path, "sample3.phraya", 100, "sample3", 1);
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             input1.to_str().unwrap(),
@@ -214,11 +217,12 @@ fn issue_80_merge_coverage_summing() {
 
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             path1.to_str().unwrap(),
@@ -276,11 +280,12 @@ fn issue_80_merge_mismatched_reference_length_error() {
 
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             path1.to_str().unwrap(),
@@ -314,11 +319,12 @@ fn issue_80_merge_nonexistent_input_file() {
     let nonexistent = temp_path.join("nonexistent.phraya");
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             input1.to_str().unwrap(),
@@ -349,11 +355,12 @@ fn issue_80_merge_no_input_files() {
     let temp_path = temp_dir.path();
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             "--output",
@@ -377,11 +384,12 @@ fn issue_80_merge_missing_output_flag() {
     let input1 = create_phraya_file(temp_path, "sample1.phraya", 100, "sample1", 2);
     let input2 = create_phraya_file(temp_path, "sample2.phraya", 100, "sample2", 2);
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             input1.to_str().unwrap(),
@@ -406,11 +414,12 @@ fn issue_80_merge_logs_progress() {
     let input2 = create_phraya_file(temp_path, "sample2.phraya", 100, "sample2", 2);
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             input1.to_str().unwrap(),
@@ -480,11 +489,12 @@ fn issue_80_merge_deduplicates_observations() {
 
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             path1.to_str().unwrap(),
@@ -516,11 +526,12 @@ fn issue_80_merge_single_file() {
     let input1 = create_phraya_file(temp_path, "sample1.phraya", 100, "sample1", 3);
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             input1.to_str().unwrap(),
@@ -551,11 +562,12 @@ fn issue_80_merge_nonzero_exit_on_error() {
     let nonexistent2 = temp_path.join("nonexistent2.phraya");
     let output_path = temp_path.join("merged.phraya");
 
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "merge",
             nonexistent1.to_str().unwrap(),
