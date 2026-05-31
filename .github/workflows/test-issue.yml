@@ -1,0 +1,82 @@
+name: Test Issue-Specific
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  extract-issue:
+    runs-on: ubuntu-latest
+    outputs:
+      issue-number: ${{ steps.extract.outputs.issue }}
+      has-issue: ${{ steps.extract.outputs.has_issue }}
+    steps:
+      - name: Extract issue number from PR title or body
+        id: extract
+        run: |
+          # Try to extract issue number from PR title
+          ISSUE=$(echo "${{ github.event.pull_request.title }}" | grep -oP '#\K\d+' | head -1)
+
+          # If not found in title, try PR body
+          if [ -z "$ISSUE" ]; then
+            ISSUE=$(echo "${{ github.event.pull_request.body }}" | grep -oP '#\K\d+' | head -1)
+          fi
+
+          if [ -z "$ISSUE" ]; then
+            echo "has_issue=false" >> $GITHUB_OUTPUT
+            echo "issue=" >> $GITHUB_OUTPUT
+          else
+            echo "has_issue=true" >> $GITHUB_OUTPUT
+            echo "issue=$ISSUE" >> $GITHUB_OUTPUT
+          fi
+
+  test-issue:
+    needs: extract-issue
+    if: needs.extract-issue.outputs.has-issue == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run tests for issue #${{ needs.extract-issue.outputs.issue-number }}
+        run: |
+          ISSUE=${{ needs.extract-issue.outputs.issue-number }}
+
+          # Try running integration tests for this issue
+          if cargo test --test "*" --ignored 2>&1 | grep -q "issue_${ISSUE}"; then
+            echo "Running integration tests for issue #$ISSUE"
+            cargo test --test "*" --ignored -- "issue_${ISSUE}" --verbose
+          else
+            echo "Running unit tests for issue #$ISSUE"
+            # Try to run lib tests that match the issue pattern
+            cargo test --lib -- "issue_${ISSUE}" --verbose --test-threads=1
+          fi
+
+  no-issue:
+    needs: extract-issue
+    if: needs.extract-issue.outputs.has-issue == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: No issue detected
+        run: echo "No issue number found in PR title or body. Skipping issue-specific tests."
