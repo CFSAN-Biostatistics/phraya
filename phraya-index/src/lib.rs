@@ -22,7 +22,82 @@ pub fn sketch_sequence_default(sequence: &Sequence) -> MinimimizerSketch {
 // Also export the low-level sketch function for testing
 pub use minimizer::sketch;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Compute Jaccard similarity between two sketches.
+/// J(A, B) = |A ∩ B| / |A ∪ B|
+fn jaccard_similarity(sketch_a: &MinimimizerSketch, sketch_b: &MinimimizerSketch) -> f64 {
+    let set_a: HashSet<u64> = sketch_a.minimizers.iter().map(|&(val, _)| val).collect();
+    let set_b: HashSet<u64> = sketch_b.minimizers.iter().map(|&(val, _)| val).collect();
+
+    if set_a.is_empty() && set_b.is_empty() {
+        return 1.0; // Two empty sketches are identical
+    }
+
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
+/// Select the centroid sketch (the one with median Jaccard similarity to all others).
+/// Returns the index of the centroid sketch in the input slice.
+///
+/// # Arguments
+/// * `sketches` - slice of sketches to select from
+///
+/// # Returns
+/// Option<usize> - index of centroid, or None if empty
+pub fn select_centroid(sketches: &[MinimimizerSketch]) -> Option<usize> {
+    if sketches.is_empty() {
+        return None;
+    }
+
+    if sketches.len() == 1 {
+        return Some(0);
+    }
+
+    // Compute average Jaccard similarity for each sketch to all others
+    let mut avg_similarities: Vec<f64> = Vec::new();
+
+    for (i, sketch_i) in sketches.iter().enumerate() {
+        let mut similarities = Vec::new();
+
+        for (j, sketch_j) in sketches.iter().enumerate() {
+            if i != j {
+                let similarity = jaccard_similarity(sketch_i, sketch_j);
+                similarities.push(similarity);
+            }
+        }
+
+        // Median similarity for this sketch
+        if !similarities.is_empty() {
+            similarities.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let median = if similarities.len() % 2 == 0 {
+                (similarities[similarities.len() / 2 - 1] + similarities[similarities.len() / 2]) / 2.0
+            } else {
+                similarities[similarities.len() / 2]
+            };
+            avg_similarities.push(median);
+        } else {
+            avg_similarities.push(0.0);
+        }
+    }
+
+    // Find the index with the median value (middle of the distribution)
+    let mut indexed_sims: Vec<(usize, f64)> = avg_similarities
+        .into_iter()
+        .enumerate()
+        .collect();
+    indexed_sims.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let median_index = indexed_sims.len() / 2;
+    Some(indexed_sims[median_index].0)
+}
 
 /// Compute k-mer uniqueness scores from multiple sketches.
 ///
@@ -261,5 +336,126 @@ mod tests {
 
         // Count of unique positions should match sketch length
         assert!(uniqueness.len() <= sketch.minimizers.len());
+    }
+
+    #[test]
+    fn jaccard_identical_sketches() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch = sketch_sequence(&seq, 4, 2);
+
+        let j = jaccard_similarity(&sketch, &sketch);
+        assert_eq!(j, 1.0);
+    }
+
+    #[test]
+    fn jaccard_empty_sketches() {
+        let empty_sketch = MinimimizerSketch {
+            minimizers: vec![],
+            k: 4,
+            w: 2,
+        };
+
+        let j = jaccard_similarity(&empty_sketch, &empty_sketch);
+        assert_eq!(j, 1.0);
+    }
+
+    #[test]
+    fn jaccard_symmetry() {
+        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
+        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
+
+        let sketch1 = sketch_sequence(&seq1, 4, 2);
+        let sketch2 = sketch_sequence(&seq2, 4, 2);
+
+        let j_ab = jaccard_similarity(&sketch1, &sketch2);
+        let j_ba = jaccard_similarity(&sketch2, &sketch1);
+
+        assert!((j_ab - j_ba).abs() < 1e-10);
+    }
+
+    #[test]
+    fn jaccard_range() {
+        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
+        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
+
+        let sketch1 = sketch_sequence(&seq1, 4, 2);
+        let sketch2 = sketch_sequence(&seq2, 4, 2);
+
+        let j = jaccard_similarity(&sketch1, &sketch2);
+        assert!(j >= 0.0);
+        assert!(j <= 1.0);
+    }
+
+    #[test]
+    fn select_centroid_single_sketch() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch = sketch_sequence(&seq, 4, 2);
+
+        let centroid = select_centroid(&[sketch]);
+        assert_eq!(centroid, Some(0));
+    }
+
+    #[test]
+    fn select_centroid_two_identical_sketches() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch = sketch_sequence(&seq, 4, 2);
+
+        let centroid = select_centroid(&[sketch.clone(), sketch.clone()]);
+        assert!(centroid.is_some());
+        assert!(centroid.unwrap() == 0 || centroid.unwrap() == 1);
+    }
+
+    #[test]
+    fn select_centroid_three_sketches() {
+        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
+        let seq2 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq2".to_string(), None); // identical
+        let seq3 = Sequence::new(b"TTTTTTTTTTTTTTTTTTTT".to_vec(), None, "seq3".to_string(), None); // different
+
+        let sketch1 = sketch_sequence(&seq1, 4, 2);
+        let sketch2 = sketch_sequence(&seq2, 4, 2);
+        let sketch3 = sketch_sequence(&seq3, 4, 2);
+
+        let centroid = select_centroid(&[sketch1, sketch2, sketch3]);
+        assert!(centroid.is_some());
+        // Centroid should be one of the first two (more similar to each other)
+    }
+
+    #[test]
+    fn select_centroid_empty() {
+        let centroid = select_centroid(&[]);
+        assert_eq!(centroid, None);
+    }
+
+    #[test]
+    fn select_centroid_returns_valid_index() {
+        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
+        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
+        let seq3 = Sequence::new(b"GCTAGCTAGCTAGCTAGCTAGCTA".to_vec(), None, "seq3".to_string(), None);
+        let seq4 = Sequence::new(b"ACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq4".to_string(), None); // similar to seq1
+
+        let sketch1 = sketch_sequence(&seq1, 5, 3);
+        let sketch2 = sketch_sequence(&seq2, 5, 3);
+        let sketch3 = sketch_sequence(&seq3, 5, 3);
+        let sketch4 = sketch_sequence(&seq4, 5, 3);
+
+        let sketches = vec![sketch1, sketch2, sketch3, sketch4];
+        let centroid = select_centroid(&sketches);
+
+        assert!(centroid.is_some());
+        let idx = centroid.unwrap();
+        assert!(idx < sketches.len());
+    }
+
+    #[test]
+    fn select_centroid_many_identical() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch = sketch_sequence(&seq, 5, 3);
+
+        let sketches = vec![sketch.clone(), sketch.clone(), sketch.clone(), sketch.clone(), sketch.clone()];
+        let centroid = select_centroid(&sketches);
+
+        assert!(centroid.is_some());
+        // With all identical sketches, any index is valid
+        assert!(centroid.unwrap() < sketches.len());
     }
 }
