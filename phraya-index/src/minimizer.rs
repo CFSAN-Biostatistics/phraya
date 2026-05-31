@@ -20,7 +20,9 @@
 //! - k = 21: standard for bacterial genomics, good balance of specificity and coverage
 //! - w = 11: window length, results in ~1 minimizer per k bases on average for random sequence
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MinimimizerSketch {
     /// Sorted list of (minimizer_value, position) pairs
     /// minimizer_value is encoded as u64 (canonical k-mer)

@@ -1,3 +1,5 @@
+pub mod plan;
+
 use phraya_core::types::{ParseError, Sequence};
 use std::io::{BufRead, BufReader, Read};
 use std::fs::File;

@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 phraya-core = { path = "../phraya-core" }
+serde = { version = "1", features = ["derive"] }
