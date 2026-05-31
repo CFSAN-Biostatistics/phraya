@@ -1,14 +1,20 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use log::info;
 use phraya_core::types::Sequence;
 use phraya_index::{compute_kmer_uniqueness, sketch_sequence_default};
-use phraya_io::{plan::PhrayaPlan, plan::UseCase, plan::write_plan, SequenceParser};
+use phraya_io::{plan::{self, PhrayaPlan, UseCase, write_plan}, SequenceParser};
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "phraya")]
 #[command(about = "Phraya: pairwise sequence aligner for bacterial genomics")]
-enum Cli {
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
     /// Plan alignment tasks from input sequences
     Plan {
         /// Input files (FASTA/FASTQ/BAM/CRAM)
@@ -23,6 +29,12 @@ enum Cli {
         #[arg(long, value_name = "FILE", required = true)]
         output: PathBuf,
     },
+    /// Extract task list from a .phrayaplan file and output as TSV
+    PlanTasks {
+        /// Path to the .phrayaplan file
+        #[arg(value_name = "PLAN_FILE")]
+        plan_file: PathBuf,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,13 +45,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
-    match cli {
-        Cli::Plan {
+    match cli.command {
+        Commands::Plan {
             inputs,
             reference,
             output,
         } => {
             run_plan(&inputs, reference.as_deref(), &output)?;
+        }
+        Commands::PlanTasks { plan_file } => {
+            plan_tasks(&plan_file)?;
         }
     }
 
@@ -124,6 +139,21 @@ fn run_plan(
     write_plan(output_path, &plan)?;
 
     info!("Plan written to {:?}", output_path);
+    Ok(())
+}
+
+fn plan_tasks(plan_file: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    // Read the plan file
+    let plan = plan::read_plan(plan_file)?;
+
+    // Output TSV header
+    println!("query_id\ttarget_id");
+
+    // Output each task as a TSV line
+    for (query_id, target_id) in &plan.task_list {
+        println!("{}\t{}", query_id, target_id);
+    }
+
     Ok(())
 }
 
