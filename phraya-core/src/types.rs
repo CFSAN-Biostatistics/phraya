@@ -61,6 +61,11 @@ impl Sequence {
         self.description.as_deref()
     }
 
+    /// Get the raw DNA bases
+    pub fn bases(&self) -> &[u8] {
+        &self.bases
+    }
+
     /// Get the quality score at a specific position (0-indexed), or None if out of bounds
     pub fn quality_at(&self, pos: usize) -> Option<u8> {
         self.quality_scores
