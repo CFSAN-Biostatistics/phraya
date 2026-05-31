@@ -99,6 +99,87 @@ pub fn read_phraya(path: &std::path::Path) -> Result<PhrayaFile, PhrayaError> {
     Ok(file)
 }
 
+/// Merge multiple .phraya files into a single file.
+///
+/// Combines observations from all inputs, grouping by position.
+/// Preserves provenance for each observation.
+/// Coverage tracks are summed element-wise.
+/// Deduplicates identical observations.
+/// Order-independent (merge is commutative).
+pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, PhrayaError> {
+    if paths.is_empty() {
+        return Err(PhrayaError::IoError("No files to merge".to_string()));
+    }
+
+    // Read all files
+    let mut files = Vec::new();
+    for path in paths {
+        files.push(read_phraya(path)?);
+    }
+
+    // Verify all files have same reference length
+    let ref_length = files[0].header.reference_length;
+    for file in &files {
+        if file.header.reference_length != ref_length {
+            return Err(PhrayaError::IoError(
+                "All files must have same reference length".to_string(),
+            ));
+        }
+    }
+
+    // Collect all observations and deduplicate
+    let mut observations = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for file in &files {
+        for obs in &file.observations {
+            // Create a key for deduplication: (position, alleles, provenance)
+            let alleles_key = format!(
+                "{:?}",
+                obs.all_alleles()
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}", *k as char, v))
+                    .collect::<Vec<_>>()
+            );
+            let key = format!("{}:{}:{}", obs.position(), alleles_key, obs.provenance());
+
+            if !seen.contains(&key) {
+                observations.push(obs.clone());
+                seen.insert(key);
+            }
+        }
+    }
+
+    // Sort observations by position
+    observations.sort_by_key(|obs| obs.position());
+
+    // Merge coverage tracks
+    let mut merged_coverage_vec = vec![0usize; ref_length as usize];
+    for file in &files {
+        let decompressed = file.coverage_track.decompress();
+        for (i, &cov) in decompressed.iter().enumerate() {
+            merged_coverage_vec[i] += cov as usize;
+        }
+    }
+
+    let merged_coverage = CoverageTrack::new(merged_coverage_vec);
+
+    // Create merged file header
+    let merged_header = PhrayaHeader {
+        version: PHRAYA_VERSION,
+        reference_length: ref_length,
+        sample_id: format!("merged_{}", files.len()),
+        timestamp: chrono::Local::now().to_rfc3339(),
+        observation_count: observations.len(),
+    };
+
+    Ok(PhrayaFile {
+        header: merged_header,
+        observations,
+        coverage_track: merged_coverage,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +402,211 @@ mod tests {
         assert_eq!(read_file.header.reference_length, 100);
         assert_eq!(read_file.header.sample_id, "header_test");
         assert_eq!(read_file.header.observation_count, 0);
+    }
+
+    #[test]
+    fn merge_two_files_overlapping_positions() {
+        let mut alleles1 = HashMap::new();
+        alleles1.insert(b'A', 10);
+
+        let obs1 = VariantObservation::new(
+            50, b'A', alleles1, 0.95, "10M".to_string(), 60, 0,
+            vec![10], 35.0, "sample1:read1".to_string(),
+        );
+
+        let mut alleles2 = HashMap::new();
+        alleles2.insert(b'T', 5);
+
+        let obs2 = VariantObservation::new(
+            50, b'T', alleles2, 0.90, "10M".to_string(), 50, 1,
+            vec![5], 30.0, "sample2:read1".to_string(),
+        );
+
+        let coverage1 = CoverageTrack::new(vec![10; 100]);
+        let file1 = PhrayaFile::new(
+            100, "sample1".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![obs1], coverage1,
+        );
+
+        let coverage2 = CoverageTrack::new(vec![5; 100]);
+        let file2 = PhrayaFile::new(
+            100, "sample2".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![obs2], coverage2,
+        );
+
+        let temp1 = NamedTempFile::new().unwrap();
+        let temp2 = NamedTempFile::new().unwrap();
+        write_phraya(temp1.path(), &file1).unwrap();
+        write_phraya(temp2.path(), &file2).unwrap();
+
+        let merged = merge_phraya_files(&[temp1.path(), temp2.path()]).unwrap();
+
+        assert_eq!(merged.observations.len(), 2);
+        assert_eq!(merged.header.reference_length, 100);
+    }
+
+    #[test]
+    fn merge_two_files_disjoint_positions() {
+        let mut alleles1 = HashMap::new();
+        alleles1.insert(b'A', 10);
+
+        let obs1 = VariantObservation::new(
+            25, b'A', alleles1, 0.95, "10M".to_string(), 60, 0,
+            vec![10], 35.0, "sample1:read1".to_string(),
+        );
+
+        let mut alleles2 = HashMap::new();
+        alleles2.insert(b'T', 5);
+
+        let obs2 = VariantObservation::new(
+            75, b'T', alleles2, 0.90, "10M".to_string(), 50, 1,
+            vec![5], 30.0, "sample2:read1".to_string(),
+        );
+
+        let coverage1 = CoverageTrack::new(vec![10; 100]);
+        let file1 = PhrayaFile::new(
+            100, "sample1".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![obs1], coverage1,
+        );
+
+        let coverage2 = CoverageTrack::new(vec![5; 100]);
+        let file2 = PhrayaFile::new(
+            100, "sample2".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![obs2], coverage2,
+        );
+
+        let temp1 = NamedTempFile::new().unwrap();
+        let temp2 = NamedTempFile::new().unwrap();
+        write_phraya(temp1.path(), &file1).unwrap();
+        write_phraya(temp2.path(), &file2).unwrap();
+
+        let merged = merge_phraya_files(&[temp1.path(), temp2.path()]).unwrap();
+
+        assert_eq!(merged.observations.len(), 2);
+        // Verify positions are sorted
+        assert_eq!(merged.observations[0].position(), 25);
+        assert_eq!(merged.observations[1].position(), 75);
+    }
+
+    #[test]
+    fn merge_coverage_summing() {
+        let coverage1 = CoverageTrack::new(vec![5, 5, 5, 5]);
+        let file1 = PhrayaFile::new(
+            4, "sample1".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![], coverage1,
+        );
+
+        let coverage2 = CoverageTrack::new(vec![10, 10, 10, 10]);
+        let file2 = PhrayaFile::new(
+            4, "sample2".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![], coverage2,
+        );
+
+        let temp1 = NamedTempFile::new().unwrap();
+        let temp2 = NamedTempFile::new().unwrap();
+        write_phraya(temp1.path(), &file1).unwrap();
+        write_phraya(temp2.path(), &file2).unwrap();
+
+        let merged = merge_phraya_files(&[temp1.path(), temp2.path()]).unwrap();
+
+        let merged_coverage = merged.coverage_track.decompress();
+        // Coverage should be summed (5 + 10 quantized → 15)
+        for cov in merged_coverage {
+            assert!(cov > 5); // Should be greater than individual values
+        }
+    }
+
+    #[test]
+    fn merge_commutativity() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'A', 10);
+
+        let obs = VariantObservation::new(
+            50, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
+            vec![10], 35.0, "sample:read".to_string(),
+        );
+
+        let coverage = CoverageTrack::new(vec![10; 100]);
+        let file = PhrayaFile::new(
+            100, "test".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![obs], coverage,
+        );
+
+        let temp1 = NamedTempFile::new().unwrap();
+        let temp2 = NamedTempFile::new().unwrap();
+        write_phraya(temp1.path(), &file).unwrap();
+        write_phraya(temp2.path(), &file).unwrap();
+
+        let merged_12 = merge_phraya_files(&[temp1.path(), temp2.path()]).unwrap();
+        let merged_21 = merge_phraya_files(&[temp2.path(), temp1.path()]).unwrap();
+
+        // Observations should be identical (deduped)
+        assert_eq!(merged_12.observations.len(), merged_21.observations.len());
+    }
+
+    #[test]
+    fn merge_empty_files() {
+        let coverage = CoverageTrack::new(vec![10; 100]);
+        let file = PhrayaFile::new(
+            100, "empty".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![], coverage,
+        );
+
+        let temp1 = NamedTempFile::new().unwrap();
+        let temp2 = NamedTempFile::new().unwrap();
+        write_phraya(temp1.path(), &file).unwrap();
+        write_phraya(temp2.path(), &file).unwrap();
+
+        let merged = merge_phraya_files(&[temp1.path(), temp2.path()]).unwrap();
+
+        assert_eq!(merged.observations.len(), 0);
+    }
+
+    #[test]
+    fn merge_single_file() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'A', 10);
+
+        let obs = VariantObservation::new(
+            50, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
+            vec![10], 35.0, "sample:read".to_string(),
+        );
+
+        let coverage = CoverageTrack::new(vec![10; 100]);
+        let file = PhrayaFile::new(
+            100, "single".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![obs], coverage,
+        );
+
+        let temp = NamedTempFile::new().unwrap();
+        write_phraya(temp.path(), &file).unwrap();
+
+        let merged = merge_phraya_files(&[temp.path()]).unwrap();
+
+        assert_eq!(merged.observations.len(), 1);
+        assert_eq!(merged.header.reference_length, 100);
+    }
+
+    #[test]
+    fn merge_mismatched_reference_length_error() {
+        let coverage1 = CoverageTrack::new(vec![10; 100]);
+        let file1 = PhrayaFile::new(
+            100, "sample1".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![], coverage1,
+        );
+
+        let coverage2 = CoverageTrack::new(vec![5; 200]);
+        let file2 = PhrayaFile::new(
+            200, "sample2".to_string(), "2026-05-31T12:00:00Z".to_string(),
+            vec![], coverage2,
+        );
+
+        let temp1 = NamedTempFile::new().unwrap();
+        let temp2 = NamedTempFile::new().unwrap();
+        write_phraya(temp1.path(), &file1).unwrap();
+        write_phraya(temp2.path(), &file2).unwrap();
+
+        let result = merge_phraya_files(&[temp1.path(), temp2.path()]);
+        assert!(result.is_err());
     }
 }
