@@ -1,3 +1,4 @@
+use crate::SequenceParser;
 /// Use case detection module for classifying alignment workflows.
 ///
 /// Detects workflow type from input files (reads vs contigs) and reference presence.
@@ -5,11 +6,9 @@
 /// Case 3: M contigs + N reads, no reference (with centroid selection)
 /// Case 4: M contigs ± reference (or contig MSA)
 /// Case 1: reads only, no reference (deferred to Phase 2)
-
-use phraya_index::{sketch_sequence_default, select_centroid};
-use std::path::{Path, PathBuf};
+use phraya_index::{select_centroid, sketch_sequence_default};
+use std::path::Path;
 use thiserror::Error;
-use crate::SequenceParser;
 
 /// Detected input classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +73,20 @@ pub enum UseCaseError {
 /// # Returns
 /// InputType or UseCaseError on I/O failure or empty file
 pub fn classify_input(path: &Path) -> Result<InputType, UseCaseError> {
-    unimplemented!("classify_input not yet implemented")
+    let mut parser =
+        SequenceParser::from_path(path).map_err(|e| UseCaseError::IoError(e.to_string()))?;
+
+    match parser.next() {
+        Some(Ok(seq)) => {
+            if seq.bases().len() >= 5000 {
+                Ok(InputType::Contig)
+            } else {
+                Ok(InputType::Read)
+            }
+        }
+        Some(Err(e)) => Err(UseCaseError::IoError(e.to_string())),
+        None => Err(UseCaseError::NoSequences),
+    }
 }
 
 /// Detect use case from inputs and optional reference.
@@ -97,7 +109,74 @@ pub fn detect_use_case<P: AsRef<Path>>(
     inputs: &[P],
     reference: Option<&Path>,
 ) -> Result<(UseCase, Vec<InputType>), UseCaseError> {
-    unimplemented!("detect_use_case not yet implemented")
+    // Validate inputs not empty
+    if inputs.is_empty() {
+        return Err(UseCaseError::InvalidInput(
+            "no input files provided".to_string(),
+        ));
+    }
+
+    // Classify all inputs
+    let input_types: Result<Vec<_>, _> = inputs
+        .iter()
+        .map(|input| classify_input(input.as_ref()))
+        .collect();
+    let input_types = input_types?;
+
+    // Count reads and contigs
+    let num_reads = input_types
+        .iter()
+        .filter(|&&t| t == InputType::Read)
+        .count();
+    let num_contigs = input_types.len() - num_reads;
+
+    // Determine use case
+    let use_case = match (reference, num_contigs, num_reads) {
+        // Case 2: has reference, inputs can be reads (reads with reference) or mixed
+        (Some(_), _, n_reads) if n_reads > 0 => {
+            // If reference present and there are reads, treat as Case 2
+            // Count only reads as tasks
+            UseCase::Case2 { n_tasks: num_reads }
+        }
+        // Case 3: no reference, mixed contigs + reads
+        (None, n_ctg, n_rd) if n_ctg > 0 && n_rd > 0 => {
+            let centroid_idx = select_centroid_index(inputs, &input_types)?;
+            // Total tasks: M contigs + N reads
+            UseCase::Case3 {
+                centroid_idx,
+                n_tasks: num_contigs + num_reads,
+            }
+        }
+        // Case 4: contigs only (with or without reference)
+        (_, n_ctg, 0) if n_ctg > 0 => {
+            if reference.is_some() {
+                // With reference: M tasks
+                UseCase::Case4 {
+                    n_tasks: num_contigs,
+                    is_msa: false,
+                }
+            } else {
+                // Without reference (MSA mode): M×(M-1)/2 tasks
+                let n_tasks = num_contigs * (num_contigs - 1) / 2;
+                UseCase::Case4 {
+                    n_tasks,
+                    is_msa: true,
+                }
+            }
+        }
+        // Case 1: reads only, no reference (deferred)
+        (None, 0, _) if num_reads > 0 => {
+            return Err(UseCaseError::Case1Deferred);
+        }
+        // All other combinations are invalid
+        _ => {
+            return Err(UseCaseError::InvalidInput(
+                "invalid combination of inputs and reference".to_string(),
+            ));
+        }
+    };
+
+    Ok((use_case, input_types))
 }
 
 /// Select the centroid contig index for Case 3.
@@ -108,13 +187,38 @@ fn select_centroid_index<P: AsRef<Path>>(
     inputs: &[P],
     input_types: &[InputType],
 ) -> Result<usize, UseCaseError> {
-    unimplemented!("select_centroid_index not yet implemented")
+    // Sketch all contigs
+    let mut contig_sketches = Vec::new();
+    let mut contig_indices = Vec::new();
+
+    for (idx, input) in inputs.iter().enumerate() {
+        if input_types[idx] == InputType::Contig {
+            let mut parser = SequenceParser::from_path(input.as_ref())
+                .map_err(|e| UseCaseError::IoError(e.to_string()))?;
+
+            if let Some(Ok(seq)) = parser.next() {
+                let sketch = sketch_sequence_default(&seq);
+                contig_sketches.push(sketch);
+                contig_indices.push(idx);
+            } else {
+                return Err(UseCaseError::NoSequences);
+            }
+        }
+    }
+
+    // Select centroid from contig sketches
+    let centroid_sketch_idx = select_centroid(&contig_sketches)
+        .ok_or_else(|| UseCaseError::InvalidInput("no contigs to select from".to_string()))?;
+
+    // Map back to original input index
+    Ok(contig_indices[centroid_sketch_idx])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     // ===== Test utilities =====
@@ -192,7 +296,10 @@ mod tests {
     fn test_issue_67_classify_wrapped_long_sequence() {
         // Long sequence wrapped across lines should be Contig
         let seq_part = "A".repeat(1250); // 4*1250 = 5000
-        let fasta = format!(">contig1\n{}\n{}\n{}\n{}\n", seq_part, seq_part, seq_part, seq_part);
+        let fasta = format!(
+            ">contig1\n{}\n{}\n{}\n{}\n",
+            seq_part, seq_part, seq_part, seq_part
+        );
         let f = write_fasta(&fasta);
 
         let result = classify_input(f.path()).unwrap();
@@ -219,10 +326,8 @@ mod tests {
         let read_f = write_fasta(read);
         let ref_f = write_fasta(reference);
 
-        let (use_case, types) = detect_use_case(
-            &[read_f.path().to_path_buf()],
-            Some(ref_f.path()),
-        ).unwrap();
+        let (use_case, types) =
+            detect_use_case(&[read_f.path().to_path_buf()], Some(ref_f.path())).unwrap();
 
         assert_eq!(use_case, UseCase::Case2 { n_tasks: 1 });
         assert_eq!(types, vec![InputType::Read]);
@@ -242,7 +347,8 @@ mod tests {
         let (use_case, types) = detect_use_case(
             &[read1_f.path().to_path_buf(), read2_f.path().to_path_buf()],
             Some(ref_f.path()),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(use_case, UseCase::Case2 { n_tasks: 2 });
         assert_eq!(types, vec![InputType::Read, InputType::Read]);
@@ -257,10 +363,8 @@ mod tests {
         let read_f = write_fasta(fasta_reads);
         let ref_f = write_fasta(reference);
 
-        let (use_case, _) = detect_use_case(
-            &[read_f.path().to_path_buf()],
-            Some(ref_f.path()),
-        ).unwrap();
+        let (use_case, _) =
+            detect_use_case(&[read_f.path().to_path_buf()], Some(ref_f.path())).unwrap();
 
         assert_eq!(use_case, UseCase::Case2 { n_tasks: 1 });
     }
@@ -280,10 +384,15 @@ mod tests {
         let (use_case, types) = detect_use_case(
             &[contig_f.path().to_path_buf(), read_f.path().to_path_buf()],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(types, vec![InputType::Contig, InputType::Read]);
-        if let UseCase::Case3 { centroid_idx, n_tasks } = use_case {
+        if let UseCase::Case3 {
+            centroid_idx,
+            n_tasks,
+        } = use_case
+        {
             assert_eq!(centroid_idx, 0); // First input is the contig
             assert_eq!(n_tasks, 2); // 1 contig + 1 read
         } else {
@@ -309,10 +418,18 @@ mod tests {
                 read_f.path().to_path_buf(),
             ],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert_eq!(types, vec![InputType::Contig, InputType::Contig, InputType::Read]);
-        if let UseCase::Case3 { centroid_idx, n_tasks } = use_case {
+        assert_eq!(
+            types,
+            vec![InputType::Contig, InputType::Contig, InputType::Read]
+        );
+        if let UseCase::Case3 {
+            centroid_idx,
+            n_tasks,
+        } = use_case
+        {
             // Centroid should be one of the first two indices (both are contigs)
             assert!(centroid_idx == 0 || centroid_idx == 1);
             assert_eq!(n_tasks, 3); // 2 contigs + 1 read
@@ -339,9 +456,14 @@ mod tests {
                 read_f.path().to_path_buf(),
             ],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
-        if let UseCase::Case3 { centroid_idx: _, n_tasks } = use_case {
+        if let UseCase::Case3 {
+            centroid_idx: _,
+            n_tasks,
+        } = use_case
+        {
             assert_eq!(n_tasks, 3);
         } else {
             panic!("expected Case3");
@@ -359,12 +481,16 @@ mod tests {
         let contig_f = write_fasta(&contig);
         let ref_f = write_fasta(&reference);
 
-        let (use_case, types) = detect_use_case(
-            &[contig_f.path().to_path_buf()],
-            Some(ref_f.path()),
-        ).unwrap();
+        let (use_case, types) =
+            detect_use_case(&[contig_f.path().to_path_buf()], Some(ref_f.path())).unwrap();
 
-        assert_eq!(use_case, UseCase::Case4 { n_tasks: 1, is_msa: false });
+        assert_eq!(
+            use_case,
+            UseCase::Case4 {
+                n_tasks: 1,
+                is_msa: false
+            }
+        );
         assert_eq!(types, vec![InputType::Contig]);
     }
 
@@ -385,9 +511,16 @@ mod tests {
                 contig2_f.path().to_path_buf(),
             ],
             Some(ref_f.path()),
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert_eq!(use_case, UseCase::Case4 { n_tasks: 2, is_msa: false });
+        assert_eq!(
+            use_case,
+            UseCase::Case4 {
+                n_tasks: 2,
+                is_msa: false
+            }
+        );
         assert_eq!(types, vec![InputType::Contig, InputType::Contig]);
     }
 
@@ -409,11 +542,21 @@ mod tests {
                 contig3_f.path().to_path_buf(),
             ],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3 contigs, no ref → 3×2/2 = 3 tasks
-        assert_eq!(use_case, UseCase::Case4 { n_tasks: 3, is_msa: true });
-        assert_eq!(types, vec![InputType::Contig, InputType::Contig, InputType::Contig]);
+        assert_eq!(
+            use_case,
+            UseCase::Case4 {
+                n_tasks: 3,
+                is_msa: true
+            }
+        );
+        assert_eq!(
+            types,
+            vec![InputType::Contig, InputType::Contig, InputType::Contig]
+        );
     }
 
     #[test]
@@ -431,9 +574,16 @@ mod tests {
                 contig2_f.path().to_path_buf(),
             ],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert_eq!(use_case, UseCase::Case4 { n_tasks: 1, is_msa: true });
+        assert_eq!(
+            use_case,
+            UseCase::Case4 {
+                n_tasks: 1,
+                is_msa: true
+            }
+        );
     }
 
     // ===== Error cases =====
@@ -444,10 +594,7 @@ mod tests {
         let read = ">read1\nACGT\n";
         let read_f = write_fasta(read);
 
-        let result = detect_use_case(
-            &[read_f.path().to_path_buf()],
-            None,
-        );
+        let result = detect_use_case(&[read_f.path().to_path_buf()], None);
 
         assert!(matches!(result, Err(UseCaseError::Case1Deferred)));
     }
@@ -461,10 +608,7 @@ mod tests {
         let read2_f = write_fasta(read2);
 
         let result = detect_use_case(
-            &[
-                read1_f.path().to_path_buf(),
-                read2_f.path().to_path_buf(),
-            ],
+            &[read1_f.path().to_path_buf(), read2_f.path().to_path_buf()],
             None,
         );
 
@@ -482,10 +626,7 @@ mod tests {
     #[test]
     fn test_issue_67_invalid_file_io_error() {
         // Non-existent file should return IoError
-        let result = detect_use_case(
-            &[PathBuf::from("/nonexistent/path/file.fa")],
-            None,
-        );
+        let result = detect_use_case(&[PathBuf::from("/nonexistent/path/file.fa")], None);
         assert!(matches!(result, Err(UseCaseError::IoError(_))));
     }
 
@@ -516,7 +657,8 @@ mod tests {
         let (use_case, _) = detect_use_case(
             &[read_f.path().to_path_buf(), contig_f.path().to_path_buf()],
             Some(ref_f.path()),
-        ).unwrap();
+        )
+        .unwrap();
 
         // With reference and reads, should be Case 2
         if let UseCase::Case2 { n_tasks } = use_case {
@@ -538,7 +680,8 @@ mod tests {
         let (_, types) = detect_use_case(
             &[contig_f.path().to_path_buf(), read_f.path().to_path_buf()],
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(types.len(), 2);
         assert_eq!(types[0], InputType::Contig);
@@ -554,10 +697,8 @@ mod tests {
         let read_f = write_fastq(fastq);
         let ref_f = write_fasta(reference);
 
-        let (use_case, types) = detect_use_case(
-            &[read_f.path().to_path_buf()],
-            Some(ref_f.path()),
-        ).unwrap();
+        let (use_case, types) =
+            detect_use_case(&[read_f.path().to_path_buf()], Some(ref_f.path())).unwrap();
 
         assert_eq!(use_case, UseCase::Case2 { n_tasks: 1 });
         assert_eq!(types, vec![InputType::Read]);
