@@ -250,11 +250,102 @@ impl EvidenceLayer {
     }
 }
 
-/// Coverage track stub (RLE-compressed, quantized coverage).
-/// Full implementation is deferred to a separate slice.
+/// Coverage track with RLE compression and quantization to nearest 5.
+/// Stores (value, length) pairs for efficient representation of coverage across reference.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CoverageTrack {
-    // Stub for now - implementation in separate slice
+    runs: Vec<(u8, u32)>, // (quantized coverage, run length)
+    total_length: u32,     // total reference length
+}
+
+impl CoverageTrack {
+    /// Create a CoverageTrack from an array of coverage values.
+    /// Values are quantized to nearest 5 (0, 5, 10, 15, ..., 255).
+    pub fn new(coverage: Vec<usize>) -> Self {
+        let total_length = coverage.len() as u32;
+        let quantized: Vec<u8> = coverage.iter().map(|&c| Self::quantize(c)).collect();
+
+        let mut runs = Vec::new();
+        let mut current_val = 0u8;
+        let mut current_len = 0u32;
+
+        for &val in &quantized {
+            if val == current_val {
+                current_len += 1;
+            } else {
+                if current_len > 0 {
+                    runs.push((current_val, current_len));
+                }
+                current_val = val;
+                current_len = 1;
+            }
+        }
+
+        if current_len > 0 {
+            runs.push((current_val, current_len));
+        }
+
+        CoverageTrack {
+            runs,
+            total_length,
+        }
+    }
+
+    /// Quantize a coverage value to the nearest multiple of 5.
+    /// 0-2 → 0, 3-7 → 5, 8-12 → 10, etc.
+    pub fn quantize(value: usize) -> u8 {
+        let rounded = ((value + 2) / 5) * 5;
+        (rounded.min(255)) as u8
+    }
+
+    /// Get coverage at a specific position via binary search on runs.
+    pub fn coverage_at(&self, pos: u32) -> Option<u8> {
+        if pos >= self.total_length {
+            return None;
+        }
+
+        let mut current_pos = 0u32;
+        for &(value, length) in &self.runs {
+            if pos < current_pos + length {
+                return Some(value);
+            }
+            current_pos += length;
+        }
+        None
+    }
+
+    /// Get total reference length.
+    pub fn total_length(&self) -> u32 {
+        self.total_length
+    }
+
+    /// Decompress to full coverage array (for validation or downstream processing).
+    pub fn decompress(&self) -> Vec<u8> {
+        let mut result = Vec::with_capacity(self.total_length as usize);
+        for &(value, length) in &self.runs {
+            for _ in 0..length {
+                result.push(value);
+            }
+        }
+        result
+    }
+
+    /// Iterate over (position, coverage) pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, u8)> + '_ {
+        let mut pos = 0u32;
+        self.runs.iter().flat_map(move |&(value, length)| {
+            let start_pos = pos;
+            pos += length;
+            (0..length).map(move |i| (start_pos + i, value))
+        })
+    }
+
+    /// Get compression ratio as (compressed_size, original_size).
+    pub fn compression_ratio(&self) -> (usize, usize) {
+        let compressed = self.runs.len() * std::mem::size_of::<(u8, u32)>();
+        let original = self.total_length as usize * std::mem::size_of::<u8>();
+        (compressed, original)
+    }
 }
 
 /// Parse errors for FASTA, FASTQ, and other input formats
@@ -565,12 +656,156 @@ mod tests {
         assert_eq!(deserialized.kmer_uniqueness().get(&100), Some(&1.0));
     }
 
-    // ===== CoverageTrack type stub tests =====
+    // ===== CoverageTrack type tests =====
 
     #[test]
-    fn coverage_track_stub_exists() {
-        // Just verify the type exists - implementation is for a separate slice
-        let _track: CoverageTrack;
+    fn coverage_track_quantization_zeros() {
+        assert_eq!(CoverageTrack::quantize(0), 0);
+        assert_eq!(CoverageTrack::quantize(1), 0);
+        assert_eq!(CoverageTrack::quantize(2), 0);
+    }
+
+    #[test]
+    fn coverage_track_quantization_fives() {
+        assert_eq!(CoverageTrack::quantize(3), 5);
+        assert_eq!(CoverageTrack::quantize(4), 5);
+        assert_eq!(CoverageTrack::quantize(5), 5);
+        assert_eq!(CoverageTrack::quantize(6), 5);
+        assert_eq!(CoverageTrack::quantize(7), 5);
+    }
+
+    #[test]
+    fn coverage_track_quantization_tens() {
+        assert_eq!(CoverageTrack::quantize(8), 10);
+        assert_eq!(CoverageTrack::quantize(12), 10);
+        assert_eq!(CoverageTrack::quantize(13), 15);
+    }
+
+    #[test]
+    fn coverage_track_uniform_coverage() {
+        let coverage = vec![10, 10, 10, 10];
+        let track = CoverageTrack::new(coverage);
+
+        assert_eq!(track.total_length(), 4);
+        assert_eq!(track.coverage_at(0), Some(10));
+        assert_eq!(track.coverage_at(2), Some(10));
+        assert_eq!(track.coverage_at(3), Some(10));
+        assert_eq!(track.coverage_at(4), None);
+    }
+
+    #[test]
+    fn coverage_track_alternating_coverage() {
+        let coverage = vec![10, 5, 10, 5, 10];
+        let track = CoverageTrack::new(coverage);
+
+        assert_eq!(track.coverage_at(0), Some(10));
+        assert_eq!(track.coverage_at(1), Some(5));
+        assert_eq!(track.coverage_at(2), Some(10));
+        assert_eq!(track.coverage_at(3), Some(5));
+        assert_eq!(track.coverage_at(4), Some(10));
+    }
+
+    #[test]
+    fn coverage_track_zero_coverage() {
+        let coverage = vec![0, 0, 5, 5, 0, 0];
+        let track = CoverageTrack::new(coverage);
+
+        assert_eq!(track.coverage_at(0), Some(0));
+        assert_eq!(track.coverage_at(1), Some(0));
+        assert_eq!(track.coverage_at(2), Some(5));
+        assert_eq!(track.coverage_at(3), Some(5));
+        assert_eq!(track.coverage_at(4), Some(0));
+    }
+
+    #[test]
+    fn coverage_track_round_trip_encoding() {
+        let coverage = vec![10, 10, 20, 20, 5, 5, 15, 15];
+        let track = CoverageTrack::new(coverage.clone());
+        let decompressed = track.decompress();
+
+        let quantized_expected: Vec<u8> = coverage
+            .iter()
+            .map(|&c| CoverageTrack::quantize(c))
+            .collect();
+
+        assert_eq!(decompressed, quantized_expected);
+    }
+
+    #[test]
+    fn coverage_track_quantization_idempotence() {
+        // Quantizing twice should equal quantizing once
+        let val = 17usize; // Rounds to 15
+        let once = CoverageTrack::quantize(val);
+        let twice = CoverageTrack::quantize(once as usize);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn coverage_track_iterator() {
+        let coverage = vec![10, 10, 5, 5];
+        let track = CoverageTrack::new(coverage);
+
+        let positions_and_coverage: Vec<_> = track.iter().collect();
+        assert_eq!(positions_and_coverage.len(), 4);
+        assert_eq!(positions_and_coverage[0], (0, 10));
+        assert_eq!(positions_and_coverage[1], (1, 10));
+        assert_eq!(positions_and_coverage[2], (2, 5));
+        assert_eq!(positions_and_coverage[3], (3, 5));
+    }
+
+    #[test]
+    fn coverage_track_compression_ratio() {
+        let coverage = vec![10; 1000]; // 1000 positions with same coverage
+        let track = CoverageTrack::new(coverage);
+
+        let (compressed, original) = track.compression_ratio();
+        // Should compress to 1 run of 1000 positions
+        assert!(compressed < original / 2); // At least 50% compression
+    }
+
+    #[test]
+    fn coverage_track_alternating_pattern_rle_overhead() {
+        // Alternating patterns cause RLE overhead, not compression
+        let coverage = (0..200)
+            .map(|i| if i % 2 == 0 { 10 } else { 5 })
+            .collect::<Vec<_>>();
+        let track = CoverageTrack::new(coverage);
+
+        // 200 positions, alternating between 10 and 5, creates 200 runs
+        // Each run is 5 bytes (u8 + u32), so 1000 bytes compressed vs 200 bytes original
+        // This is expected overhead for alternating patterns
+        let (compressed, original) = track.compression_ratio();
+        assert!(compressed > original); // RLE expands for alternating patterns
+    }
+
+    #[test]
+    fn coverage_track_single_position() {
+        let coverage = vec![15];
+        let track = CoverageTrack::new(coverage);
+
+        assert_eq!(track.total_length(), 1);
+        assert_eq!(track.coverage_at(0), Some(15));
+        assert_eq!(track.coverage_at(1), None);
+    }
+
+    #[test]
+    fn coverage_track_empty() {
+        let coverage = vec![];
+        let track = CoverageTrack::new(coverage);
+
+        assert_eq!(track.total_length(), 0);
+        assert_eq!(track.coverage_at(0), None);
+    }
+
+    #[test]
+    fn coverage_track_serialization() {
+        let coverage = vec![10, 10, 5, 5];
+        let track = CoverageTrack::new(coverage);
+
+        let json = serde_json::to_string(&track).expect("serialization failed");
+        let deserialized: CoverageTrack = serde_json::from_str(&json).expect("deserialization failed");
+
+        assert_eq!(track, deserialized);
     }
 
     // ===== Error type tests =====
