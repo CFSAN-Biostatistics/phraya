@@ -99,6 +99,31 @@ pub fn select_centroid(sketches: &[MinimimizerSketch]) -> Option<usize> {
     Some(indexed_sims[median_index].0)
 }
 
+/// Seed from shared minimizer between query and target
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Seed {
+    pub query_pos: u32,
+    pub target_pos: u32,
+    pub minimizer: u64,
+}
+
+/// Find shared minimizers (seeds) between query and target sketches.
+///
+/// Seeds are anchor points where query and target share the same k-mer.
+/// Sorted by query position.
+pub fn find_seeds(query_sketch: &MinimimizerSketch, target_sketch: &MinimimizerSketch) -> Vec<Seed> {
+    let shared = query_sketch.find_shared_minimizers(target_sketch);
+
+    shared
+        .into_iter()
+        .map(|(minimizer, query_pos, target_pos)| Seed {
+            query_pos: query_pos as u32,
+            target_pos: target_pos as u32,
+            minimizer,
+        })
+        .collect()
+}
+
 /// Compute k-mer uniqueness scores from multiple sketches.
 ///
 /// For each k-mer position in the reference, counts how many sketches contain that k-mer,
@@ -457,5 +482,110 @@ mod tests {
         assert!(centroid.is_some());
         // With all identical sketches, any index is valid
         assert!(centroid.unwrap() < sketches.len());
+    }
+
+    #[test]
+    fn find_seeds_identical_sequences() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch1 = sketch_sequence(&seq, 5, 3);
+        let sketch2 = sketch_sequence(&seq, 5, 3);
+
+        let seeds = find_seeds(&sketch1, &sketch2);
+
+        // Identical sequences should find shared minimizers as seeds
+        // We're comparing two identical sketches, so we should find some shared minimizers
+        // For identical sequences, seeds should be numerous or comprehensive
+        assert!(seeds.len() > 0 || sketch1.minimizers.is_empty());
+    }
+
+    #[test]
+    fn find_seeds_different_sequences() {
+        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
+        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
+
+        let sketch1 = sketch_sequence(&seq1, 5, 3);
+        let sketch2 = sketch_sequence(&seq2, 5, 3);
+
+        let seeds = find_seeds(&sketch1, &sketch2);
+
+        // Different sequences may have few or no seeds
+        assert!(seeds.len() <= sketch1.minimizers.len());
+    }
+
+    #[test]
+    fn find_seeds_empty_sketches() {
+        let empty1 = MinimimizerSketch {
+            minimizers: vec![],
+            k: 5,
+            w: 3,
+        };
+        let empty2 = MinimimizerSketch {
+            minimizers: vec![],
+            k: 5,
+            w: 3,
+        };
+
+        let seeds = find_seeds(&empty1, &empty2);
+        assert!(seeds.is_empty());
+    }
+
+    #[test]
+    fn find_seeds_sorted_by_query_pos() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch = sketch_sequence(&seq, 5, 3);
+
+        let seeds = find_seeds(&sketch, &sketch);
+
+        // Seeds should be sorted by query position
+        for window in seeds.windows(2) {
+            if let [a, b] = window {
+                assert!(a.query_pos <= b.query_pos);
+            }
+        }
+    }
+
+    #[test]
+    fn find_seeds_matching_minimizers() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch = sketch_sequence(&seq, 5, 3);
+
+        let seeds = find_seeds(&sketch, &sketch);
+
+        // All seeds should have minimizers present in both sketches
+        let query_minimizers: std::collections::HashSet<_> = sketch.minimizers.iter().map(|&(m, _)| m).collect();
+        for seed in &seeds {
+            assert!(query_minimizers.contains(&seed.minimizer));
+        }
+    }
+
+    #[test]
+    fn find_seeds_single_vs_empty() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch_nonempty = sketch_sequence(&seq, 5, 3);
+        let sketch_empty = MinimimizerSketch {
+            minimizers: vec![],
+            k: 5,
+            w: 3,
+        };
+
+        let seeds1 = find_seeds(&sketch_nonempty, &sketch_empty);
+        let seeds2 = find_seeds(&sketch_empty, &sketch_nonempty);
+
+        assert!(seeds1.is_empty());
+        assert!(seeds2.is_empty());
+    }
+
+    #[test]
+    fn find_seeds_seed_positions_valid() {
+        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let sketch = sketch_sequence(&seq, 5, 3);
+
+        let seeds = find_seeds(&sketch, &sketch);
+
+        // Seed positions should be within sequence bounds
+        for seed in &seeds {
+            assert!(seed.query_pos < seq.len() as u32);
+            assert!(seed.target_pos < seq.len() as u32);
+        }
     }
 }
