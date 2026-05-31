@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use log::info;
 use phraya_core::types::Sequence;
 use phraya_index::{compute_kmer_uniqueness, sketch_sequence_default};
-use phraya_io::{plan::{self, PhrayaPlan, UseCase, write_plan}, SequenceParser};
+use phraya_io::{plan::{self, PhrayaPlan, UseCase, write_plan}, SequenceParser, phraya};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -35,6 +35,16 @@ enum Commands {
         #[arg(value_name = "PLAN_FILE")]
         plan_file: PathBuf,
     },
+    /// Merge multiple .phraya files into a single file
+    Merge {
+        /// Input .phraya files to merge
+        #[arg(value_name = "FILE", required = true)]
+        inputs: Vec<PathBuf>,
+
+        /// Output merged .phraya file
+        #[arg(long, value_name = "FILE", required = true)]
+        output: PathBuf,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -55,6 +65,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::PlanTasks { plan_file } => {
             plan_tasks(&plan_file)?;
+        }
+        Commands::Merge { inputs, output } => {
+            run_merge(&inputs, &output)?;
         }
     }
 
@@ -248,4 +261,28 @@ fn use_case_number(use_case: &UseCase) -> u32 {
         UseCase::ContigsWithReads => 3,
         UseCase::ContigsOnly => 4,
     }
+}
+
+fn run_merge(
+    input_paths: &[PathBuf],
+    output_path: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if input_paths.is_empty() {
+        return Err("No input files specified".into());
+    }
+
+    eprintln!("Merging {} samples...", input_paths.len());
+
+    // Convert PathBuf references to &Path for the merge function
+    let paths: Vec<&std::path::Path> = input_paths.iter().map(|p| p.as_path()).collect();
+
+    // Merge the files
+    let merged = phraya::merge_phraya_files(&paths)?;
+
+    // Write the merged file
+    phraya::write_phraya(output_path, &merged)?;
+
+    eprintln!("Merged file written to {:?}", output_path);
+
+    Ok(())
 }
