@@ -1,6 +1,9 @@
 pub mod plan;
 pub mod phraya;
 pub mod queries;
+pub mod use_case;
+
+pub use use_case::{detect_use_case, classify_input, InputType, UseCase, UseCaseError};
 
 use phraya_core::types::{ParseError, Sequence};
 use std::io::{BufRead, BufReader, Read};
