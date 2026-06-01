@@ -1,8 +1,7 @@
 use phraya_core::types::VariantObservation;
-use std::collections::HashMap;
 
-pub mod vcf;
 pub mod tsv;
+pub mod vcf;
 
 /// Threshold-based filter configuration
 #[derive(Debug, Clone)]
@@ -137,8 +136,7 @@ impl ThresholdFilter {
                 return false;
             }
 
-            let ref_count = obs.all_alleles().get(&obs.ref_base()).copied().unwrap_or(0);
-            let ref_freq = ref_count as f64 / total as f64;
+            let _ref_count = obs.all_alleles().get(&obs.ref_base()).copied().unwrap_or(0);
 
             // Only fail if ref base doesn't meet frequency (check all alleles)
             let max_alt_freq = obs
@@ -265,19 +263,10 @@ mod tests {
 
         // Composition: filter(min=10) then filter(min=20) should equal filter(min=20)
         let observations = vec![obs.clone()];
-        let filtered1: Vec<_> = observations
-            .iter()
-            .filter(|o| filter1.apply(o))
-            .collect();
-        let filtered2: Vec<_> = filtered1
-            .iter()
-            .filter(|o| filter2.apply(o))
-            .collect();
+        let filtered1: Vec<_> = observations.iter().filter(|o| filter1.apply(o)).collect();
+        let filtered2: Vec<_> = filtered1.iter().filter(|o| filter2.apply(o)).collect();
 
-        let filtered_direct: Vec<_> = observations
-            .iter()
-            .filter(|o| filter2.apply(o))
-            .collect();
+        let filtered_direct: Vec<_> = observations.iter().filter(|o| filter2.apply(o)).collect();
 
         assert_eq!(filtered2.len(), filtered_direct.len());
     }
@@ -360,8 +349,16 @@ mod tests {
         alleles.insert(b'T', 10); // 10% frequency
 
         let obs = VariantObservation::new(
-            100, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
-            vec![100], 35.0, "test:read".to_string(),
+            100,
+            b'A',
+            alleles,
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![100],
+            35.0,
+            "test:read".to_string(),
         );
 
         let filter = FilterBuilder::new().min_allele_frequency(0.05).build();

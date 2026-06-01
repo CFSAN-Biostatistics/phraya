@@ -103,7 +103,11 @@ fn kmer_to_u64(kmer: &[u8]) -> u64 {
 /// Get reverse complement of a k-mer value
 #[inline]
 fn reverse_complement_u64(value: u64, k: usize) -> u64 {
-    let mask = if k < 32 { (1u64 << (2 * k)) - 1 } else { u64::MAX };
+    let mask = if k < 32 {
+        (1u64 << (2 * k)) - 1
+    } else {
+        u64::MAX
+    };
     let mut rc = 0u64;
     let mut v = value;
     for _ in 0..k {
@@ -150,11 +154,7 @@ pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimimizerSketch {
     // Handle edge cases: sequence shorter than k
     if sequence.len() < k {
         // Just return empty sketch when sequence is too short
-        return MinimimizerSketch {
-            minimizers,
-            k,
-            w,
-        };
+        return MinimimizerSketch { minimizers, k, w };
     }
 
     // If w is 0 or greater than sequence length, adjust
@@ -397,7 +397,12 @@ mod tests {
         let sketch = sketch(seq, 5, 3);
 
         for &(_, pos) in &sketch.minimizers {
-            assert!(pos < seq.len(), "Position {} >= sequence length {}", pos, seq.len());
+            assert!(
+                pos < seq.len(),
+                "Position {} >= sequence length {}",
+                pos,
+                seq.len()
+            );
             assert!(
                 pos + sketch.k <= seq.len(),
                 "Position {} + k {} exceeds sequence length {}",
@@ -558,12 +563,14 @@ mod tests {
     fn test_performance_shared_minimizers_large_sketches() {
         // Finding shared minimizers between large sketches should be fast
         let size = 100_000;
-        let seq1: Vec<u8> = (0..size).map(|i| match i % 4 {
-            0 => b'A',
-            1 => b'C',
-            2 => b'G',
-            _ => b'T',
-        }).collect();
+        let seq1: Vec<u8> = (0..size)
+            .map(|i| match i % 4 {
+                0 => b'A',
+                1 => b'C',
+                2 => b'G',
+                _ => b'T',
+            })
+            .collect();
         let mut seq2 = seq1.clone();
         // Mutate ~1% of seq2
         for i in (0..size).step_by(100) {

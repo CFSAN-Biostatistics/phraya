@@ -1,7 +1,7 @@
+pub mod executor;
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
 pub mod wfa_simd_safety;
-pub mod executor;
 
 /// Seed anchor position for WFA extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,7 +109,10 @@ pub fn score_alignments(alignments: &[Alignment], query_len: usize) -> ScoredAli
         .cloned()
         .collect();
 
-    ScoredAlignments { primary, alternatives }
+    ScoredAlignments {
+        primary,
+        alternatives,
+    }
 }
 
 #[cfg(test)]

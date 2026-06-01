@@ -1,5 +1,5 @@
+use phraya_core::types::{CoverageTrack, VariantObservation};
 use serde::{Deserialize, Serialize};
-use phraya_core::types::{VariantObservation, CoverageTrack};
 use thiserror::Error;
 
 /// .phraya format version
@@ -66,22 +66,20 @@ impl PhrayaFile {
 
 /// Write PhrayaFile to compressed binary format
 pub fn write_phraya(path: &std::path::Path, file: &PhrayaFile) -> Result<(), PhrayaError> {
-    let serialized = rmp_serde::to_vec(file)
-        .map_err(|e| PhrayaError::SerializationError(e.to_string()))?;
+    let serialized =
+        rmp_serde::to_vec(file).map_err(|e| PhrayaError::SerializationError(e.to_string()))?;
 
     let compressed = zstd::encode_all(&serialized[..], 3)
         .map_err(|e| PhrayaError::CompressionError(e.to_string()))?;
 
-    std::fs::write(path, compressed)
-        .map_err(|e| PhrayaError::IoError(e.to_string()))?;
+    std::fs::write(path, compressed).map_err(|e| PhrayaError::IoError(e.to_string()))?;
 
     Ok(())
 }
 
 /// Read PhrayaFile from compressed binary format
 pub fn read_phraya(path: &std::path::Path) -> Result<PhrayaFile, PhrayaError> {
-    let compressed = std::fs::read(path)
-        .map_err(|e| PhrayaError::IoError(e.to_string()))?;
+    let compressed = std::fs::read(path).map_err(|e| PhrayaError::IoError(e.to_string()))?;
 
     let decompressed = zstd::decode_all(&compressed[..])
         .map_err(|e| PhrayaError::DecompressionError(e.to_string()))?;
@@ -183,8 +181,8 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::collections::HashMap;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn round_trip_empty_observations() {
@@ -212,8 +210,16 @@ mod tests {
         alleles.insert(b'T', 5);
 
         let obs = VariantObservation::new(
-            100, b'A', alleles, 0.95, "10M".to_string(), 60, 2,
-            vec![10, 12, 15, 18, 20], 35.5, "sample1:read42".to_string(),
+            100,
+            b'A',
+            alleles,
+            0.95,
+            "10M".to_string(),
+            60,
+            2,
+            vec![10, 12, 15, 18, 20],
+            35.5,
+            "sample1:read42".to_string(),
         );
 
         let coverage = CoverageTrack::new(vec![10; 200]);
@@ -242,8 +248,16 @@ mod tests {
             alleles.insert(b'A', (i % 100) as u32 + 1);
 
             let obs = VariantObservation::new(
-                i as u32, b'A', alleles, 0.95, format!("{}M", 10 + (i % 5)),
-                (i % 60) as u8, 0, vec![10], 35.0, format!("sample:read{}", i),
+                i as u32,
+                b'A',
+                alleles,
+                0.95,
+                format!("{}M", 10 + (i % 5)),
+                (i % 60) as u8,
+                0,
+                vec![10],
+                35.0,
+                format!("sample:read{}", i),
             );
             observations.push(obs);
         }
@@ -272,11 +286,13 @@ mod tests {
         alleles.insert(b'A', 3);
 
         let obs = VariantObservation::new(
-            300, b'G',
+            300,
+            b'G',
             alleles.clone(),
             0.99,
             "25M".to_string(),
-            60, 0,
+            60,
+            0,
             vec![15, 16, 18, 20],
             42.0,
             "sample4:read5".to_string(),
@@ -345,8 +361,16 @@ mod tests {
             alleles.insert(b'A', 50);
 
             let obs = VariantObservation::new(
-                i as u32, b'A', alleles, 0.95, "50M".to_string(),
-                60, 0, vec![50], 35.0, format!("sample:read{}", i),
+                i as u32,
+                b'A',
+                alleles,
+                0.95,
+                "50M".to_string(),
+                60,
+                0,
+                vec![50],
+                35.0,
+                format!("sample:read{}", i),
             );
             observations.push(obs);
         }
@@ -410,28 +434,50 @@ mod tests {
         alleles1.insert(b'A', 10);
 
         let obs1 = VariantObservation::new(
-            50, b'A', alleles1, 0.95, "10M".to_string(), 60, 0,
-            vec![10], 35.0, "sample1:read1".to_string(),
+            50,
+            b'A',
+            alleles1,
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample1:read1".to_string(),
         );
 
         let mut alleles2 = HashMap::new();
         alleles2.insert(b'T', 5);
 
         let obs2 = VariantObservation::new(
-            50, b'T', alleles2, 0.90, "10M".to_string(), 50, 1,
-            vec![5], 30.0, "sample2:read1".to_string(),
+            50,
+            b'T',
+            alleles2,
+            0.90,
+            "10M".to_string(),
+            50,
+            1,
+            vec![5],
+            30.0,
+            "sample2:read1".to_string(),
         );
 
         let coverage1 = CoverageTrack::new(vec![10; 100]);
         let file1 = PhrayaFile::new(
-            100, "sample1".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![obs1], coverage1,
+            100,
+            "sample1".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs1],
+            coverage1,
         );
 
         let coverage2 = CoverageTrack::new(vec![5; 100]);
         let file2 = PhrayaFile::new(
-            100, "sample2".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![obs2], coverage2,
+            100,
+            "sample2".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs2],
+            coverage2,
         );
 
         let temp1 = NamedTempFile::new().unwrap();
@@ -451,28 +497,50 @@ mod tests {
         alleles1.insert(b'A', 10);
 
         let obs1 = VariantObservation::new(
-            25, b'A', alleles1, 0.95, "10M".to_string(), 60, 0,
-            vec![10], 35.0, "sample1:read1".to_string(),
+            25,
+            b'A',
+            alleles1,
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample1:read1".to_string(),
         );
 
         let mut alleles2 = HashMap::new();
         alleles2.insert(b'T', 5);
 
         let obs2 = VariantObservation::new(
-            75, b'T', alleles2, 0.90, "10M".to_string(), 50, 1,
-            vec![5], 30.0, "sample2:read1".to_string(),
+            75,
+            b'T',
+            alleles2,
+            0.90,
+            "10M".to_string(),
+            50,
+            1,
+            vec![5],
+            30.0,
+            "sample2:read1".to_string(),
         );
 
         let coverage1 = CoverageTrack::new(vec![10; 100]);
         let file1 = PhrayaFile::new(
-            100, "sample1".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![obs1], coverage1,
+            100,
+            "sample1".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs1],
+            coverage1,
         );
 
         let coverage2 = CoverageTrack::new(vec![5; 100]);
         let file2 = PhrayaFile::new(
-            100, "sample2".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![obs2], coverage2,
+            100,
+            "sample2".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs2],
+            coverage2,
         );
 
         let temp1 = NamedTempFile::new().unwrap();
@@ -492,14 +560,20 @@ mod tests {
     fn merge_coverage_summing() {
         let coverage1 = CoverageTrack::new(vec![5, 5, 5, 5]);
         let file1 = PhrayaFile::new(
-            4, "sample1".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![], coverage1,
+            4,
+            "sample1".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![],
+            coverage1,
         );
 
         let coverage2 = CoverageTrack::new(vec![10, 10, 10, 10]);
         let file2 = PhrayaFile::new(
-            4, "sample2".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![], coverage2,
+            4,
+            "sample2".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![],
+            coverage2,
         );
 
         let temp1 = NamedTempFile::new().unwrap();
@@ -522,14 +596,25 @@ mod tests {
         alleles.insert(b'A', 10);
 
         let obs = VariantObservation::new(
-            50, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
-            vec![10], 35.0, "sample:read".to_string(),
+            50,
+            b'A',
+            alleles,
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
         );
 
         let coverage = CoverageTrack::new(vec![10; 100]);
         let file = PhrayaFile::new(
-            100, "test".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![obs], coverage,
+            100,
+            "test".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs],
+            coverage,
         );
 
         let temp1 = NamedTempFile::new().unwrap();
@@ -548,8 +633,11 @@ mod tests {
     fn merge_empty_files() {
         let coverage = CoverageTrack::new(vec![10; 100]);
         let file = PhrayaFile::new(
-            100, "empty".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![], coverage,
+            100,
+            "empty".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![],
+            coverage,
         );
 
         let temp1 = NamedTempFile::new().unwrap();
@@ -568,14 +656,25 @@ mod tests {
         alleles.insert(b'A', 10);
 
         let obs = VariantObservation::new(
-            50, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
-            vec![10], 35.0, "sample:read".to_string(),
+            50,
+            b'A',
+            alleles,
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
         );
 
         let coverage = CoverageTrack::new(vec![10; 100]);
         let file = PhrayaFile::new(
-            100, "single".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![obs], coverage,
+            100,
+            "single".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs],
+            coverage,
         );
 
         let temp = NamedTempFile::new().unwrap();
@@ -591,14 +690,20 @@ mod tests {
     fn merge_mismatched_reference_length_error() {
         let coverage1 = CoverageTrack::new(vec![10; 100]);
         let file1 = PhrayaFile::new(
-            100, "sample1".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![], coverage1,
+            100,
+            "sample1".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![],
+            coverage1,
         );
 
         let coverage2 = CoverageTrack::new(vec![5; 200]);
         let file2 = PhrayaFile::new(
-            200, "sample2".to_string(), "2026-05-31T12:00:00Z".to_string(),
-            vec![], coverage2,
+            200,
+            "sample2".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![],
+            coverage2,
         );
 
         let temp1 = NamedTempFile::new().unwrap();

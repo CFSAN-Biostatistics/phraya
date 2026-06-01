@@ -66,11 +66,11 @@ jobs:
           # Try running integration tests for this issue
           if cargo test --test "*" --ignored 2>&1 | grep -q "issue_${ISSUE}"; then
             echo "Running integration tests for issue #$ISSUE"
-            cargo test --test "*" --ignored -- "issue_${ISSUE}" --verbose
+            cargo test --test "*" --ignored -- "issue_${ISSUE}"
           else
             echo "Running unit tests for issue #$ISSUE"
             # Try to run lib tests that match the issue pattern
-            cargo test --lib -- "issue_${ISSUE}" --verbose --test-threads=1
+            cargo test --lib -- "issue_${ISSUE}" --test-threads=1
           fi
 
   no-issue:

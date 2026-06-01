@@ -1,7 +1,7 @@
+use phraya_index::MinimimizerSketch;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use phraya_index::MinimimizerSketch;
 use thiserror::Error;
 
 /// PhrayaPlan format version for forward compatibility
@@ -79,16 +79,15 @@ impl PhrayaPlan {
 /// Write PhrayaPlan to compressed binary file
 pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
     // Serialize using MessagePack
-    let serialized = rmp_serde::to_vec(plan)
-        .map_err(|e| PlanError::SerializationError(e.to_string()))?;
+    let serialized =
+        rmp_serde::to_vec(plan).map_err(|e| PlanError::SerializationError(e.to_string()))?;
 
     // Compress using zstd
     let compressed = zstd::encode_all(&serialized[..], 3)
         .map_err(|e| PlanError::CompressionError(e.to_string()))?;
 
     // Write to file
-    std::fs::write(path, compressed)
-        .map_err(|e| PlanError::IoError(e.to_string()))?;
+    std::fs::write(path, compressed).map_err(|e| PlanError::IoError(e.to_string()))?;
 
     Ok(())
 }
@@ -96,8 +95,7 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
 /// Read PhrayaPlan from compressed binary file
 pub fn read_plan(path: &Path) -> Result<PhrayaPlan, PlanError> {
     // Read file
-    let compressed = std::fs::read(path)
-        .map_err(|e| PlanError::IoError(e.to_string()))?;
+    let compressed = std::fs::read(path).map_err(|e| PlanError::IoError(e.to_string()))?;
 
     // Decompress using zstd
     let decompressed = zstd::decode_all(&compressed[..])

@@ -1,9 +1,13 @@
 use clap::{Parser, Subcommand};
 use log::info;
 use phraya_core::types::Sequence;
-use phraya_filter::{FilterBuilder, vcf};
+use phraya_filter::{vcf, FilterBuilder};
 use phraya_index::{compute_kmer_uniqueness, sketch_sequence_default};
-use phraya_io::{plan::{self, PhrayaPlan, UseCase, write_plan}, SequenceParser, phraya};
+use phraya_io::{
+    phraya,
+    plan::{self, write_plan, PhrayaPlan, UseCase},
+    SequenceParser,
+};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -79,10 +83,7 @@ enum Commands {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder()
-        .is_test(false)
-        .try_init()
-        .ok();
+    env_logger::builder().is_test(false).try_init().ok();
 
     let cli = Cli::parse();
 
@@ -109,7 +110,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
             output,
         } => {
-            run_filter(&input, min_coverage, max_coverage, min_mapq, max_mapq, &format, output.as_deref())?;
+            run_filter(
+                &input,
+                min_coverage,
+                max_coverage,
+                min_mapq,
+                max_mapq,
+                &format,
+                output.as_deref(),
+            )?;
         }
     }
 
@@ -173,13 +182,22 @@ fn run_plan(
         &all_sequences,
     );
 
-    eprintln!("Detected Case {}: {:?}", use_case_number(&use_case), format!("{:?}", use_case));
+    eprintln!(
+        "Detected Case {}: {:?}",
+        use_case_number(&use_case),
+        format!("{:?}", use_case)
+    );
 
     // Compute k-mer uniqueness
     let kmer_uniqueness = compute_kmer_uniqueness(&sketches);
 
     // Generate task list based on use case
-    let task_list = generate_task_list(&use_case, input_paths.len(), reference_path.is_some(), &sketches);
+    let task_list = generate_task_list(
+        &use_case,
+        input_paths.len(),
+        reference_path.is_some(),
+        &sketches,
+    );
 
     // Create and write plan
     let plan = PhrayaPlan::new(
@@ -340,7 +358,11 @@ fn run_filter(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate format
     if !["vcf", "tsv", "phraya"].contains(&format) {
-        return Err(format!("Invalid format '{}'. Must be one of: vcf, tsv, phraya", format).into());
+        return Err(format!(
+            "Invalid format '{}'. Must be one of: vcf, tsv, phraya",
+            format
+        )
+        .into());
     }
 
     // Read the .phraya file
@@ -366,10 +388,7 @@ fn run_filter(
     let filter = filter_builder.build();
 
     // Apply filter to observations
-    let filtered_observations: Vec<_> = filter
-        .filter(&phraya_file.observations)
-        .cloned()
-        .collect();
+    let filtered_observations: Vec<_> = filter.filter(&phraya_file.observations).cloned().collect();
 
     let final_count = filtered_observations.len();
     eprintln!("Filtered {} → {} observations", initial_count, final_count);
@@ -407,7 +426,9 @@ fn run_filter(
     Ok(())
 }
 
-fn output_tsv(observations: &[phraya_core::types::VariantObservation]) -> Result<(), Box<dyn std::error::Error>> {
+fn output_tsv(
+    observations: &[phraya_core::types::VariantObservation],
+) -> Result<(), Box<dyn std::error::Error>> {
     // Output TSV header
     println!("position\tref_base\tall_alleles\tmapq\tconfidence\tcigar\tedit_distance\tcoverage\tavg_base_quality\tprovenance");
 

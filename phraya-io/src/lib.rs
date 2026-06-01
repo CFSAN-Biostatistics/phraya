@@ -1,15 +1,15 @@
-pub mod plan;
 pub mod phraya;
+pub mod plan;
 pub mod queries;
 pub mod use_case;
 
-pub use use_case::{detect_use_case, classify_input, InputType, UseCase, UseCaseError};
+pub use use_case::{classify_input, detect_use_case, InputType, UseCase, UseCaseError};
 
-use phraya_core::types::{ParseError, Sequence};
-use std::io::{BufRead, BufReader, Read};
-use std::fs::File;
-use std::path::Path;
 use flate2::read::GzDecoder;
+use phraya_core::types::{ParseError, Sequence};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 
 /// Parser for FASTA and FASTQ files with auto-detection.
 pub struct SequenceParser;
@@ -18,15 +18,15 @@ impl SequenceParser {
     /// Parse sequences from a file (FASTA or FASTQ auto-detected, with optional gzip).
     /// Supports .fa/.fasta/.fq/.fastq and .gz variants.
     /// Returns an iterator of Sequence objects.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Box<dyn Iterator<Item = Result<Sequence, ParseError>>>, ParseError> {
+    pub fn from_path<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<Box<dyn Iterator<Item = Result<Sequence, ParseError>>>, ParseError> {
         let path = path.as_ref();
 
         let file = File::open(path)
             .map_err(|e| ParseError::InvalidFormat(format!("failed to open file: {}", e)))?;
 
-        let is_gzipped = path.as_os_str()
-            .to_string_lossy()
-            .ends_with(".gz");
+        let is_gzipped = path.as_os_str().to_string_lossy().ends_with(".gz");
 
         if is_gzipped {
             let reader = GzDecoder::new(file);
@@ -36,7 +36,9 @@ impl SequenceParser {
         }
     }
 
-    fn parse_reader<R: Read + 'static>(reader: R) -> Result<Box<dyn Iterator<Item = Result<Sequence, ParseError>>>, ParseError> {
+    fn parse_reader<R: Read + 'static>(
+        reader: R,
+    ) -> Result<Box<dyn Iterator<Item = Result<Sequence, ParseError>>>, ParseError> {
         let buf_reader = BufReader::new(reader);
         let mut lines = buf_reader.lines();
 
@@ -83,7 +85,11 @@ struct SequenceIterator {
 }
 
 impl SequenceIterator {
-    fn new<R: BufRead + 'static>(format: Format, first_line: String, lines: std::io::Lines<R>) -> Self {
+    fn new<R: BufRead + 'static>(
+        format: Format,
+        first_line: String,
+        lines: std::io::Lines<R>,
+    ) -> Self {
         SequenceIterator {
             format,
             lines: Box::new(lines),
@@ -136,30 +142,50 @@ impl SequenceIterator {
 
         let seq_line = match self.lines.next() {
             Some(Ok(line)) => line,
-            Some(Err(e)) => return Some(Err(ParseError::InvalidFormat(format!("io error: {}", e)))),
-            None => return Some(Err(ParseError::InvalidFormat("unexpected EOF: missing sequence".to_string()))),
+            Some(Err(e)) => {
+                return Some(Err(ParseError::InvalidFormat(format!("io error: {}", e))))
+            }
+            None => {
+                return Some(Err(ParseError::InvalidFormat(
+                    "unexpected EOF: missing sequence".to_string(),
+                )))
+            }
         };
 
         let bases = seq_line.as_bytes().to_vec();
 
         match self.lines.next() {
-            Some(Ok(_)) => {},
-            Some(Err(e)) => return Some(Err(ParseError::InvalidFormat(format!("io error: {}", e)))),
-            None => return Some(Err(ParseError::InvalidFormat("unexpected EOF: missing plus".to_string()))),
+            Some(Ok(_)) => {}
+            Some(Err(e)) => {
+                return Some(Err(ParseError::InvalidFormat(format!("io error: {}", e))))
+            }
+            None => {
+                return Some(Err(ParseError::InvalidFormat(
+                    "unexpected EOF: missing plus".to_string(),
+                )))
+            }
         };
 
         let qual_line = match self.lines.next() {
             Some(Ok(line)) => line,
-            Some(Err(e)) => return Some(Err(ParseError::InvalidFormat(format!("io error: {}", e)))),
-            None => return Some(Err(ParseError::InvalidFormat("unexpected EOF: missing quality".to_string()))),
+            Some(Err(e)) => {
+                return Some(Err(ParseError::InvalidFormat(format!("io error: {}", e))))
+            }
+            None => {
+                return Some(Err(ParseError::InvalidFormat(
+                    "unexpected EOF: missing quality".to_string(),
+                )))
+            }
         };
 
         let quality = qual_line.as_bytes().to_vec();
 
         if quality.len() != bases.len() {
-            return Some(Err(ParseError::InvalidFormat(
-                format!("quality score length ({}) != sequence length ({})", quality.len(), bases.len()),
-            )));
+            return Some(Err(ParseError::InvalidFormat(format!(
+                "quality score length ({}) != sequence length ({})",
+                quality.len(),
+                bases.len()
+            ))));
         }
 
         if let Some(Ok(line)) = self.lines.next() {
@@ -316,9 +342,9 @@ mod tests {
 
     #[test]
     fn parse_gzipped_fasta() {
-        use std::io::Write;
         use flate2::write::GzEncoder;
         use flate2::Compression;
+        use std::io::Write;
 
         let mut temp = NamedTempFile::new().unwrap();
         let mut encoder = GzEncoder::new(temp.as_file(), Compression::default());
@@ -341,9 +367,9 @@ mod tests {
 
     #[test]
     fn parse_gzipped_fastq() {
-        use std::io::Write;
         use flate2::write::GzEncoder;
         use flate2::Compression;
+        use std::io::Write;
 
         let mut temp = NamedTempFile::new().unwrap();
         let mut encoder = GzEncoder::new(temp.as_file(), Compression::default());
