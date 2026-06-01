@@ -1,12 +1,11 @@
+use std::collections::HashMap;
 /// Acceptance tests for Issue #58: Phase 1 MVP - Evidence-Informed Alignment with Deferred Filtering
 /// Tests validate end-to-end MVP functionality for use cases 2, 3, 4 (case 1 deferred to Phase 2).
 ///
 /// RED phase: All tests fail initially (feature not yet implemented).
 /// Tests verify external contracts only: CLI interfaces, file formats, error codes.
-
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::collections::HashMap;
 use tempfile::TempDir;
 
 // ============================================================================
@@ -52,8 +51,8 @@ fn create_phraya_file(
     observations: Vec<(u32, u8, HashMap<u8, u32>, u8)>, // position, ref_base, alleles, mapq
     reference_length: u32,
 ) -> PathBuf {
-    use phraya_core::types::{VariantObservation, CoverageTrack};
-    use phraya_io::phraya::{PhrayaFile, write_phraya};
+    use phraya_core::types::{CoverageTrack, VariantObservation};
+    use phraya_io::phraya::{write_phraya, PhrayaFile};
 
     let path = dir.join(filename);
 
@@ -97,7 +96,7 @@ fn create_phraya_file(
 #[test]
 #[ignore = "test: implement .phrayaplan format write/read (issue #58)"]
 fn issue_58_phrayaplan_format_round_trip() {
-    use phraya_io::plan::{PhrayaPlan, UseCase, write_plan, read_plan};
+    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
 
     let temp_dir = TempDir::new().unwrap();
     let plan_path = temp_dir.path().join("test.phrayaplan");
@@ -107,8 +106,8 @@ fn issue_58_phrayaplan_format_round_trip() {
         UseCase::ReadsWithRef,
         vec!["ref.fa".to_string(), "reads.fq".to_string()],
         "2026-06-01T12:00:00Z".to_string(),
-        vec![], // sketches
-        HashMap::new(), // kmer_uniqueness
+        vec![],               // sketches
+        HashMap::new(),       // kmer_uniqueness
         vec![(1, 0), (2, 0)], // task_list
     );
 
@@ -143,7 +142,7 @@ fn issue_58_phrayaplan_format_round_trip() {
 #[test]
 #[ignore = "test: implement .phrayaplan format fields (issue #58)"]
 fn issue_58_phrayaplan_contains_required_fields() {
-    use phraya_io::plan::{PhrayaPlan, UseCase, write_plan, read_plan};
+    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
 
     let temp_dir = TempDir::new().unwrap();
     let plan_path = temp_dir.path().join("test.phrayaplan");
@@ -165,16 +164,29 @@ fn issue_58_phrayaplan_contains_required_fields() {
     let read_back = read_plan(&plan_path).unwrap();
 
     // Verify timestamp is present
-    assert!(!read_back.timestamp.is_empty(), "timestamp should be present");
+    assert!(
+        !read_back.timestamp.is_empty(),
+        "timestamp should be present"
+    );
 
     // Verify input files list
-    assert!(!read_back.input_files.is_empty(), "input_files should be populated");
+    assert!(
+        !read_back.input_files.is_empty(),
+        "input_files should be populated"
+    );
 
     // Verify k-mer uniqueness is present (even if empty for now)
-    assert!(read_back.kmer_uniqueness.len() > 0, "kmer_uniqueness should be populated");
+    assert!(
+        read_back.kmer_uniqueness.len() > 0,
+        "kmer_uniqueness should be populated"
+    );
 
     // Verify task_list is present
-    assert_eq!(read_back.task_list.len(), 3, "task_list should have 3 tasks");
+    assert_eq!(
+        read_back.task_list.len(),
+        3,
+        "task_list should have 3 tasks"
+    );
 }
 
 // ============================================================================
@@ -191,15 +203,26 @@ fn issue_58_use_case_case2_reads_with_reference() {
     let ref_path = create_fasta_file(
         temp_path,
         "reference.fa",
-        &[("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")],
+        &[(
+            "ref",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        )],
     );
 
     let reads_path = create_fastq_file(
         temp_path,
         "reads.fq",
         &[
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
-            ("read2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
+            (
+                "read2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
         ],
     );
     // Note: Both sequences are 52 bases, quality string is 52 'I' chars
@@ -250,17 +273,25 @@ fn issue_58_use_case_case3_contigs_with_reads() {
         temp_path,
         "contigs.fa",
         &[
-            ("contig1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("contig2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA"),
+            (
+                "contig1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "contig2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA",
+            ),
         ],
     );
 
     let reads_path = create_fastq_file(
         temp_path,
         "reads.fq",
-        &[
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
-        ],
+        &[(
+            "read1",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+        )],
     );
     // Note: Sequence is 52 bases, quality string is 52 'I' chars
 
@@ -308,9 +339,18 @@ fn issue_58_use_case_case4_contigs_only() {
         temp_path,
         "contigs.fa",
         &[
-            ("contig1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("contig2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA"),
-            ("contig3", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGC"),
+            (
+                "contig1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "contig2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA",
+            ),
+            (
+                "contig3",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGC",
+            ),
         ],
     );
 
@@ -349,7 +389,7 @@ fn issue_58_use_case_case4_contigs_only() {
 #[test]
 #[ignore = "test: implement task list for case 2 (issue #58)"]
 fn issue_58_task_list_case2_one_per_read() {
-    use phraya_io::plan::{PhrayaPlan, UseCase, write_plan, read_plan};
+    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
 
     let temp_dir = TempDir::new().unwrap();
     let plan_path = temp_dir.path().join("test.phrayaplan");
@@ -367,7 +407,11 @@ fn issue_58_task_list_case2_one_per_read() {
     write_plan(&plan_path, &plan).unwrap();
     let read_plan = read_plan(&plan_path).unwrap();
 
-    assert_eq!(read_plan.task_list.len(), 3, "should have 3 tasks for 3 reads");
+    assert_eq!(
+        read_plan.task_list.len(),
+        3,
+        "should have 3 tasks for 3 reads"
+    );
 
     // All tasks should target reference (index 0)
     for (query_id, target_id) in &read_plan.task_list {
@@ -380,7 +424,7 @@ fn issue_58_task_list_case2_one_per_read() {
 #[test]
 #[ignore = "test: implement task list structure (issue #58)"]
 fn issue_58_task_list_structure_valid() {
-    use phraya_io::plan::{PhrayaPlan, UseCase, write_plan, read_plan};
+    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
 
     let temp_dir = TempDir::new().unwrap();
     let plan_path = temp_dir.path().join("test.phrayaplan");
@@ -578,7 +622,11 @@ fn issue_58_coverage_track_position_lookup() {
     assert_eq!(track.coverage_at(3), Some(5));
     assert_eq!(track.coverage_at(4), Some(15));
     assert_eq!(track.coverage_at(5), Some(15));
-    assert_eq!(track.coverage_at(6), None, "out of bounds should return None");
+    assert_eq!(
+        track.coverage_at(6),
+        None,
+        "out of bounds should return None"
+    );
 }
 
 // ============================================================================
@@ -589,7 +637,7 @@ fn issue_58_coverage_track_position_lookup() {
 #[test]
 #[ignore = "test: implement query index write/read (issue #58)"]
 fn issue_58_query_index_round_trip() {
-    use phraya_io::queries::{write_queries, read_queries};
+    use phraya_io::queries::{read_queries, write_queries};
     use std::collections::HashMap;
 
     let temp_dir = TempDir::new().unwrap();
@@ -597,7 +645,10 @@ fn issue_58_query_index_round_trip() {
 
     // Create query index: query_id -> list of (position, score)
     let mut queries = HashMap::new();
-    queries.insert("query_0".to_string(), vec![(100u32, 0.98f64), (200u32, 0.96f64)]);
+    queries.insert(
+        "query_0".to_string(),
+        vec![(100u32, 0.98f64), (200u32, 0.96f64)],
+    );
     queries.insert("query_1".to_string(), vec![(150u32, 0.99f64)]);
 
     write_queries(&query_path, &queries).expect("should write queries");
@@ -606,11 +657,7 @@ fn issue_58_query_index_round_trip() {
 
     let read_back = read_queries(&query_path).expect("should read queries");
 
-    assert_eq!(
-        read_back.len(),
-        2,
-        "should have entries for 2 queries"
-    );
+    assert_eq!(read_back.len(), 2, "should have entries for 2 queries");
     assert_eq!(
         read_back.get("query_0"),
         Some(&vec![(100u32, 0.98f64), (200u32, 0.96f64)]),
@@ -622,23 +669,30 @@ fn issue_58_query_index_round_trip() {
 #[test]
 #[ignore = "test: implement query index score filtering (issue #58)"]
 fn issue_58_query_index_filters_by_score_ratio() {
-    use phraya_io::queries::{write_queries, read_queries};
+    use phraya_io::queries::{read_queries, write_queries};
 
     let temp_dir = TempDir::new().unwrap();
     let query_path = temp_dir.path().join("test.phraya.queries");
 
     // Only positions with score_ratio >= 0.95 should be included
     let mut queries = HashMap::new();
-    queries.insert("query_0".to_string(), vec![(100u32, 0.95f64), (200u32, 0.94f64)]);
+    queries.insert(
+        "query_0".to_string(),
+        vec![(100u32, 0.95f64), (200u32, 0.94f64)],
+    );
 
     write_queries(&query_path, &queries).expect("should write");
     let read_back = read_queries(&query_path).expect("should read");
 
     if let Some(alignments) = read_back.get("query_0") {
         // Position 100 with score 0.95 should be included
-        assert!(alignments.iter().any(|(pos, score)| *pos == 100 && *score >= 0.95));
+        assert!(alignments
+            .iter()
+            .any(|(pos, score)| *pos == 100 && *score >= 0.95));
         // Position 200 with score 0.94 should be filtered out
-        assert!(!alignments.iter().any(|(pos, score)| *pos == 200 && *score < 0.95));
+        assert!(!alignments
+            .iter()
+            .any(|(pos, score)| *pos == 200 && *score < 0.95));
     }
 }
 
@@ -650,65 +704,126 @@ fn issue_58_query_index_filters_by_score_ratio() {
 #[test]
 #[ignore = "test: implement filter min_coverage (issue #58)"]
 fn issue_58_filter_min_coverage() {
-    use phraya_filter::FilterBuilder;
     use phraya_core::types::VariantObservation;
+    use phraya_filter::FilterBuilder;
 
     let mut alleles1 = HashMap::new();
     alleles1.insert(b'A', 5);
-    let obs_low = VariantObservation::new(100, b'A', alleles1, 0.95, "10M".to_string(), 60, 0, vec![5], 35.0, "test:read1".to_string());
+    let obs_low = VariantObservation::new(
+        100,
+        b'A',
+        alleles1,
+        0.95,
+        "10M".to_string(),
+        60,
+        0,
+        vec![5],
+        35.0,
+        "test:read1".to_string(),
+    );
 
     let mut alleles2 = HashMap::new();
     alleles2.insert(b'A', 15);
-    let obs_high = VariantObservation::new(100, b'A', alleles2, 0.95, "10M".to_string(), 60, 0, vec![15], 35.0, "test:read2".to_string());
+    let obs_high = VariantObservation::new(
+        100,
+        b'A',
+        alleles2,
+        0.95,
+        "10M".to_string(),
+        60,
+        0,
+        vec![15],
+        35.0,
+        "test:read2".to_string(),
+    );
 
     let filter = FilterBuilder::new().min_coverage(10).build();
 
-    assert!(!filter.apply(&obs_low), "coverage 5 should fail min_coverage 10");
-    assert!(filter.apply(&obs_high), "coverage 15 should pass min_coverage 10");
+    assert!(
+        !filter.apply(&obs_low),
+        "coverage 5 should fail min_coverage 10"
+    );
+    assert!(
+        filter.apply(&obs_high),
+        "coverage 15 should pass min_coverage 10"
+    );
 }
 
 /// Test: Filter with min_mapq threshold
 #[test]
 #[ignore = "test: implement filter min_mapq (issue #58)"]
 fn issue_58_filter_min_mapq() {
-    use phraya_filter::FilterBuilder;
     use phraya_core::types::VariantObservation;
+    use phraya_filter::FilterBuilder;
 
     let mut alleles = HashMap::new();
     alleles.insert(b'A', 10);
 
-    let obs_low_mapq = VariantObservation::new(100, b'A', alleles.clone(), 0.95, "10M".to_string(), 30, 0, vec![10], 35.0, "test:read1".to_string());
-    let obs_high_mapq = VariantObservation::new(100, b'A', alleles, 0.95, "10M".to_string(), 50, 0, vec![10], 35.0, "test:read2".to_string());
+    let obs_low_mapq = VariantObservation::new(
+        100,
+        b'A',
+        alleles.clone(),
+        0.95,
+        "10M".to_string(),
+        30,
+        0,
+        vec![10],
+        35.0,
+        "test:read1".to_string(),
+    );
+    let obs_high_mapq = VariantObservation::new(
+        100,
+        b'A',
+        alleles,
+        0.95,
+        "10M".to_string(),
+        50,
+        0,
+        vec![10],
+        35.0,
+        "test:read2".to_string(),
+    );
 
     let filter = FilterBuilder::new().min_mapq(40).build();
 
-    assert!(!filter.apply(&obs_low_mapq), "mapq 30 should fail min_mapq 40");
-    assert!(filter.apply(&obs_high_mapq), "mapq 50 should pass min_mapq 40");
+    assert!(
+        !filter.apply(&obs_low_mapq),
+        "mapq 30 should fail min_mapq 40"
+    );
+    assert!(
+        filter.apply(&obs_high_mapq),
+        "mapq 50 should pass min_mapq 40"
+    );
 }
 
 /// Test: Filter composition (multiple thresholds)
 #[test]
 #[ignore = "test: implement filter composition (issue #58)"]
 fn issue_58_filter_composition() {
-    use phraya_filter::FilterBuilder;
     use phraya_core::types::VariantObservation;
+    use phraya_filter::FilterBuilder;
 
     let mut alleles = HashMap::new();
     alleles.insert(b'A', 15);
-    let obs = VariantObservation::new(100, b'A', alleles, 0.95, "10M".to_string(), 50, 0, vec![15], 35.0, "test:read".to_string());
+    let obs = VariantObservation::new(
+        100,
+        b'A',
+        alleles,
+        0.95,
+        "10M".to_string(),
+        50,
+        0,
+        vec![15],
+        35.0,
+        "test:read".to_string(),
+    );
 
-    let filter = FilterBuilder::new()
-        .min_coverage(10)
-        .min_mapq(40)
-        .build();
+    let filter = FilterBuilder::new().min_coverage(10).min_mapq(40).build();
 
     assert!(filter.apply(&obs), "should pass both thresholds");
 
     // Fail one threshold
-    let strict = FilterBuilder::new()
-        .min_coverage(10)
-        .min_mapq(60)
-        .build();
+    let strict = FilterBuilder::new().min_coverage(10).min_mapq(60).build();
 
     assert!(!strict.apply(&obs), "should fail min_mapq 60");
 }
@@ -724,12 +839,17 @@ fn issue_58_filter_vcf_output() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
-    let observations = vec![(100, b'A', {
-        let mut h = HashMap::new();
-        h.insert(b'A', 10);
-        h.insert(b'T', 5);
-        h
-    }, 60)];
+    let observations = vec![(
+        100,
+        b'A',
+        {
+            let mut h = HashMap::new();
+            h.insert(b'A', 10);
+            h.insert(b'T', 5);
+            h
+        },
+        60,
+    )];
 
     let phraya_path = create_phraya_file(temp_path, "test.phraya", observations, 200);
 
@@ -768,11 +888,16 @@ fn issue_58_filter_tsv_output() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
-    let observations = vec![(100, b'A', {
-        let mut h = HashMap::new();
-        h.insert(b'A', 10);
-        h
-    }, 60)];
+    let observations = vec![(
+        100,
+        b'A',
+        {
+            let mut h = HashMap::new();
+            h.insert(b'A', 10);
+            h
+        },
+        60,
+    )];
 
     let phraya_path = create_phraya_file(temp_path, "test.phraya", observations, 200);
 
@@ -790,10 +915,7 @@ fn issue_58_filter_tsv_output() {
         .output()
         .expect("Failed to execute phraya filter");
 
-    assert!(
-        output.status.success(),
-        "filter TSV should succeed"
-    );
+    assert!(output.status.success(), "filter TSV should succeed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // TSV should have tab-separated columns
@@ -813,16 +935,26 @@ fn issue_58_filter_min_coverage_cli() {
 
     // Create .phraya with 2 observations: one with low coverage, one with high
     let observations = vec![
-        (100, b'A', {
-            let mut h = HashMap::new();
-            h.insert(b'A', 5);
-            h
-        }, 60),
-        (200, b'A', {
-            let mut h = HashMap::new();
-            h.insert(b'A', 15);
-            h
-        }, 60),
+        (
+            100,
+            b'A',
+            {
+                let mut h = HashMap::new();
+                h.insert(b'A', 5);
+                h
+            },
+            60,
+        ),
+        (
+            200,
+            b'A',
+            {
+                let mut h = HashMap::new();
+                h.insert(b'A', 15);
+                h
+            },
+            60,
+        ),
     ];
 
     let phraya_path = create_phraya_file(temp_path, "test.phraya", observations, 300);
@@ -862,11 +994,16 @@ fn issue_58_filter_phraya_output() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
-    let observations = vec![(100, b'A', {
-        let mut h = HashMap::new();
-        h.insert(b'A', 10);
-        h
-    }, 60)];
+    let observations = vec![(
+        100,
+        b'A',
+        {
+            let mut h = HashMap::new();
+            h.insert(b'A', 10);
+            h
+        },
+        60,
+    )];
 
     let input_path = create_phraya_file(temp_path, "test.phraya", observations, 200);
     let output_path = temp_path.join("filtered.phraya");
@@ -896,8 +1033,8 @@ fn issue_58_filter_phraya_output() {
     assert!(output_path.exists(), "filtered .phraya file should exist");
 
     // Verify we can read the filtered file
-    let filtered = phraya_io::phraya::read_phraya(&output_path)
-        .expect("should be able to read filtered file");
+    let filtered =
+        phraya_io::phraya::read_phraya(&output_path).expect("should be able to read filtered file");
 
     assert!(
         filtered.observations.len() > 0,
@@ -913,8 +1050,8 @@ fn issue_58_filter_phraya_output() {
 #[test]
 #[ignore = "test: implement .phraya file round-trip (issue #58)"]
 fn issue_58_phraya_file_round_trip() {
-    use phraya_io::phraya::{PhrayaFile, write_phraya, read_phraya};
-    use phraya_core::types::{VariantObservation, CoverageTrack};
+    use phraya_core::types::{CoverageTrack, VariantObservation};
+    use phraya_io::phraya::{read_phraya, write_phraya, PhrayaFile};
 
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("test.phraya");
@@ -923,12 +1060,26 @@ fn issue_58_phraya_file_round_trip() {
     let mut alleles = HashMap::new();
     alleles.insert(b'A', 10);
     let obs = VariantObservation::new(
-        100, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
-        vec![10], 35.0, "sample:read1".to_string(),
+        100,
+        b'A',
+        alleles,
+        0.95,
+        "10M".to_string(),
+        60,
+        0,
+        vec![10],
+        35.0,
+        "sample:read1".to_string(),
     );
 
     let coverage = CoverageTrack::new(vec![10; 200]);
-    let file = PhrayaFile::new(200, "test_sample".to_string(), "2026-06-01T00:00:00Z".to_string(), vec![obs], coverage);
+    let file = PhrayaFile::new(
+        200,
+        "test_sample".to_string(),
+        "2026-06-01T00:00:00Z".to_string(),
+        vec![obs],
+        coverage,
+    );
 
     write_phraya(&test_file, &file).expect("should write");
     assert!(test_file.exists(), "file should exist");
@@ -936,15 +1087,19 @@ fn issue_58_phraya_file_round_trip() {
     let read_back = read_phraya(&test_file).expect("should read");
 
     assert_eq!(read_back.observations.len(), 1, "should have 1 observation");
-    assert_eq!(read_back.observations[0].position(), 100, "position should match");
+    assert_eq!(
+        read_back.observations[0].position(),
+        100,
+        "position should match"
+    );
 }
 
 /// Test: .phraya coverage track is preserved through write/read
 #[test]
 #[ignore = "test: implement .phraya coverage track preservation (issue #58)"]
 fn issue_58_phraya_coverage_track_preserved() {
-    use phraya_io::phraya::{PhrayaFile, write_phraya, read_phraya};
     use phraya_core::types::CoverageTrack;
+    use phraya_io::phraya::{read_phraya, write_phraya, PhrayaFile};
 
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("test.phraya");
@@ -961,7 +1116,11 @@ fn issue_58_phraya_coverage_track_preserved() {
     write_phraya(&test_file, &file).unwrap();
     let read_back = read_phraya(&test_file).unwrap();
 
-    assert_eq!(read_back.coverage_track.total_length(), 6, "total_length should match");
+    assert_eq!(
+        read_back.coverage_track.total_length(),
+        6,
+        "total_length should match"
+    );
     assert_eq!(read_back.coverage_track.coverage_at(0), Some(10));
     assert_eq!(read_back.coverage_track.coverage_at(2), Some(5));
     assert_eq!(read_back.coverage_track.coverage_at(4), Some(15));
@@ -1035,15 +1194,26 @@ fn issue_58_mvp_workflow_plan_to_tasks() {
     let ref_path = create_fasta_file(
         temp_path,
         "reference.fa",
-        &[("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")],
+        &[(
+            "ref",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        )],
     );
 
     let reads_path = create_fastq_file(
         temp_path,
         "reads.fq",
         &[
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
-            ("read2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
+            (
+                "read2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
         ],
     );
     // Note: Both sequences are 52 bases, quality string is 52 'I' chars
@@ -1094,5 +1264,9 @@ fn issue_58_mvp_workflow_plan_to_tasks() {
     let lines: Vec<&str> = stdout.lines().collect();
 
     assert!(lines.len() >= 3, "should have header + 2 task lines");
-    assert_eq!(lines[0].trim(), "query_id\ttarget_id", "header should match");
+    assert_eq!(
+        lines[0].trim(),
+        "query_id\ttarget_id",
+        "header should match"
+    );
 }
