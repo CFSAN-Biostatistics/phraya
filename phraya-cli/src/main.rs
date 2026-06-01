@@ -351,6 +351,15 @@ fn run_filter(
 
     let initial_count = phraya_file.observations.len();
 
+    // Print raw observation data to stdout as VCF comment (for debugging)
+    eprintln!("=== RAW OBSERVATIONS BEFORE FILTERING ===");
+    for (i, obs) in phraya_file.observations.iter().enumerate() {
+        let cov: u32 = obs.all_alleles().values().sum();
+        eprintln!("Obs {}: pos={}, ref={}, alleles={:?}, cov={}",
+            i, obs.position(), obs.ref_base() as char, obs.all_alleles(), cov);
+    }
+    eprintln!("==========================================");
+
     // Build filter
     let mut filter_builder = FilterBuilder::new();
     if let Some(min_cov) = min_coverage {
