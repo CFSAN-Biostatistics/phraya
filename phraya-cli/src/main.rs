@@ -86,8 +86,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
-    eprintln!("DEBUG: Command: {:?}", std::any::type_name_of_val(&cli.command));
-
     match cli.command {
         Commands::Plan {
             inputs,
@@ -340,7 +338,6 @@ fn run_filter(
     format: &str,
     output_path: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!("DEBUG: run_filter called with min_coverage={:?}", min_coverage);
     // Validate format
     if !["vcf", "tsv", "phraya"].contains(&format) {
         return Err(format!("Invalid format '{}'. Must be one of: vcf, tsv, phraya", format).into());
@@ -351,19 +348,9 @@ fn run_filter(
 
     let initial_count = phraya_file.observations.len();
 
-    // Print raw observation data to stdout as VCF comment (for debugging)
-    eprintln!("=== RAW OBSERVATIONS BEFORE FILTERING ===");
-    for (i, obs) in phraya_file.observations.iter().enumerate() {
-        let cov: u32 = obs.all_alleles().values().sum();
-        eprintln!("Obs {}: pos={}, ref={}, alleles={:?}, cov={}",
-            i, obs.position(), obs.ref_base() as char, obs.all_alleles(), cov);
-    }
-    eprintln!("==========================================");
-
     // Build filter
     let mut filter_builder = FilterBuilder::new();
     if let Some(min_cov) = min_coverage {
-        eprintln!("DEBUG: Setting min_coverage to {}", min_cov);
         filter_builder = filter_builder.min_coverage(min_cov);
     }
     if let Some(max_cov) = max_coverage {
@@ -377,15 +364,6 @@ fn run_filter(
     }
 
     let filter = filter_builder.build();
-
-    // Debug: print observation coverages
-    eprintln!("DEBUG: Checking {} observations with min_coverage={:?}", initial_count, min_coverage);
-    for obs in &phraya_file.observations {
-        let cov: u32 = obs.all_alleles().values().sum();
-        let passes = filter.apply(obs);
-        eprintln!("DEBUG: Position {}: alleles={:?}, coverage={}, passes_filter={}",
-            obs.position(), obs.all_alleles(), cov, passes);
-    }
 
     // Apply filter to observations
     let filtered_observations: Vec<_> = filter
