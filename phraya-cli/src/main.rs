@@ -370,10 +370,12 @@ fn run_filter(
     let filter = filter_builder.build();
 
     // Debug: print observation coverages
-    eprintln!("DEBUG: Checking {} observations", initial_count);
+    eprintln!("DEBUG: Checking {} observations with min_coverage={:?}", initial_count, min_coverage);
     for obs in &phraya_file.observations {
         let cov: u32 = obs.all_alleles().values().sum();
-        eprintln!("DEBUG: Position {}: coverage={}, passes_filter={}", obs.position(), cov, filter.apply(obs));
+        let passes = filter.apply(obs);
+        eprintln!("DEBUG: Position {}: alleles={:?}, coverage={}, passes_filter={}",
+            obs.position(), obs.all_alleles(), cov, passes);
     }
 
     // Apply filter to observations
