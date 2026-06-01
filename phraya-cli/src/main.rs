@@ -351,6 +351,7 @@ fn run_filter(
     // Build filter
     let mut filter_builder = FilterBuilder::new();
     if let Some(min_cov) = min_coverage {
+        eprintln!("DEBUG: Setting min_coverage to {}", min_cov);
         filter_builder = filter_builder.min_coverage(min_cov);
     }
     if let Some(max_cov) = max_coverage {
@@ -364,6 +365,13 @@ fn run_filter(
     }
 
     let filter = filter_builder.build();
+
+    // Debug: print observation coverages
+    eprintln!("DEBUG: Checking {} observations", initial_count);
+    for obs in &phraya_file.observations {
+        let cov: u32 = obs.all_alleles().values().sum();
+        eprintln!("DEBUG: Position {}: coverage={}, passes_filter={}", obs.position(), cov, filter.apply(obs));
+    }
 
     // Apply filter to observations
     let filtered_observations: Vec<_> = filter
