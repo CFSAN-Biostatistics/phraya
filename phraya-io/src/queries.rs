@@ -23,15 +23,31 @@ pub enum QueriesError {
 /// # Arguments
 /// * `path` - output file path
 /// * `index` - QueryIndex: HashMap<query_id, Vec<(position, score)>>
+///
+/// Note: Filters entries to include only positions with score_ratio >= 0.95 (hard-coded opinion)
 pub fn write_queries(path: &std::path::Path, index: &QueryIndex) -> Result<(), QueriesError> {
-    let serialized = rmp_serde::to_vec(index)
+    const SCORE_THRESHOLD: f64 = 0.95;
+
+    // Filter index to keep only high-confidence alignments
+    let filtered_index: QueryIndex = index
+        .iter()
+        .map(|(query_id, alignments)| {
+            let filtered_alignments: Vec<(u32, f64)> = alignments
+                .iter()
+                .filter(|(_, score)| *score >= SCORE_THRESHOLD)
+                .copied()
+                .collect();
+            (query_id.clone(), filtered_alignments)
+        })
+        .collect();
+
+    let serialized = rmp_serde::to_vec(&filtered_index)
         .map_err(|e| QueriesError::SerializationError(e.to_string()))?;
 
     let compressed = zstd::encode_all(&serialized[..], 3)
         .map_err(|e| QueriesError::CompressionError(e.to_string()))?;
 
-    std::fs::write(path, compressed)
-        .map_err(|e| QueriesError::IoError(e.to_string()))?;
+    std::fs::write(path, compressed).map_err(|e| QueriesError::IoError(e.to_string()))?;
 
     Ok(())
 }
@@ -44,8 +60,7 @@ pub fn write_queries(path: &std::path::Path, index: &QueryIndex) -> Result<(), Q
 /// # Returns
 /// QueryIndex: HashMap<query_id, Vec<(position, score)>>
 pub fn read_queries(path: &std::path::Path) -> Result<QueryIndex, QueriesError> {
-    let compressed = std::fs::read(path)
-        .map_err(|e| QueriesError::IoError(e.to_string()))?;
+    let compressed = std::fs::read(path).map_err(|e| QueriesError::IoError(e.to_string()))?;
 
     let decompressed = zstd::decode_all(&compressed[..])
         .map_err(|e| QueriesError::DecompressionError(e.to_string()))?;
@@ -75,7 +90,10 @@ mod tests {
     #[test]
     fn round_trip_single_query() {
         let mut index = HashMap::new();
-        index.insert("query1".to_string(), vec![(100u32, 0.98f64), (200u32, 0.95f64)]);
+        index.insert(
+            "query1".to_string(),
+            vec![(100u32, 0.98f64), (200u32, 0.95f64)],
+        );
 
         let temp = NamedTempFile::new().unwrap();
         write_queries(temp.path(), &index).unwrap();
@@ -91,9 +109,15 @@ mod tests {
     #[test]
     fn round_trip_multiple_queries() {
         let mut index = HashMap::new();
-        index.insert("query1".to_string(), vec![(100u32, 0.98f64), (200u32, 0.95f64)]);
+        index.insert(
+            "query1".to_string(),
+            vec![(100u32, 0.98f64), (200u32, 0.95f64)],
+        );
         index.insert("query2".to_string(), vec![(50u32, 0.99f64)]);
-        index.insert("query3".to_string(), vec![(150u32, 0.96f64), (250u32, 0.95f64), (350u32, 0.94f64)]);
+        index.insert(
+            "query3".to_string(),
+            vec![(150u32, 0.96f64), (250u32, 0.95f64), (350u32, 0.94f64)],
+        );
 
         let temp = NamedTempFile::new().unwrap();
         write_queries(temp.path(), &index).unwrap();

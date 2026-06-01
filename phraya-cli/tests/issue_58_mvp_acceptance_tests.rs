@@ -216,12 +216,12 @@ fn issue_58_use_case_case2_reads_with_reference() {
             (
                 "read1",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
             (
                 "read2",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
         ],
     );
@@ -290,7 +290,7 @@ fn issue_58_use_case_case3_contigs_with_reads() {
         &[(
             "read1",
             "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
         )],
     );
     // Note: Sequence is 52 bases, quality string is 52 'I' chars
@@ -1207,12 +1207,12 @@ fn issue_58_mvp_workflow_plan_to_tasks() {
             (
                 "read1",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
             (
                 "read2",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
         ],
     );
