@@ -82,7 +82,7 @@ fn issue_68_plan_case2_reads_with_reference() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -189,7 +189,7 @@ fn issue_68_plan_case3_contigs_with_reads() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -268,7 +268,7 @@ fn issue_68_plan_case4_contigs_only() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -316,7 +316,7 @@ fn issue_68_plan_invalid_input_file() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -372,7 +372,7 @@ fn issue_68_plan_cli_argument_parsing() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -388,7 +388,7 @@ fn issue_68_plan_cli_argument_parsing() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--output",
@@ -435,7 +435,7 @@ fn issue_68_plan_kmer_uniqueness_computed() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -498,7 +498,7 @@ fn issue_68_plan_logs_use_case() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -566,7 +566,7 @@ fn issue_68_plan_multiple_input_files() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -644,7 +644,7 @@ fn issue_68_plan_task_list_valid() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -695,7 +695,7 @@ fn issue_68_plan_exit_code_on_success() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",

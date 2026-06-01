@@ -313,7 +313,7 @@ fn issue_85_filter_min_coverage_threshold() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -395,7 +395,7 @@ fn issue_85_filter_min_mapq_threshold() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -451,7 +451,7 @@ fn issue_85_filter_format_vcf_explicit() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -500,7 +500,7 @@ fn issue_85_filter_format_tsv() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -559,7 +559,7 @@ fn issue_85_filter_format_phraya() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -649,7 +649,7 @@ fn issue_85_filter_multiple_thresholds() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -731,7 +731,7 @@ fn issue_85_filter_logs_statistics() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -765,7 +765,7 @@ fn issue_85_filter_error_handling_nonexistent_file() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             nonexistent_path.to_str().unwrap(),
@@ -818,7 +818,7 @@ fn issue_85_filter_chaining_support() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -844,7 +844,7 @@ fn issue_85_filter_chaining_support() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             filtered1_path.to_str().unwrap(),
@@ -901,7 +901,7 @@ fn issue_85_filter_empty_result() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -943,7 +943,7 @@ fn issue_85_filter_argument_validation() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
         ])
@@ -980,7 +980,7 @@ fn issue_85_filter_argument_validation() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -1047,7 +1047,7 @@ fn issue_85_filter_preserves_position_order() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "filter",
             input_path.to_str().unwrap(),

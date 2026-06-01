@@ -68,7 +68,7 @@ fn issue_69_plan_tasks_basic_output() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -117,7 +117,7 @@ fn issue_69_plan_tasks_tsv_format() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -169,7 +169,7 @@ fn issue_69_plan_tasks_row_count_matches_task_count() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -211,7 +211,7 @@ fn issue_69_plan_tasks_pipeline_wc_l() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -247,7 +247,7 @@ fn issue_69_plan_tasks_missing_file_error() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             nonexistent_path,
@@ -285,7 +285,7 @@ fn issue_69_plan_tasks_corrupt_plan_file_error() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             corrupt_path.to_str().unwrap(),
@@ -322,7 +322,7 @@ fn issue_69_plan_tasks_empty_task_list() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -368,7 +368,7 @@ fn issue_69_plan_tasks_large_task_list() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -437,7 +437,7 @@ fn issue_69_plan_tasks_integration_with_plan_command() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan",
             "--inputs",
@@ -460,7 +460,7 @@ fn issue_69_plan_tasks_integration_with_plan_command() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -502,7 +502,7 @@ fn issue_69_plan_tasks_requires_file_argument() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
         ])
@@ -532,7 +532,7 @@ fn issue_69_plan_tasks_header_exact_format() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -569,7 +569,7 @@ fn issue_69_plan_tasks_numeric_format() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -605,7 +605,7 @@ fn issue_69_plan_tasks_all_tasks_present() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            "phraya-cli/Cargo.toml",
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
