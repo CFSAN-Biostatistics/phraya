@@ -14,6 +14,121 @@ pub enum Column {
     Provenance,
 }
 
+impl Column {
+    /// Get the header name for this column
+    pub fn header_name(&self) -> &'static str {
+        match self {
+            Column::Position => "Position",
+            Column::RefBase => "RefBase",
+            Column::AltBases => "AltBases",
+            Column::Coverage => "Coverage",
+            Column::Mapq => "Mapq",
+            Column::Cigar => "Cigar",
+            Column::EditDistance => "EditDistance",
+            Column::Confidence => "Confidence",
+            Column::Provenance => "Provenance",
+        }
+    }
+
+    /// Format a value for this column from a VariantObservation
+    pub fn format_value(&self, obs: &VariantObservation) -> String {
+        match self {
+            Column::Position => obs.position().to_string(),
+            Column::RefBase => (obs.ref_base() as char).to_string(),
+            Column::AltBases => {
+                // Get all alleles except the reference base, sorted
+                let mut alts: Vec<u8> = obs
+                    .all_alleles()
+                    .keys()
+                    .filter(|&&base| base != obs.ref_base())
+                    .copied()
+                    .collect();
+
+                if alts.is_empty() {
+                    ".".to_string()
+                } else {
+                    alts.sort();
+                    alts.iter()
+                        .map(|&b| b as char)
+                        .collect::<String>()
+                }
+            }
+            Column::Coverage => {
+                // Use local_coverage[0] as proxy for coverage (consistent with ThresholdFilter)
+                // If empty, return 0
+                if obs.local_coverage().is_empty() {
+                    "0".to_string()
+                } else {
+                    obs.local_coverage()[0].to_string()
+                }
+            }
+            Column::Mapq => obs.mapq().to_string(),
+            Column::Cigar => obs.cigar().to_string(),
+            Column::EditDistance => obs.edit_distance().to_string(),
+            Column::Confidence => obs.confidence().to_string(),
+            Column::Provenance => {
+                // Escape special characters in provenance
+                escape_tsv_value(obs.provenance())
+            }
+        }
+    }
+}
+
+/// Escape special characters for TSV output
+/// Replaces tabs with \t and newlines with \n
+fn escape_tsv_value(value: &str) -> String {
+    value
+        .replace('\t', "\\t")
+        .replace('\n', "\\n")
+}
+
+/// Format variant observations as TSV with specified columns
+pub fn format_tsv<I>(observations: I, columns: &[Column]) -> String
+where
+    I: IntoIterator<Item = VariantObservation>,
+{
+    let mut output = String::new();
+
+    // Write header
+    output.push_str(
+        &columns
+            .iter()
+            .map(|c| c.header_name())
+            .collect::<Vec<_>>()
+            .join("\t"),
+    );
+    output.push('\n');
+
+    // Write data rows
+    for obs in observations {
+        output.push_str(
+            &columns
+                .iter()
+                .map(|c| c.format_value(&obs))
+                .collect::<Vec<_>>()
+                .join("\t"),
+        );
+        output.push('\n');
+    }
+
+    output
+}
+
+/// Format variant observations with default columns (Position, RefBase, AltBases, Coverage, Mapq)
+pub fn format_tsv_with_defaults<I>(observations: I) -> String
+where
+    I: IntoIterator<Item = VariantObservation>,
+{
+    let default_columns = [
+        Column::Position,
+        Column::RefBase,
+        Column::AltBases,
+        Column::Coverage,
+        Column::Mapq,
+    ];
+    format_tsv(observations, &default_columns)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
