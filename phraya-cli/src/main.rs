@@ -86,6 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
 
+    eprintln!("DEBUG: Command: {:?}", std::any::type_name_of_val(&cli.command));
+
     match cli.command {
         Commands::Plan {
             inputs,
@@ -338,6 +340,7 @@ fn run_filter(
     format: &str,
     output_path: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("DEBUG: run_filter called with min_coverage={:?}", min_coverage);
     // Validate format
     if !["vcf", "tsv", "phraya"].contains(&format) {
         return Err(format!("Invalid format '{}'. Must be one of: vcf, tsv, phraya", format).into());
