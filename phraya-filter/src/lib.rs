@@ -97,17 +97,15 @@ pub struct ThresholdFilter {
 impl ThresholdFilter {
     /// Apply filter to an observation
     pub fn apply(&self, obs: &VariantObservation) -> bool {
-        // Check coverage (sum of all allele counts)
-        let coverage: u32 = obs.all_alleles().values().sum();
-
+        // Check coverage (local_coverage[0] as proxy for coverage)
         if let Some(min) = self.min_coverage {
-            if coverage < min {
+            if obs.local_coverage().is_empty() || obs.local_coverage()[0] < min {
                 return false;
             }
         }
 
         if let Some(max) = self.max_coverage {
-            if coverage > max {
+            if !obs.local_coverage().is_empty() && obs.local_coverage()[0] > max {
                 return false;
             }
         }
