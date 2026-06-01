@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use log::info;
 use phraya_core::types::Sequence;
+use phraya_filter::{FilterBuilder, vcf};
 use phraya_index::{compute_kmer_uniqueness, sketch_sequence_default};
 use phraya_io::{plan::{self, PhrayaPlan, UseCase, write_plan}, SequenceParser, phraya};
 use std::path::PathBuf;
@@ -45,6 +46,36 @@ enum Commands {
         #[arg(long, value_name = "FILE", required = true)]
         output: PathBuf,
     },
+    /// Filter .phraya file by thresholds and output in specified format
+    Filter {
+        /// Input .phraya file
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+
+        /// Minimum coverage threshold
+        #[arg(long, value_name = "N")]
+        min_coverage: Option<u32>,
+
+        /// Maximum coverage threshold
+        #[arg(long, value_name = "N")]
+        max_coverage: Option<u32>,
+
+        /// Minimum MAPQ threshold
+        #[arg(long, value_name = "N")]
+        min_mapq: Option<u8>,
+
+        /// Maximum MAPQ threshold
+        #[arg(long, value_name = "N")]
+        max_mapq: Option<u8>,
+
+        /// Output format (vcf, tsv, phraya)
+        #[arg(long, value_name = "FORMAT", default_value = "vcf")]
+        format: String,
+
+        /// Output file (required for phraya format)
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,6 +99,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Merge { inputs, output } => {
             run_merge(&inputs, &output)?;
+        }
+        Commands::Filter {
+            input,
+            min_coverage,
+            max_coverage,
+            min_mapq,
+            max_mapq,
+            format,
+            output,
+        } => {
+            run_filter(&input, min_coverage, max_coverage, min_mapq, max_mapq, &format, output.as_deref())?;
         }
     }
 
@@ -283,6 +325,122 @@ fn run_merge(
     phraya::write_phraya(output_path, &merged)?;
 
     eprintln!("Merged file written to {:?}", output_path);
+
+    Ok(())
+}
+
+fn run_filter(
+    input_path: &PathBuf,
+    min_coverage: Option<u32>,
+    max_coverage: Option<u32>,
+    min_mapq: Option<u8>,
+    max_mapq: Option<u8>,
+    format: &str,
+    output_path: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate format
+    if !["vcf", "tsv", "phraya"].contains(&format) {
+        return Err(format!("Invalid format '{}'. Must be one of: vcf, tsv, phraya", format).into());
+    }
+
+    // Read the .phraya file
+    let phraya_file = phraya::read_phraya(input_path)?;
+
+    let initial_count = phraya_file.observations.len();
+
+    // Build filter
+    let mut filter_builder = FilterBuilder::new();
+    if let Some(min_cov) = min_coverage {
+        filter_builder = filter_builder.min_coverage(min_cov);
+    }
+    if let Some(max_cov) = max_coverage {
+        filter_builder = filter_builder.max_coverage(max_cov);
+    }
+    if let Some(min_mq) = min_mapq {
+        filter_builder = filter_builder.min_mapq(min_mq);
+    }
+    if let Some(max_mq) = max_mapq {
+        filter_builder = filter_builder.max_mapq(max_mq);
+    }
+
+    let filter = filter_builder.build();
+
+    // Apply filter to observations
+    let filtered_observations: Vec<_> = filter
+        .filter(&phraya_file.observations)
+        .cloned()
+        .collect();
+
+    let final_count = filtered_observations.len();
+    eprintln!("Filtered {} → {} observations", initial_count, final_count);
+
+    // Output in specified format
+    match format {
+        "vcf" => {
+            let vcf_output = vcf::format_vcf(
+                filtered_observations.into_iter(),
+                &phraya_file.header.sample_id,
+                phraya_file.header.reference_length,
+            );
+            println!("{}", vcf_output);
+        }
+        "tsv" => {
+            output_tsv(&filtered_observations)?;
+        }
+        "phraya" => {
+            if let Some(out_path) = output_path {
+                let filtered_file = phraya::PhrayaFile::new(
+                    phraya_file.header.reference_length,
+                    phraya_file.header.sample_id.clone(),
+                    phraya_file.header.timestamp.clone(),
+                    filtered_observations,
+                    phraya_file.coverage_track.clone(),
+                );
+                phraya::write_phraya(out_path, &filtered_file)?;
+            } else {
+                return Err("--output is required when format is 'phraya'".into());
+            }
+        }
+        _ => return Err(format!("Unsupported format: {}", format).into()),
+    }
+
+    Ok(())
+}
+
+fn output_tsv(observations: &[phraya_core::types::VariantObservation]) -> Result<(), Box<dyn std::error::Error>> {
+    // Output TSV header
+    println!("position\tref_base\tall_alleles\tmapq\tconfidence\tcigar\tedit_distance\tcoverage\tavg_base_quality\tprovenance");
+
+    // Output each observation as a TSV line
+    for obs in observations {
+        let coverage = if !obs.local_coverage().is_empty() {
+            obs.local_coverage()[0]
+        } else {
+            0
+        };
+
+        // Format all_alleles as key:value pairs
+        let alleles_str = obs
+            .all_alleles()
+            .iter()
+            .map(|(&base, &count)| format!("{}:{}", base as char, count))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            obs.position(),
+            obs.ref_base() as char,
+            alleles_str,
+            obs.mapq(),
+            obs.confidence(),
+            obs.cigar(),
+            obs.edit_distance(),
+            coverage,
+            obs.avg_base_quality(),
+            obs.provenance(),
+        );
+    }
 
     Ok(())
 }
