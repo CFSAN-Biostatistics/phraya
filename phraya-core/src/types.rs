@@ -260,7 +260,7 @@ impl EvidenceLayer {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CoverageTrack {
     runs: Vec<(u8, u32)>, // (quantized coverage, run length)
-    total_length: u32,     // total reference length
+    total_length: u32,    // total reference length
 }
 
 impl CoverageTrack {
@@ -290,10 +290,7 @@ impl CoverageTrack {
             runs.push((current_val, current_len));
         }
 
-        CoverageTrack {
-            runs,
-            total_length,
-        }
+        CoverageTrack { runs, total_length }
     }
 
     /// Quantize a coverage value to the nearest multiple of 5.
@@ -808,7 +805,8 @@ mod tests {
         let track = CoverageTrack::new(coverage);
 
         let json = serde_json::to_string(&track).expect("serialization failed");
-        let deserialized: CoverageTrack = serde_json::from_str(&json).expect("deserialization failed");
+        let deserialized: CoverageTrack =
+            serde_json::from_str(&json).expect("deserialization failed");
 
         assert_eq!(track, deserialized);
     }

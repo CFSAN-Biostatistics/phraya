@@ -1,5 +1,5 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use phraya_align::{SeedAnchor, wfa_extend_naive, wfa_extend_simd};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use phraya_align::{wfa_extend_naive, wfa_extend_simd, SeedAnchor};
 
 // Test will fail: functions do not exist yet
 fn bench_10kb_alignment_naive(c: &mut Criterion) {

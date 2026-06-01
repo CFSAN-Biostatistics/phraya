@@ -56,8 +56,16 @@ fn issue_68_plan_case2_reads_with_reference() {
         temp_path,
         "reads.fq",
         &[
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
-            ("read2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
+            (
+                "read2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
         ],
     );
 
@@ -102,14 +110,11 @@ fn issue_68_plan_case2_reads_with_reference() {
     );
 
     // Verify file is non-empty
-    let plan_size = fs::metadata(&output_path)
-        .unwrap()
-        .len();
+    let plan_size = fs::metadata(&output_path).unwrap().len();
     assert!(plan_size > 0, "plan file should not be empty");
 
     // Parse the plan and verify use_case
-    let plan = phraya_io::plan::read_plan(&output_path)
-        .expect("plan file should be readable");
+    let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
     assert_eq!(
         plan.use_case,
         phraya_io::plan::UseCase::ReadsWithRef,
@@ -125,11 +130,13 @@ fn issue_68_plan_case2_reads_with_reference() {
 
     // Verify input files are recorded
     assert!(
-        plan.input_files.contains(&reads_path.to_string_lossy().to_string()),
+        plan.input_files
+            .contains(&reads_path.to_string_lossy().to_string()),
         "input files should include reads path"
     );
     assert!(
-        plan.input_files.contains(&ref_path.to_string_lossy().to_string()),
+        plan.input_files
+            .contains(&ref_path.to_string_lossy().to_string()),
         "input files should include reference path"
     );
 }
@@ -146,8 +153,14 @@ fn issue_68_plan_case3_contigs_with_reads() {
         temp_path,
         "contigs.fa",
         &[
-            ("contig1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("contig2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA"),
+            (
+                "contig1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "contig2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA",
+            ),
         ],
     );
 
@@ -156,8 +169,16 @@ fn issue_68_plan_case3_contigs_with_reads() {
         temp_path,
         "reads.fq",
         &[
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
-            ("read2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
+            (
+                "read2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
         ],
     );
 
@@ -189,14 +210,10 @@ fn issue_68_plan_case3_contigs_with_reads() {
     );
 
     // Verify plan file was created
-    assert!(
-        output_path.exists(),
-        "plan file should be created"
-    );
+    assert!(output_path.exists(), "plan file should be created");
 
     // Parse the plan and verify use_case
-    let plan = phraya_io::plan::read_plan(&output_path)
-        .expect("plan file should be readable");
+    let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
     assert_eq!(
         plan.use_case,
         phraya_io::plan::UseCase::ContigsWithReads,
@@ -229,9 +246,18 @@ fn issue_68_plan_case4_contigs_only() {
         temp_path,
         "contigs.fa",
         &[
-            ("contig1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("contig2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA"),
-            ("contig3", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGC"),
+            (
+                "contig1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "contig2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA",
+            ),
+            (
+                "contig3",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGC",
+            ),
         ],
     );
 
@@ -261,8 +287,7 @@ fn issue_68_plan_case4_contigs_only() {
     );
 
     // Parse the plan and verify use_case
-    let plan = phraya_io::plan::read_plan(&output_path)
-        .expect("plan file should be readable");
+    let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
     assert_eq!(
         plan.use_case,
         phraya_io::plan::UseCase::ContigsOnly,
@@ -334,7 +359,10 @@ fn issue_68_plan_cli_argument_parsing() {
     let reads_path = create_fasta_file(
         temp_path,
         "reads.fa",
-        &[("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")],
+        &[(
+            "read1",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        )],
     );
 
     let output_path = temp_path.join("plan.phrayaplan");
@@ -353,10 +381,7 @@ fn issue_68_plan_cli_argument_parsing() {
         .output()
         .expect("Failed to execute phraya plan");
 
-    assert!(
-        !output.status.success(),
-        "should fail without --output"
-    );
+    assert!(!output.status.success(), "should fail without --output");
 
     // Test: Missing required --inputs argument
     let output = std::process::Command::new("cargo")
@@ -372,10 +397,7 @@ fn issue_68_plan_cli_argument_parsing() {
         .output()
         .expect("Failed to execute phraya plan");
 
-    assert!(
-        !output.status.success(),
-        "should fail without --inputs"
-    );
+    assert!(!output.status.success(), "should fail without --inputs");
 }
 
 /// Test: phraya plan computes k-mer uniqueness
@@ -392,9 +414,18 @@ fn issue_68_plan_kmer_uniqueness_computed() {
         temp_path,
         "reads.fa",
         &[
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read3", "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "read2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "read3",
+                "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+            ),
         ],
     );
 
@@ -417,8 +448,7 @@ fn issue_68_plan_kmer_uniqueness_computed() {
 
     assert!(output.status.success(), "should succeed");
 
-    let plan = phraya_io::plan::read_plan(&output_path)
-        .expect("plan file should be readable");
+    let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
 
     // Verify k-mer uniqueness is computed and populated
     assert!(
@@ -446,7 +476,10 @@ fn issue_68_plan_logs_use_case() {
     let ref_path = create_fasta_file(
         temp_path,
         "reference.fa",
-        &[("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")],
+        &[(
+            "ref",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        )],
     );
 
     let reads_path = create_fastq_file(
@@ -500,7 +533,10 @@ fn issue_68_plan_multiple_input_files() {
     let ref_path = create_fasta_file(
         temp_path,
         "reference.fa",
-        &[("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")],
+        &[(
+            "ref",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        )],
     );
 
     let reads1_path = create_fastq_file(
@@ -547,8 +583,7 @@ fn issue_68_plan_multiple_input_files() {
 
     assert!(output.status.success(), "should succeed");
 
-    let plan = phraya_io::plan::read_plan(&output_path)
-        .expect("plan file should be readable");
+    let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
 
     // Should have 2 reads + 1 reference = 3 sketches
     assert_eq!(
@@ -575,16 +610,31 @@ fn issue_68_plan_task_list_valid() {
     let ref_path = create_fasta_file(
         temp_path,
         "reference.fa",
-        &[("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")],
+        &[(
+            "ref",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        )],
     );
 
     let reads_path = create_fastq_file(
         temp_path,
         "reads.fq",
         &[
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
-            ("read2", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
-            ("read3", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
+            (
+                "read2",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
+            (
+                "read3",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            ),
         ],
     );
 
@@ -609,8 +659,7 @@ fn issue_68_plan_task_list_valid() {
 
     assert!(output.status.success(), "should succeed");
 
-    let plan = phraya_io::plan::read_plan(&output_path)
-        .expect("plan file should be readable");
+    let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
 
     // For Case 2 (reads + ref), each task should be (query_id, target_id)
     // where target_id is the reference (0) and query_id is each read (1, 2, 3, ...)
@@ -634,7 +683,10 @@ fn issue_68_plan_exit_code_on_success() {
     let reads_path = create_fasta_file(
         temp_path,
         "reads.fa",
-        &[("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")],
+        &[(
+            "read1",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        )],
     );
 
     let output_path = temp_path.join("plan.phrayaplan");
@@ -655,7 +707,10 @@ fn issue_68_plan_exit_code_on_success() {
         .expect("Failed to execute phraya plan");
 
     // Success = exit code 0, not non-zero
-    assert!(output.status.success(), "should exit with code 0 on success");
+    assert!(
+        output.status.success(),
+        "should exit with code 0 on success"
+    );
 
     // Verify file was created
     assert!(output_path.exists(), "output file should exist");

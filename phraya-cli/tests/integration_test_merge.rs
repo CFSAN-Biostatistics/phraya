@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 /// Helper to create a temporary .phraya file
@@ -85,8 +85,8 @@ fn issue_80_merge_two_files() {
         output_path
     );
 
-    let merged_file = phraya_io::phraya::read_phraya(&output_path)
-        .expect("merged file should be readable");
+    let merged_file =
+        phraya_io::phraya::read_phraya(&output_path).expect("merged file should be readable");
 
     assert_eq!(
         merged_file.header.reference_length, 200,
@@ -94,7 +94,8 @@ fn issue_80_merge_two_files() {
     );
 
     assert_eq!(
-        merged_file.observations.len(), 8,
+        merged_file.observations.len(),
+        8,
         "should have 8 total observations (5 + 3)"
     );
 }
@@ -127,8 +128,8 @@ fn issue_80_merge_preserves_provenance() {
 
     assert!(output.status.success(), "phraya merge should succeed");
 
-    let merged_file = phraya_io::phraya::read_phraya(&output_path)
-        .expect("merged file should be readable");
+    let merged_file =
+        phraya_io::phraya::read_phraya(&output_path).expect("merged file should be readable");
 
     // Verify provenance is preserved
     let provenances: Vec<_> = merged_file
@@ -177,11 +178,12 @@ fn issue_80_merge_three_files() {
 
     assert!(output.status.success(), "phraya merge should succeed");
 
-    let merged_file = phraya_io::phraya::read_phraya(&output_path)
-        .expect("merged file should be readable");
+    let merged_file =
+        phraya_io::phraya::read_phraya(&output_path).expect("merged file should be readable");
 
     assert_eq!(
-        merged_file.observations.len(), 6,
+        merged_file.observations.len(),
+        6,
         "should have 6 total observations (2 + 3 + 1)"
     );
 }
@@ -235,8 +237,8 @@ fn issue_80_merge_coverage_summing() {
 
     assert!(output.status.success(), "phraya merge should succeed");
 
-    let merged_file = phraya_io::phraya::read_phraya(&output_path)
-        .expect("merged file should be readable");
+    let merged_file =
+        phraya_io::phraya::read_phraya(&output_path).expect("merged file should be readable");
 
     let merged_coverage = merged_file.coverage_track.decompress();
 
@@ -369,10 +371,7 @@ fn issue_80_merge_no_input_files() {
         .output()
         .expect("Failed to execute phraya merge");
 
-    assert!(
-        !output.status.success(),
-        "should fail without input files"
-    );
+    assert!(!output.status.success(), "should fail without input files");
 }
 
 /// Test: phraya merge without --output flag
@@ -398,10 +397,7 @@ fn issue_80_merge_missing_output_flag() {
         .output()
         .expect("Failed to execute phraya merge");
 
-    assert!(
-        !output.status.success(),
-        "should fail without --output"
-    );
+    assert!(!output.status.success(), "should fail without --output");
 }
 
 /// Test: phraya merge logs progress to stderr
@@ -436,7 +432,10 @@ fn issue_80_merge_logs_progress() {
 
     // Should log something about merging samples or progress
     assert!(
-        stderr.contains("Merging") || stderr.contains("merge") || stderr.contains("Merge") || stderr.len() > 0,
+        stderr.contains("Merging")
+            || stderr.contains("merge")
+            || stderr.contains("Merge")
+            || stderr.len() > 0,
         "should log merge progress to stderr"
     );
 }
@@ -507,12 +506,13 @@ fn issue_80_merge_deduplicates_observations() {
 
     assert!(output.status.success(), "phraya merge should succeed");
 
-    let merged_file = phraya_io::phraya::read_phraya(&output_path)
-        .expect("merged file should be readable");
+    let merged_file =
+        phraya_io::phraya::read_phraya(&output_path).expect("merged file should be readable");
 
     // Should have only 1 observation (deduped)
     assert_eq!(
-        merged_file.observations.len(), 1,
+        merged_file.observations.len(),
+        1,
         "identical observations should be deduplicated"
     );
 }
@@ -541,13 +541,17 @@ fn issue_80_merge_single_file() {
         .output()
         .expect("Failed to execute phraya merge");
 
-    assert!(output.status.success(), "phraya merge should succeed with single file");
+    assert!(
+        output.status.success(),
+        "phraya merge should succeed with single file"
+    );
 
-    let merged_file = phraya_io::phraya::read_phraya(&output_path)
-        .expect("merged file should be readable");
+    let merged_file =
+        phraya_io::phraya::read_phraya(&output_path).expect("merged file should be readable");
 
     assert_eq!(
-        merged_file.observations.len(), 3,
+        merged_file.observations.len(),
+        3,
         "single file should be copied with all observations"
     );
 }

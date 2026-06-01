@@ -14,7 +14,11 @@ pub struct AlignmentResult {
 }
 
 /// Execute a single alignment task: query vs target.
-pub fn align_task(query: &Sequence, target: &Sequence, _plan: &PhrayaPlan) -> Option<AlignmentResult> {
+pub fn align_task(
+    query: &Sequence,
+    target: &Sequence,
+    _plan: &PhrayaPlan,
+) -> Option<AlignmentResult> {
     // For now, only handle sequences of equal length (simple alignment)
     if query.len() != target.len() {
         return None;
@@ -38,12 +42,12 @@ pub fn align_task(query: &Sequence, target: &Sequence, _plan: &PhrayaPlan) -> Op
                 pos as u32,
                 target_base,
                 alleles,
-                1.0, // confidence
-                "1M".to_string(), // simple CIGAR
-                60, // perfect MAPQ
-                0, // edit_distance (will be updated with real alignment)
-                vec![1], // local coverage
-                60.0, // avg quality
+                1.0,                 // confidence
+                "1M".to_string(),    // simple CIGAR
+                60,                  // perfect MAPQ
+                0,                   // edit_distance (will be updated with real alignment)
+                vec![1],             // local coverage
+                60.0,                // avg quality
                 "query".to_string(), // provenance
             );
             variants.push(variant);
@@ -78,9 +82,19 @@ mod tests {
         assert!(result.is_some());
 
         let result = result.unwrap();
-        assert!(result.variants.is_empty(), "Perfect match should have no variants");
-        assert_eq!(result.coverage_track.len(), query.len(), "Coverage track should match query length");
-        assert_eq!(result.coverage_track[0], 1, "All positions should have coverage 1");
+        assert!(
+            result.variants.is_empty(),
+            "Perfect match should have no variants"
+        );
+        assert_eq!(
+            result.coverage_track.len(),
+            query.len(),
+            "Coverage track should match query length"
+        );
+        assert_eq!(
+            result.coverage_track[0], 1,
+            "All positions should have coverage 1"
+        );
     }
 
     #[test]
@@ -101,11 +115,22 @@ mod tests {
         assert!(result.is_some());
 
         let result = result.unwrap();
-        assert_eq!(result.variants.len(), 1, "One SNP should produce one variant");
+        assert_eq!(
+            result.variants.len(),
+            1,
+            "One SNP should produce one variant"
+        );
 
         let var = &result.variants[0];
-        assert_eq!(var.position(), 2, "Variant should be at position 2 (0-indexed)");
+        assert_eq!(
+            var.position(),
+            2,
+            "Variant should be at position 2 (0-indexed)"
+        );
         assert_eq!(var.ref_base(), b'C', "Reference base should be C");
-        assert!(var.all_alleles().contains_key(&b'T'), "Allele T should be present");
+        assert!(
+            var.all_alleles().contains_key(&b'T'),
+            "Allele T should be present"
+        );
     }
 }

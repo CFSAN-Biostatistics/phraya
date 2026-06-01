@@ -48,9 +48,7 @@ impl Column {
                     ".".to_string()
                 } else {
                     alts.sort();
-                    alts.iter()
-                        .map(|&b| b as char)
-                        .collect::<String>()
+                    alts.iter().map(|&b| b as char).collect::<String>()
                 }
             }
             Column::Coverage => {
@@ -77,9 +75,7 @@ impl Column {
 /// Escape special characters for TSV output
 /// Replaces tabs with \t and newlines with \n
 fn escape_tsv_value(value: &str) -> String {
-    value
-        .replace('\t', "\\t")
-        .replace('\n', "\\n")
+    value.replace('\t', "\\t").replace('\n', "\\n")
 }
 
 /// Format variant observations as TSV with specified columns

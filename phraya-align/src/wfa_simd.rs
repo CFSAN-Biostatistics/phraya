@@ -438,7 +438,7 @@ pub fn intrinsic_is_documented(_intrinsic: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::{SeedAnchor, wfa_extend, wfa_extend_naive, wfa_extend_simd};
+    use crate::{wfa_extend, wfa_extend_naive, wfa_extend_simd, SeedAnchor};
 
     // Test will fail: wfa_extend_simd does not exist yet
     #[test]

@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{SeedAnchor, wfa_extend, wfa_extend_naive, wfa_extend_simd};
+    use crate::{wfa_extend, wfa_extend_naive, wfa_extend_simd, SeedAnchor};
 
     // Test will fail: get_active_dispatch_target function does not exist yet
     #[test]

@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 pub fn vcf_header(reference_name: &str, reference_length: u32) -> String {
     let mut header = String::new();
     header.push_str("##fileformat=VCFv4.2\n");
-    header.push_str(&format!("##contig=<ID={},length={}>\n", reference_name, reference_length));
+    header.push_str(&format!(
+        "##contig=<ID={},length={}>\n",
+        reference_name, reference_length
+    ));
     header.push_str("##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Total depth\">\n");
     header.push_str("##INFO=<ID=MQ,Number=1,Type=Integer,Description=\"Mapping quality\">\n");
     header.push_str("##INFO=<ID=CIGAR,Number=1,Type=String,Description=\"CIGAR string\">\n");
@@ -27,7 +30,10 @@ pub fn format_vcf(
     // Group observations by position for multi-allelic handling
     let mut by_position: BTreeMap<u32, Vec<VariantObservation>> = BTreeMap::new();
     for obs in observations {
-        by_position.entry(obs.position()).or_insert_with(Vec::new).push(obs);
+        by_position
+            .entry(obs.position())
+            .or_insert_with(Vec::new)
+            .push(obs);
     }
 
     // Convert grouped observations to VCF records
@@ -214,8 +220,16 @@ mod tests {
 
         // Create observation with 0.80 confidence -> 80 QUAL
         let obs = VariantObservation::new(
-            50, b'A', alleles, 0.80, "10M".to_string(), 60, 0,
-            vec![10], 35.0, "sample:read".to_string(),
+            50,
+            b'A',
+            alleles,
+            0.80,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
         );
 
         let vcf = format_vcf(std::iter::once(obs), "chr1", 1000);

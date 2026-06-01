@@ -1,6 +1,6 @@
 pub mod minimizer;
 
-pub use minimizer::{MinimimizerSketch};
+pub use minimizer::MinimimizerSketch;
 use phraya_core::types::Sequence;
 
 /// Default k-mer length for minimizer sketching (standard for bacterial genomics)
@@ -78,7 +78,8 @@ pub fn select_centroid(sketches: &[MinimimizerSketch]) -> Option<usize> {
         if !similarities.is_empty() {
             similarities.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let median = if similarities.len() % 2 == 0 {
-                (similarities[similarities.len() / 2 - 1] + similarities[similarities.len() / 2]) / 2.0
+                (similarities[similarities.len() / 2 - 1] + similarities[similarities.len() / 2])
+                    / 2.0
             } else {
                 similarities[similarities.len() / 2]
             };
@@ -89,10 +90,7 @@ pub fn select_centroid(sketches: &[MinimimizerSketch]) -> Option<usize> {
     }
 
     // Find the index with the median value (middle of the distribution)
-    let mut indexed_sims: Vec<(usize, f64)> = avg_similarities
-        .into_iter()
-        .enumerate()
-        .collect();
+    let mut indexed_sims: Vec<(usize, f64)> = avg_similarities.into_iter().enumerate().collect();
     indexed_sims.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
     let median_index = indexed_sims.len() / 2;
@@ -111,7 +109,10 @@ pub struct Seed {
 ///
 /// Seeds are anchor points where query and target share the same k-mer.
 /// Sorted by query position.
-pub fn find_seeds(query_sketch: &MinimimizerSketch, target_sketch: &MinimimizerSketch) -> Vec<Seed> {
+pub fn find_seeds(
+    query_sketch: &MinimimizerSketch,
+    target_sketch: &MinimimizerSketch,
+) -> Vec<Seed> {
     let shared = query_sketch.find_shared_minimizers(target_sketch);
 
     shared
@@ -153,7 +154,8 @@ pub fn compute_kmer_uniqueness(sketches: &[MinimimizerSketch]) -> HashMap<u32, f
     for ((_, pos), count) in kmer_counts {
         let score = 1.0 / count as f64;
         // Store the minimum uniqueness score if multiple k-mers at same position
-        uniqueness.entry(pos)
+        uniqueness
+            .entry(pos)
             .and_modify(|s| *s = s.min(score))
             .or_insert(score);
     }
@@ -182,7 +184,12 @@ mod tests {
 
     #[test]
     fn sketch_sequence_with_defaults() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence_default(&seq);
         assert_eq!(sketch.k, DEFAULT_K);
         assert_eq!(sketch.w, DEFAULT_W);
@@ -190,7 +197,12 @@ mod tests {
 
     #[test]
     fn sketch_sequence_deterministic() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
 
         let sketch1 = sketch_sequence_default(&seq);
         let sketch2 = sketch_sequence_default(&seq);
@@ -210,7 +222,9 @@ mod tests {
 
         // Different sequences should likely produce different sketches
         // (or at least this shouldn't panic)
-        assert!(sketch1.minimizers != sketch2.minimizers || (sketch1.is_empty() && sketch2.is_empty()));
+        assert!(
+            sketch1.minimizers != sketch2.minimizers || (sketch1.is_empty() && sketch2.is_empty())
+        );
     }
 
     #[test]
@@ -219,7 +233,7 @@ mod tests {
             b"ACGTACGTACGT".to_vec(),
             Some(vec![30, 35, 40, 38, 30, 35, 40, 38, 30, 35, 40, 38]),
             "seq_with_qual".to_string(),
-            None
+            None,
         );
 
         let sketch = sketch_sequence(&seq, 4, 2);
@@ -234,7 +248,7 @@ mod tests {
             b"ACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
             None,
             "sequence_1".to_string(),
-            Some("A test sequence".to_string())
+            Some("A test sequence".to_string()),
         );
 
         let sketch = sketch_sequence_default(&seq);
@@ -252,7 +266,12 @@ mod tests {
 
     #[test]
     fn compute_uniqueness_single_sketch() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 4, 2);
 
         let sketches = vec![sketch.clone()];
@@ -266,7 +285,12 @@ mod tests {
 
     #[test]
     fn compute_uniqueness_identical_sketches() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 4, 2);
 
         let sketches = vec![sketch.clone(), sketch.clone()];
@@ -280,7 +304,12 @@ mod tests {
 
     #[test]
     fn compute_uniqueness_three_identical_sketches() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 4, 2);
 
         let sketches = vec![sketch.clone(), sketch.clone(), sketch.clone()];
@@ -288,14 +317,24 @@ mod tests {
 
         // All k-mers appear exactly 3 times
         for &score in uniqueness.values() {
-            assert!((score - 1.0/3.0).abs() < 1e-10);
+            assert!((score - 1.0 / 3.0).abs() < 1e-10);
         }
     }
 
     #[test]
     fn compute_uniqueness_mixed_sketches() {
-        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
-        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
+        let seq1 = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq1".to_string(),
+            None,
+        );
+        let seq2 = Sequence::new(
+            b"TGCATGCATGCATGCATGCA".to_vec(),
+            None,
+            "seq2".to_string(),
+            None,
+        );
 
         let sketch1 = sketch_sequence(&seq1, 4, 2);
         let sketch2 = sketch_sequence(&seq2, 4, 2);
@@ -315,10 +354,21 @@ mod tests {
 
     #[test]
     fn compute_uniqueness_scores_in_valid_range() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 4, 2);
 
-        let sketches = vec![sketch.clone(), sketch.clone(), sketch.clone(), sketch.clone(), sketch.clone()];
+        let sketches = vec![
+            sketch.clone(),
+            sketch.clone(),
+            sketch.clone(),
+            sketch.clone(),
+            sketch.clone(),
+        ];
         let uniqueness = compute_kmer_uniqueness(&sketches);
 
         // All scores should be in range (0.0, 1.0]
@@ -353,7 +403,12 @@ mod tests {
 
     #[test]
     fn compute_uniqueness_property_all_scores_sum() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 4, 2);
 
         let sketches = vec![sketch.clone(), sketch.clone()];
@@ -365,7 +420,12 @@ mod tests {
 
     #[test]
     fn jaccard_identical_sketches() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 4, 2);
 
         let j = jaccard_similarity(&sketch, &sketch);
@@ -386,8 +446,18 @@ mod tests {
 
     #[test]
     fn jaccard_symmetry() {
-        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
-        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
+        let seq1 = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq1".to_string(),
+            None,
+        );
+        let seq2 = Sequence::new(
+            b"TGCATGCATGCATGCATGCA".to_vec(),
+            None,
+            "seq2".to_string(),
+            None,
+        );
 
         let sketch1 = sketch_sequence(&seq1, 4, 2);
         let sketch2 = sketch_sequence(&seq2, 4, 2);
@@ -400,8 +470,18 @@ mod tests {
 
     #[test]
     fn jaccard_range() {
-        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
-        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
+        let seq1 = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq1".to_string(),
+            None,
+        );
+        let seq2 = Sequence::new(
+            b"TGCATGCATGCATGCATGCA".to_vec(),
+            None,
+            "seq2".to_string(),
+            None,
+        );
 
         let sketch1 = sketch_sequence(&seq1, 4, 2);
         let sketch2 = sketch_sequence(&seq2, 4, 2);
@@ -413,7 +493,12 @@ mod tests {
 
     #[test]
     fn select_centroid_single_sketch() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 4, 2);
 
         let centroid = select_centroid(&[sketch]);
@@ -422,7 +507,12 @@ mod tests {
 
     #[test]
     fn select_centroid_two_identical_sketches() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 4, 2);
 
         let centroid = select_centroid(&[sketch.clone(), sketch.clone()]);
@@ -432,9 +522,24 @@ mod tests {
 
     #[test]
     fn select_centroid_three_sketches() {
-        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
-        let seq2 = Sequence::new(b"ACGTACGTACGTACGTACGT".to_vec(), None, "seq2".to_string(), None); // identical
-        let seq3 = Sequence::new(b"TTTTTTTTTTTTTTTTTTTT".to_vec(), None, "seq3".to_string(), None); // different
+        let seq1 = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq1".to_string(),
+            None,
+        );
+        let seq2 = Sequence::new(
+            b"ACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq2".to_string(),
+            None,
+        ); // identical
+        let seq3 = Sequence::new(
+            b"TTTTTTTTTTTTTTTTTTTT".to_vec(),
+            None,
+            "seq3".to_string(),
+            None,
+        ); // different
 
         let sketch1 = sketch_sequence(&seq1, 4, 2);
         let sketch2 = sketch_sequence(&seq2, 4, 2);
@@ -453,10 +558,30 @@ mod tests {
 
     #[test]
     fn select_centroid_returns_valid_index() {
-        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
-        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
-        let seq3 = Sequence::new(b"GCTAGCTAGCTAGCTAGCTAGCTA".to_vec(), None, "seq3".to_string(), None);
-        let seq4 = Sequence::new(b"ACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq4".to_string(), None); // similar to seq1
+        let seq1 = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq1".to_string(),
+            None,
+        );
+        let seq2 = Sequence::new(
+            b"TGCATGCATGCATGCATGCATGCA".to_vec(),
+            None,
+            "seq2".to_string(),
+            None,
+        );
+        let seq3 = Sequence::new(
+            b"GCTAGCTAGCTAGCTAGCTAGCTA".to_vec(),
+            None,
+            "seq3".to_string(),
+            None,
+        );
+        let seq4 = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq4".to_string(),
+            None,
+        ); // similar to seq1
 
         let sketch1 = sketch_sequence(&seq1, 5, 3);
         let sketch2 = sketch_sequence(&seq2, 5, 3);
@@ -473,10 +598,21 @@ mod tests {
 
     #[test]
     fn select_centroid_many_identical() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 5, 3);
 
-        let sketches = vec![sketch.clone(), sketch.clone(), sketch.clone(), sketch.clone(), sketch.clone()];
+        let sketches = vec![
+            sketch.clone(),
+            sketch.clone(),
+            sketch.clone(),
+            sketch.clone(),
+            sketch.clone(),
+        ];
         let centroid = select_centroid(&sketches);
 
         assert!(centroid.is_some());
@@ -486,7 +622,12 @@ mod tests {
 
     #[test]
     fn find_seeds_identical_sequences() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch1 = sketch_sequence(&seq, 5, 3);
         let sketch2 = sketch_sequence(&seq, 5, 3);
 
@@ -500,8 +641,18 @@ mod tests {
 
     #[test]
     fn find_seeds_different_sequences() {
-        let seq1 = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq1".to_string(), None);
-        let seq2 = Sequence::new(b"TGCATGCATGCATGCATGCATGCATGCA".to_vec(), None, "seq2".to_string(), None);
+        let seq1 = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq1".to_string(),
+            None,
+        );
+        let seq2 = Sequence::new(
+            b"TGCATGCATGCATGCATGCATGCATGCA".to_vec(),
+            None,
+            "seq2".to_string(),
+            None,
+        );
 
         let sketch1 = sketch_sequence(&seq1, 5, 3);
         let sketch2 = sketch_sequence(&seq2, 5, 3);
@@ -531,7 +682,12 @@ mod tests {
 
     #[test]
     fn find_seeds_sorted_by_query_pos() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 5, 3);
 
         let seeds = find_seeds(&sketch, &sketch);
@@ -546,13 +702,19 @@ mod tests {
 
     #[test]
     fn find_seeds_matching_minimizers() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 5, 3);
 
         let seeds = find_seeds(&sketch, &sketch);
 
         // All seeds should have minimizers present in both sketches
-        let query_minimizers: std::collections::HashSet<_> = sketch.minimizers.iter().map(|&(m, _)| m).collect();
+        let query_minimizers: std::collections::HashSet<_> =
+            sketch.minimizers.iter().map(|&(m, _)| m).collect();
         for seed in &seeds {
             assert!(query_minimizers.contains(&seed.minimizer));
         }
@@ -560,7 +722,12 @@ mod tests {
 
     #[test]
     fn find_seeds_single_vs_empty() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch_nonempty = sketch_sequence(&seq, 5, 3);
         let sketch_empty = MinimimizerSketch {
             minimizers: vec![],
@@ -577,7 +744,12 @@ mod tests {
 
     #[test]
     fn find_seeds_seed_positions_valid() {
-        let seq = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "seq".to_string(), None);
+        let seq = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "seq".to_string(),
+            None,
+        );
         let sketch = sketch_sequence(&seq, 5, 3);
 
         let seeds = find_seeds(&sketch, &sketch);
