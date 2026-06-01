@@ -66,7 +66,7 @@ mod tests {
         let manual_result = manual.unwrap();
 
         assert_eq!(dispatched_result.cigar, manual_result.cigar);
-        assert_eq!(dispatched_result.score, manual_result.score);
+        assert_eq!(dispatched_result.edit_distance, manual_result.edit_distance);
     }
 
     // Test will fail: multiversion attribute does not exist yet

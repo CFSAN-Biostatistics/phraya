@@ -103,10 +103,17 @@ pub fn wfa_extend_naive_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
     }
 
     // Traceback to build CIGAR
-    let score = dp[query_len][target_len];
+    let edit_distance = dp[query_len][target_len] as usize;
     let cigar = build_cigar(&dp, query_suffix, target_suffix, query_len, target_len);
 
-    Ok(Alignment { cigar, score })
+    Ok(Alignment {
+        cigar,
+        edit_distance,
+        query_start: seed.query_pos,
+        query_end: seed.query_pos + query_len,
+        target_start: seed.target_pos,
+        target_end: seed.target_pos + target_len,
+    })
 }
 
 /// Build CIGAR string from DP traceback.
@@ -239,10 +246,17 @@ pub fn wfa_extend_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> Wf
         }
     }
 
-    let score = dp[query_len][target_len];
+    let edit_distance = dp[query_len][target_len] as usize;
     let cigar = build_cigar(&dp, query_suffix, target_suffix, query_len, target_len);
 
-    Ok(Alignment { cigar, score })
+    Ok(Alignment {
+        cigar,
+        edit_distance,
+        query_start: seed.query_pos,
+        query_end: seed.query_pos + query_len,
+        target_start: seed.target_pos,
+        target_end: seed.target_pos + target_len,
+    })
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -444,7 +458,7 @@ mod tests {
         assert!(result.is_ok());
         let alignment = result.unwrap();
         assert_eq!(alignment.cigar, "12M");
-        assert_eq!(alignment.score, 0); // perfect match, no edits
+        assert_eq!(alignment.edit_distance, 0); // perfect match, no edits
     }
 
     // Test will fail: wfa_extend_simd does not exist yet
@@ -466,7 +480,7 @@ mod tests {
         let alignment = result.unwrap();
         // Should contain a mismatch at position 6
         assert!(alignment.cigar.contains("X") || alignment.cigar.contains("M"));
-        assert!(alignment.score > 0); // has edit distance
+        assert!(alignment.edit_distance > 0); // has edit distance
     }
 
     // Test will fail: wfa_extend_simd does not exist yet
@@ -527,7 +541,7 @@ mod tests {
         assert!(result.is_ok());
         let alignment = result.unwrap();
         // Mixed insertions, deletions, mismatches
-        assert!(alignment.score > 0);
+        assert!(alignment.edit_distance > 0);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -550,7 +564,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -573,7 +587,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -596,7 +610,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -619,7 +633,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -642,7 +656,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -665,7 +679,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -688,7 +702,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -711,7 +725,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -734,7 +748,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -757,7 +771,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -780,7 +794,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -803,7 +817,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -826,7 +840,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -849,7 +863,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -872,7 +886,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -895,7 +909,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -918,7 +932,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -941,7 +955,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -964,7 +978,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: wfa_extend_naive does not exist yet
@@ -987,7 +1001,7 @@ mod tests {
         let simd = simd_result.unwrap();
 
         assert_eq!(naive.cigar, simd.cigar);
-        assert_eq!(naive.score, simd.score);
+        assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
     // Test will fail: multiversion attribute does not exist yet
@@ -1065,5 +1079,65 @@ mod tests {
         let result = wfa_extend(query, target, seed);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_alignment_position_fields_with_seed_at_start() {
+        let query = b"ACGTACGTACGT";
+        let target = b"ACGTACGTACGT";
+        let seed = SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+
+        let result = wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+
+        let alignment = result.unwrap();
+        assert_eq!(alignment.query_start, 0);
+        assert_eq!(alignment.query_end, 12); // seed_pos + len
+        assert_eq!(alignment.target_start, 0);
+        assert_eq!(alignment.target_end, 12);
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    fn test_alignment_position_fields_with_seed_midway() {
+        let query = b"ACGTACGTACGT";
+        let target = b"ACGTACGTACGT";
+        let seed = SeedAnchor {
+            query_pos: 4,
+            target_pos: 4,
+        };
+
+        let result = wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+
+        let alignment = result.unwrap();
+        assert_eq!(alignment.query_start, 4);
+        assert_eq!(alignment.query_end, 12);
+        assert_eq!(alignment.target_start, 4);
+        assert_eq!(alignment.target_end, 12);
+    }
+
+    #[test]
+    fn test_alignment_empty_sequences_at_seed() {
+        let query = b"ACGTACGTACGT";
+        let target = b"ACGTACGTACGT";
+        let seed = SeedAnchor {
+            query_pos: 12, // at end, suffix is empty
+            target_pos: 12,
+        };
+
+        let result = wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+
+        let alignment = result.unwrap();
+        assert_eq!(alignment.query_start, 12);
+        assert_eq!(alignment.query_end, 12); // no suffix
+        assert_eq!(alignment.target_start, 12);
+        assert_eq!(alignment.target_end, 12);
+        assert_eq!(alignment.edit_distance, 0); // no operations needed
+        assert_eq!(alignment.cigar, ""); // empty alignment
     }
 }

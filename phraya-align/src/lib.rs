@@ -1,6 +1,7 @@
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
 pub mod wfa_simd_safety;
+pub mod executor;
 
 /// Seed anchor position for WFA extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,7 +14,11 @@ pub struct SeedAnchor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alignment {
     pub cigar: String,
-    pub score: i32,
+    pub edit_distance: usize,
+    pub query_start: usize,
+    pub query_end: usize,
+    pub target_start: usize,
+    pub target_end: usize,
 }
 
 /// Result type for WFA operations.
@@ -24,6 +29,13 @@ pub type WfaResult = Result<Alignment, WfaError>;
 pub enum WfaError {
     InvalidInput(String),
     AlignmentFailed(String),
+}
+
+/// Scored alignments with primary and alternatives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredAlignments {
+    pub primary: Alignment,
+    pub alternatives: Vec<Alignment>,
 }
 
 // Core WFA implementation - naive baseline
@@ -69,4 +81,149 @@ pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
 pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
     // Non-x86 platforms use naive implementation
     wfa_simd::wfa_extend_naive_impl(query, target, seed)
+}
+
+/// Score alignments by normalized edit distance and filter alternatives.
+pub fn score_alignments(alignments: &[Alignment], query_len: usize) -> ScoredAlignments {
+    if alignments.is_empty() {
+        panic!("At least one alignment required");
+    }
+
+    // Find primary (best) alignment
+    let primary = alignments
+        .iter()
+        .min_by_key(|a| a.edit_distance)
+        .unwrap()
+        .clone();
+
+    // Filter alternatives with score_ratio >= 0.95
+    let alternatives = alignments
+        .iter()
+        .filter(|a| *a != &primary)
+        .filter(|alt| {
+            let primary_norm = 1.0 - (primary.edit_distance as f64 / query_len as f64);
+            let alt_norm = 1.0 - (alt.edit_distance as f64 / query_len as f64);
+            let score_ratio = alt_norm / primary_norm;
+            score_ratio >= 0.95
+        })
+        .cloned()
+        .collect();
+
+    ScoredAlignments { primary, alternatives }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_single_alignment() {
+        let alignment = Alignment {
+            cigar: "100M".to_string(),
+            edit_distance: 0,
+            query_start: 0,
+            query_end: 100,
+            target_start: 0,
+            target_end: 100,
+        };
+
+        let scored = score_alignments(&[alignment.clone()], 100);
+        assert_eq!(scored.primary, alignment);
+        assert!(scored.alternatives.is_empty());
+    }
+
+    #[test]
+    fn test_similar_alignments_both_stored() {
+        let primary = Alignment {
+            cigar: "100M".to_string(),
+            edit_distance: 2,
+            query_start: 0,
+            query_end: 100,
+            target_start: 0,
+            target_end: 100,
+        };
+        let alternative = Alignment {
+            cigar: "98M1I1D".to_string(),
+            edit_distance: 3, // normalized: (1 - 3/100) / (1 - 2/100) ≈ 0.9898 > 0.95
+            query_start: 0,
+            query_end: 100,
+            target_start: 0,
+            target_end: 100,
+        };
+
+        let scored = score_alignments(&[primary.clone(), alternative.clone()], 100);
+        assert_eq!(scored.primary, primary);
+        assert_eq!(scored.alternatives.len(), 1);
+        assert_eq!(scored.alternatives[0], alternative);
+    }
+
+    #[test]
+    fn test_distant_alignments_only_primary() {
+        let primary = Alignment {
+            cigar: "100M".to_string(),
+            edit_distance: 2,
+            query_start: 0,
+            query_end: 100,
+            target_start: 0,
+            target_end: 100,
+        };
+        let alternative = Alignment {
+            cigar: "80M10I10D".to_string(),
+            edit_distance: 20, // normalized: (1 - 20/100) / (1 - 2/100) ≈ 0.816 < 0.95
+            query_start: 0,
+            query_end: 100,
+            target_start: 0,
+            target_end: 100,
+        };
+
+        let scored = score_alignments(&[primary.clone(), alternative], 100);
+        assert_eq!(scored.primary, primary);
+        assert!(scored.alternatives.is_empty());
+    }
+
+    #[test]
+    fn test_query_len_normalization() {
+        // With longer query, same edit distance has better (higher) normalized score
+        let primary_short = Alignment {
+            cigar: "10M".to_string(),
+            edit_distance: 1,
+            query_start: 0,
+            query_end: 10,
+            target_start: 0,
+            target_end: 10,
+        };
+        let alt_short = Alignment {
+            cigar: "9M1D".to_string(),
+            edit_distance: 1,
+            query_start: 0,
+            query_end: 10,
+            target_start: 0,
+            target_end: 10,
+        };
+
+        // Same edit distance, same query length → score_ratio = 1.0
+        let scored_short = score_alignments(&[primary_short, alt_short.clone()], 10);
+        assert_eq!(scored_short.alternatives.len(), 1);
+
+        // Now with longer query
+        let primary_long = Alignment {
+            cigar: "100M".to_string(),
+            edit_distance: 1,
+            query_start: 0,
+            query_end: 100,
+            target_start: 0,
+            target_end: 100,
+        };
+        let alt_long = Alignment {
+            cigar: "99M1D".to_string(),
+            edit_distance: 1,
+            query_start: 0,
+            query_end: 100,
+            target_start: 0,
+            target_end: 100,
+        };
+
+        let scored_long = score_alignments(&[primary_long, alt_long], 100);
+        assert_eq!(scored_long.alternatives.len(), 1);
+    }
 }

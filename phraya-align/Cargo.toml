@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 multiversion = "0.7"
+phraya-core = { path = "../phraya-core" }
+phraya-io = { path = "../phraya-io" }
+phraya-index = { path = "../phraya-index" }
 
 [dev-dependencies]
 criterion = "0.5"
