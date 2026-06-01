@@ -4,6 +4,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+/// Helper to get phraya-cli manifest path for cargo run commands
+fn get_manifest_path() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    std::path::Path::new(&manifest_dir).join("Cargo.toml")
+}
+
 #[test]
 fn unit_test_filter_directly() {
     // Test that the filter works directly without file I/O
@@ -309,11 +315,13 @@ fn issue_85_filter_min_coverage_threshold() {
     );
 
     // Filter with min-coverage 10
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let manifest_path = std::path::Path::new(&manifest_dir).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -325,7 +333,8 @@ fn issue_85_filter_min_coverage_threshold() {
 
     assert!(
         output.status.success(),
-        "phraya filter should succeed with --min-coverage"
+        "phraya filter should succeed with --min-coverage\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 
     let vcf_output = String::from_utf8_lossy(&output.stdout);
@@ -395,7 +404,7 @@ fn issue_85_filter_min_mapq_threshold() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -451,7 +460,7 @@ fn issue_85_filter_format_vcf_explicit() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -500,7 +509,7 @@ fn issue_85_filter_format_tsv() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -559,7 +568,7 @@ fn issue_85_filter_format_phraya() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -649,7 +658,7 @@ fn issue_85_filter_multiple_thresholds() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -731,7 +740,7 @@ fn issue_85_filter_logs_statistics() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -765,7 +774,7 @@ fn issue_85_filter_error_handling_nonexistent_file() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             nonexistent_path.to_str().unwrap(),
@@ -818,7 +827,7 @@ fn issue_85_filter_chaining_support() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -844,7 +853,7 @@ fn issue_85_filter_chaining_support() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             filtered1_path.to_str().unwrap(),
@@ -901,7 +910,7 @@ fn issue_85_filter_empty_result() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -943,7 +952,7 @@ fn issue_85_filter_argument_validation() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
         ])
@@ -980,7 +989,7 @@ fn issue_85_filter_argument_validation() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -1047,7 +1056,7 @@ fn issue_85_filter_preserves_position_order() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),

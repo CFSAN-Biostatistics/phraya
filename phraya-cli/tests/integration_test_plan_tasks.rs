@@ -2,6 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+/// Helper to get phraya-cli manifest path for cargo run commands
+fn get_manifest_path() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    std::path::Path::new(&manifest_dir).join("Cargo.toml")
+}
+
 /// Helper to create a temporary FASTA file
 fn create_fasta_file(dir: &Path, filename: &str, sequences: &[(&str, &str)]) -> PathBuf {
     let path = dir.join(filename);
@@ -68,7 +74,7 @@ fn issue_69_plan_tasks_basic_output() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -117,7 +123,7 @@ fn issue_69_plan_tasks_tsv_format() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -169,7 +175,7 @@ fn issue_69_plan_tasks_row_count_matches_task_count() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -211,7 +217,7 @@ fn issue_69_plan_tasks_pipeline_wc_l() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -247,7 +253,7 @@ fn issue_69_plan_tasks_missing_file_error() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             nonexistent_path,
@@ -285,7 +291,7 @@ fn issue_69_plan_tasks_corrupt_plan_file_error() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             corrupt_path.to_str().unwrap(),
@@ -322,7 +328,7 @@ fn issue_69_plan_tasks_empty_task_list() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -368,7 +374,7 @@ fn issue_69_plan_tasks_large_task_list() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -437,7 +443,7 @@ fn issue_69_plan_tasks_integration_with_plan_command() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -460,7 +466,7 @@ fn issue_69_plan_tasks_integration_with_plan_command() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -502,7 +508,7 @@ fn issue_69_plan_tasks_requires_file_argument() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
         ])
@@ -532,7 +538,7 @@ fn issue_69_plan_tasks_header_exact_format() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -569,7 +575,7 @@ fn issue_69_plan_tasks_numeric_format() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
@@ -605,7 +611,7 @@ fn issue_69_plan_tasks_all_tasks_present() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),

@@ -2,6 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+/// Helper to get phraya-cli manifest path for cargo run commands
+fn get_manifest_path() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    std::path::Path::new(&manifest_dir).join("Cargo.toml")
+}
+
 /// Helper to create a temporary FASTA file
 fn create_fasta_file(dir: &Path, filename: &str, sequences: &[(&str, &str)]) -> PathBuf {
     let path = dir.join(filename);
@@ -82,7 +88,7 @@ fn issue_68_plan_case2_reads_with_reference() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -189,7 +195,7 @@ fn issue_68_plan_case3_contigs_with_reads() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -268,7 +274,7 @@ fn issue_68_plan_case4_contigs_only() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -316,7 +322,7 @@ fn issue_68_plan_invalid_input_file() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -372,7 +378,7 @@ fn issue_68_plan_cli_argument_parsing() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -388,7 +394,7 @@ fn issue_68_plan_cli_argument_parsing() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--output",
@@ -435,7 +441,7 @@ fn issue_68_plan_kmer_uniqueness_computed() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -498,7 +504,7 @@ fn issue_68_plan_logs_use_case() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -566,7 +572,7 @@ fn issue_68_plan_multiple_input_files() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -644,7 +650,7 @@ fn issue_68_plan_task_list_valid() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
@@ -695,7 +701,7 @@ fn issue_68_plan_exit_code_on_success() {
         .args(&[
             "run",
             "--manifest-path",
-            "phraya-cli/Cargo.toml",
+            get_manifest_path().to_str().unwrap(),
             "--",
             "plan",
             "--inputs",
