@@ -6,7 +6,7 @@ use tempfile::TempDir;
 fn create_phraya_file(
     dir: &Path,
     filename: &str,
-    observations: Vec<(u32, u8, HashMap<u8, u32>, u8)>, // position, ref_base, alleles, mapq
+    observations: Vec<(u32, u8, HashMap<u8, u32>, u8, u32)>, // position, ref_base, alleles, mapq, coverage
     reference_length: u32,
 ) -> PathBuf {
     use phraya_core::types::{VariantObservation, CoverageTrack};
@@ -17,7 +17,7 @@ fn create_phraya_file(
     let variant_obs: Vec<VariantObservation> = observations
         .into_iter()
         .enumerate()
-        .map(|(i, (pos, ref_base, alleles, mapq))| {
+        .map(|(i, (pos, ref_base, alleles, mapq, coverage))| {
             VariantObservation::new(
                 pos,
                 ref_base,
@@ -26,7 +26,7 @@ fn create_phraya_file(
                 "10M".to_string(),
                 mapq,
                 0,
-                vec![10],
+                vec![coverage],
                 35.0,
                 format!("sample:read{}", i),
             )
@@ -61,23 +61,24 @@ fn issue_85_filter_basic_vcf_output() {
         temp_path,
         "test.phraya",
         vec![
-            (50, b'A', alleles.clone(), 60),
+            (50, b'A', alleles.clone(), 60, 10),
             (100, b'C', {
                 let mut a = HashMap::new();
                 a.insert(b'C', 8);
                 a.insert(b'G', 2);
                 a
-            }, 50),
+            }, 50, 10),
         ],
         200,
     );
 
     // Command: phraya filter test.phraya (no format specified, defaults to VCF)
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/crash/phraya/phraya-cli/Cargo.toml",
+            manifest_path.to_str().unwrap(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -118,19 +119,19 @@ fn issue_85_filter_min_coverage_threshold() {
         vec![
             (50, b'A', {
                 let mut a = HashMap::new();
-                a.insert(b'A', 5); // low coverage
+                a.insert(b'A', 5);
                 a
-            }, 60),
+            }, 60, 5), // low coverage
             (100, b'A', {
                 let mut a = HashMap::new();
-                a.insert(b'A', 15); // high coverage
+                a.insert(b'A', 15);
                 a
-            }, 60),
+            }, 60, 15), // high coverage
             (150, b'A', {
                 let mut a = HashMap::new();
-                a.insert(b'A', 10); // medium coverage
+                a.insert(b'A', 10);
                 a
-            }, 60),
+            }, 60, 10), // medium coverage
         ],
         200,
     );
@@ -184,17 +185,17 @@ fn issue_85_filter_min_mapq_threshold() {
                 let mut a = HashMap::new();
                 a.insert(b'A', 10);
                 a
-            }, 20), // low mapq
+            }, 20, 10), // low mapq
             (100, b'A', {
                 let mut a = HashMap::new();
                 a.insert(b'A', 10);
                 a
-            }, 50), // good mapq
+            }, 50, 10), // good mapq
             (150, b'A', {
                 let mut a = HashMap::new();
                 a.insert(b'A', 10);
                 a
-            }, 60), // high mapq
+            }, 60, 10), // high mapq
         ],
         200,
     );
@@ -243,7 +244,7 @@ fn issue_85_filter_format_vcf_explicit() {
             let mut a = HashMap::new();
             a.insert(b'A', 10);
             a
-        }, 60)],
+        }, 60, 10)],
         100,
     );
 
@@ -280,7 +281,7 @@ fn issue_85_filter_format_tsv() {
             let mut a = HashMap::new();
             a.insert(b'A', 10);
             a
-        }, 60)],
+        }, 60, 10)],
         100,
     );
 
@@ -331,7 +332,7 @@ fn issue_85_filter_format_phraya() {
             let mut a = HashMap::new();
             a.insert(b'A', 10);
             a
-        }, 60)],
+        }, 60, 10)],
         100,
     );
 
@@ -391,19 +392,19 @@ fn issue_85_filter_multiple_thresholds() {
         vec![
             (50, b'A', {
                 let mut a = HashMap::new();
-                a.insert(b'A', 15); // good coverage, low mapq
+                a.insert(b'A', 15);
                 a
-            }, 20),
+            }, 20, 15), // good coverage, low mapq
             (100, b'A', {
                 let mut a = HashMap::new();
-                a.insert(b'A', 5); // low coverage, good mapq
+                a.insert(b'A', 5);
                 a
-            }, 50),
+            }, 50, 5), // low coverage, good mapq
             (150, b'A', {
                 let mut a = HashMap::new();
-                a.insert(b'A', 15); // good coverage, good mapq
+                a.insert(b'A', 15);
                 a
-            }, 50),
+            }, 50, 15), // good coverage, good mapq
         ],
         200,
     );
@@ -455,17 +456,17 @@ fn issue_85_filter_logs_statistics() {
                 let mut a = HashMap::new();
                 a.insert(b'A', 10);
                 a
-            }, 60),
+            }, 60, 10),
             (100, b'A', {
                 let mut a = HashMap::new();
-                a.insert(b'A', 5); // will be filtered
+                a.insert(b'A', 5);
                 a
-            }, 60),
+            }, 60, 5), // will be filtered
             (150, b'A', {
                 let mut a = HashMap::new();
                 a.insert(b'A', 10);
                 a
-            }, 60),
+            }, 60, 10),
         ],
         200,
     );
@@ -550,6 +551,7 @@ fn issue_85_filter_chaining_support() {
                         a
                     },
                     30 + i as u8,
+                    10 + i as u32,
                 )
             })
             .collect(),
@@ -622,7 +624,7 @@ fn issue_85_filter_empty_result() {
             let mut a = HashMap::new();
             a.insert(b'A', 5);
             a
-        }, 20)],
+        }, 20, 5)],
         100,
     );
 
@@ -693,7 +695,7 @@ fn issue_85_filter_argument_validation() {
             let mut a = HashMap::new();
             a.insert(b'A', 10);
             a
-        }, 60)],
+        }, 60, 10)],
         100,
     );
 
@@ -731,17 +733,17 @@ fn issue_85_filter_preserves_position_order() {
                 let mut a = HashMap::new();
                 a.insert(b'A', 10);
                 a
-            }, 60),
+            }, 60, 10),
             (50, b'A', {
                 let mut a = HashMap::new();
                 a.insert(b'A', 10);
                 a
-            }, 60),
+            }, 60, 10),
             (100, b'A', {
                 let mut a = HashMap::new();
                 a.insert(b'A', 10);
                 a
-            }, 60),
+            }, 60, 10),
         ],
         150,
     );
