@@ -2,6 +2,7 @@ use phraya_core::types::VariantObservation;
 use std::collections::HashMap;
 
 pub mod vcf;
+pub mod tsv;
 
 /// Threshold-based filter configuration
 #[derive(Debug, Clone)]
