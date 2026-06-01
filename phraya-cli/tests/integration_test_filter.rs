@@ -1,6 +1,69 @@
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use tempfile::TempDir;
+use phraya_filter::FilterBuilder;
+use phraya_core::types::VariantObservation;
+
+#[test]
+fn unit_test_filter_directly() {
+    // Test that the filter works directly without file I/O
+    let mut alleles = HashMap::new();
+    alleles.insert(b'A', 5u32);
+    let obs1 = VariantObservation::new(50, b'A', alleles.clone(), 0.95, "10M".to_string(), 60, 0, vec![5], 35.0, "sample:read0".to_string());
+
+    let mut alleles = HashMap::new();
+    alleles.insert(b'A', 15u32);
+    let obs2 = VariantObservation::new(100, b'A', alleles.clone(), 0.95, "10M".to_string(), 60, 0, vec![15], 35.0, "sample:read1".to_string());
+
+    let mut alleles = HashMap::new();
+    alleles.insert(b'A', 10u32);
+    let obs3 = VariantObservation::new(150, b'A', alleles.clone(), 0.95, "10M".to_string(), 60, 0, vec![10], 35.0, "sample:read2".to_string());
+
+    let observations = vec![obs1, obs2, obs3];
+
+    // Apply filter with min-coverage 10
+    let filter = FilterBuilder::new().min_coverage(10).build();
+    let filtered: Vec<_> = filter.filter(&observations).cloned().collect();
+
+    // Should have 2 observations (positions 100 and 150, both have coverage >= 10)
+    assert_eq!(filtered.len(), 2, "Filter should pass obs with coverage >= 10, got {} instead of 2", filtered.len());
+    assert_eq!(filtered[0].position(), 100);
+    assert_eq!(filtered[1].position(), 150);
+}
+
+#[test]
+fn unit_test_observations_through_file_io() {
+    // Test that observations preserve coverage values through file I/O
+    use phraya_io::phraya::{PhrayaFile, write_phraya, read_phraya};
+    use phraya_core::types::CoverageTrack;
+
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("test.phraya");
+
+    // Create observations with specific coverage values
+    let mut alleles = HashMap::new();
+    alleles.insert(b'A', 5u32);
+    let obs1 = VariantObservation::new(50, b'A', alleles.clone(), 0.95, "10M".to_string(), 60, 0, vec![5], 35.0, "sample:read0".to_string());
+
+    let mut alleles = HashMap::new();
+    alleles.insert(b'A', 15u32);
+    let obs2 = VariantObservation::new(100, b'A', alleles.clone(), 0.95, "10M".to_string(), 60, 0, vec![15], 35.0, "sample:read1".to_string());
+
+    let observations = vec![obs1, obs2];
+
+    // Write to file
+    let coverage_track = CoverageTrack::new(vec![10; 200]);
+    let phraya_file = PhrayaFile::new(200, "test_sample".to_string(), "2026-06-01T00:00:00Z".to_string(), observations, coverage_track);
+    write_phraya(&test_file, &phraya_file).expect("Failed to write");
+
+    // Read back from file
+    let read_file = read_phraya(&test_file).expect("Failed to read");
+
+    // Check that coverage values are preserved
+    assert_eq!(read_file.observations.len(), 2);
+    assert_eq!(read_file.observations[0].local_coverage()[0], 5, "First observation coverage should be 5, got {}", read_file.observations[0].local_coverage()[0]);
+    assert_eq!(read_file.observations[1].local_coverage()[0], 15, "Second observation coverage should be 15, got {}", read_file.observations[1].local_coverage()[0]);
+}
 
 /// Helper to create a temporary .phraya file with observations
 fn create_phraya_file(
@@ -101,7 +164,7 @@ fn issue_85_filter_basic_vcf_output() {
     // Verify at least one VCF record exists
     let record_lines: Vec<&str> = vcf_output
         .lines()
-        .filter(|line| !line.starts_with("#"))
+        .filter(|line| !line.starts_with("#") && !line.is_empty())
         .collect();
     assert!(record_lines.len() >= 2, "Should have at least 2 VCF records");
 }
@@ -159,7 +222,7 @@ fn issue_85_filter_min_coverage_threshold() {
     let vcf_output = String::from_utf8_lossy(&output.stdout);
     let record_lines: Vec<&str> = vcf_output
         .lines()
-        .filter(|line| !line.starts_with("#"))
+        .filter(|line| !line.starts_with("#") && !line.is_empty())
         .collect();
 
     // Should have 2 records (positions 100 and 150, both >= coverage 10)
@@ -220,7 +283,7 @@ fn issue_85_filter_min_mapq_threshold() {
     let vcf_output = String::from_utf8_lossy(&output.stdout);
     let record_lines: Vec<&str> = vcf_output
         .lines()
-        .filter(|line| !line.starts_with("#"))
+        .filter(|line| !line.starts_with("#") && !line.is_empty())
         .collect();
 
     // Should have 2 records (positions 100 and 150, both have mapq >= 40)
@@ -431,7 +494,7 @@ fn issue_85_filter_multiple_thresholds() {
     let vcf_output = String::from_utf8_lossy(&output.stdout);
     let record_lines: Vec<&str> = vcf_output
         .lines()
-        .filter(|line| !line.starts_with("#"))
+        .filter(|line| !line.starts_with("#") && !line.is_empty())
         .collect();
 
     // Only position 150 should pass both filters
@@ -655,7 +718,7 @@ fn issue_85_filter_empty_result() {
 
     let record_lines: Vec<&str> = vcf_output
         .lines()
-        .filter(|line| !line.starts_with("#"))
+        .filter(|line| !line.starts_with("#") && !line.is_empty())
         .collect();
     assert_eq!(
         record_lines.len(),
@@ -765,7 +828,7 @@ fn issue_85_filter_preserves_position_order() {
     let vcf_output = String::from_utf8_lossy(&output.stdout);
     let record_lines: Vec<&str> = vcf_output
         .lines()
-        .filter(|line| !line.starts_with("#"))
+        .filter(|line| !line.starts_with("#") && !line.is_empty())
         .collect();
 
     // Extract positions from VCF records (POS column is 1-indexed in VCF, 0-indexed in internal)
