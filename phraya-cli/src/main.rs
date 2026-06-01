@@ -372,7 +372,7 @@ fn run_filter(
         .collect();
 
     let final_count = filtered_observations.len();
-    eprintln!("Filtered {} → {} observations (min_coverage={:?}, min_mapq={:?})", initial_count, final_count, min_coverage, min_mapq);
+    eprintln!("Filtered {} → {} observations", initial_count, final_count);
 
     // Output in specified format
     match format {
