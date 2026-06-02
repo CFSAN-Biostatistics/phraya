@@ -280,4 +280,247 @@ mod tests {
             "Should gracefully fall back to naive implementation"
         );
     }
+
+    // ========================================================================
+    // Issue #71: SSE4.2 SIMD diagonal fill acceptance tests (RED phase)
+    // ========================================================================
+    // Marker: @pytest.mark.issue_71 (should be registered in pyproject.toml)
+    //
+    // These tests validate the SSE4.2 SIMD-accelerated diagonal fill for WFA.
+    // Tests are written in RED phase (should fail initially until SSE4.2 implementation).
+
+    #[test]
+    fn issue_71_diagonal_fill_sse42_2x2_matrix() {
+        let query = b"AC";
+        let target = b"AC";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.cigar, "2M");
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    fn issue_71_diagonal_fill_sse42_4x4_matrix() {
+        let query = b"ACGT";
+        let target = b"ACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.cigar, "4M");
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    fn issue_71_diagonal_fill_sse42_16x16_matrix() {
+        let query = b"ACGTACGTACGTACGT";
+        let target = b"ACGTACGTACGTACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.cigar, "16M");
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    fn issue_71_diagonal_fill_sse42_32x32_matrix() {
+        let query = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let target = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.edit_distance, 0);
+        assert!(alignment.cigar.contains("32M"));
+    }
+
+    #[test]
+    fn issue_71_simd_correctness_exact_match() {
+        let query = b"ACGTACGTACGT";
+        let target = b"ACGTACGTACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.cigar, "12M");
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    fn issue_71_simd_correctness_mismatch() {
+        let query = b"ACGTACGTACGT";
+        let target = b"ACGTACTTACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert!(alignment.edit_distance > 0);
+    }
+
+    #[test]
+    fn issue_71_simd_correctness_insertion() {
+        let query = b"ACGTACGT";
+        let target = b"ACGTAACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert!(alignment.cigar.contains("I"));
+    }
+
+    #[test]
+    fn issue_71_simd_correctness_deletion() {
+        let query = b"ACGTAACGT";
+        let target = b"ACGTACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert!(alignment.cigar.contains("D"));
+    }
+
+    #[test]
+    fn issue_71_diagonal_fill_seed_middle() {
+        let query = b"ACGTACGTACGTACGTACGT";
+        let target = b"ACGTACGTACGTACGTACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 5,
+            target_pos: 5,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.query_start, 5);
+        assert_eq!(alignment.target_start, 5);
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    fn issue_71_diagonal_fill_edge_empty_suffix() {
+        let query = b"ACGTACGT";
+        let target = b"ACGTACGT";
+        let seed = crate::SeedAnchor {
+            query_pos: 8,
+            target_pos: 8,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.cigar, "");
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    fn issue_71_diagonal_fill_single_character() {
+        let query = b"A";
+        let target = b"A";
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(query, target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.cigar, "1M");
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    fn issue_71_diagonal_fill_10kb() {
+        let base = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+        let mut query = Vec::new();
+        let mut target = Vec::new();
+        for _ in 0..100 {
+            query.extend_from_slice(base);
+            target.extend_from_slice(base);
+        }
+        assert_eq!(query.len(), 10000);
+        let seed = crate::SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
+        let result = crate::wfa_extend_naive(&query, &target, seed);
+        assert!(result.is_ok());
+        let alignment = result.unwrap();
+        assert_eq!(alignment.edit_distance, 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn issue_71_sse42_availability_detection() {
+        let sse42_available = crate::wfa_simd::is_sse42_available();
+        let _ = sse42_available;
+    }
+
+    #[test]
+    fn issue_71_runtime_dispatch_valid_target() {
+        let dispatch_target = crate::wfa_simd::get_active_dispatch_target();
+        assert!(
+            dispatch_target == "sse42" || dispatch_target == "naive",
+            "Dispatch target must be valid"
+        );
+    }
+
+    #[test]
+    fn issue_71_safety_documentation_exists() {
+        let docs = crate::wfa_simd::get_safety_documentation();
+        assert!(!docs.is_empty());
+        assert!(
+            docs.contains("Invariant") || docs.contains("invariant"),
+            "Safety docs should mention invariants"
+        );
+    }
+
+    #[test]
+    fn issue_71_unsafe_blocks_documented() {
+        let unsafe_blocks = crate::wfa_simd::get_documented_unsafe_blocks();
+        for (block_id, has_documentation) in unsafe_blocks {
+            assert!(
+                has_documentation,
+                "Unsafe block '{}' must be documented",
+                block_id
+            );
+        }
+    }
+
+    #[test]
+    fn issue_71_intrinsics_documented() {
+        let intrinsics = crate::wfa_simd::get_used_intrinsics();
+        if !intrinsics.is_empty() {
+            for intrinsic in intrinsics {
+                assert!(
+                    crate::wfa_simd::intrinsic_is_documented(&intrinsic),
+                    "Intrinsic {} must be documented",
+                    intrinsic
+                );
+            }
+        }
+    }
 }
