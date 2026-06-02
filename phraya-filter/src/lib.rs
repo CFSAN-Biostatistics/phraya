@@ -1,7 +1,11 @@
 use phraya_core::types::VariantObservation;
+use phraya_io::queries::QueryIndex;
 
+pub mod extractors;
 pub mod tsv;
 pub mod vcf;
+
+pub use extractors::{extract_allele_frequency, extract_cigar_ops, extract_multi_map_fraction};
 
 /// Threshold-based filter configuration
 #[derive(Debug, Clone)]

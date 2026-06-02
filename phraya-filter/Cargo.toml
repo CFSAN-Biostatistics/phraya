@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 phraya-core = { path = "../phraya-core" }
+phraya-io = { path = "../phraya-io" }
