@@ -1,13 +1,16 @@
 use clap::{Parser, Subcommand};
 use log::info;
-use phraya_core::types::Sequence;
+use phraya_align::executor::align_task;
+use phraya_core::types::{CoverageTrack, Sequence};
 use phraya_filter::{vcf, FilterBuilder};
 use phraya_index::{compute_kmer_uniqueness, sketch_sequence_default};
 use phraya_io::{
     phraya,
     plan::{self, write_plan, PhrayaPlan, UseCase},
+    queries,
     SequenceParser,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -47,6 +50,24 @@ enum Commands {
         inputs: Vec<PathBuf>,
 
         /// Output merged .phraya file
+        #[arg(long, value_name = "FILE", required = true)]
+        output: PathBuf,
+    },
+    /// Align a query sequence against a target using a plan file
+    Align {
+        /// Plan file (.phrayaplan)
+        #[arg(value_name = "PLAN_FILE")]
+        plan_file: PathBuf,
+
+        /// Query sequence ID
+        #[arg(value_name = "QUERY_ID")]
+        query_id: String,
+
+        /// Target sequence ID
+        #[arg(value_name = "TARGET_ID")]
+        target_id: String,
+
+        /// Output .phraya file
         #[arg(long, value_name = "FILE", required = true)]
         output: PathBuf,
     },
@@ -98,6 +119,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::PlanTasks { plan_file } => {
             plan_tasks(&plan_file)?;
         }
+        Commands::Align {
+            plan_file,
+            query_id,
+            target_id,
+            output,
+        } => {
+            run_align(&plan_file, &query_id, &target_id, &output)?;
+        }
         Commands::Merge { inputs, output } => {
             run_merge(&inputs, &output)?;
         }
@@ -121,6 +150,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
     }
+
+    Ok(())
+}
+
+fn run_align(
+    plan_path: &std::path::Path,
+    query_id: &str,
+    target_id: &str,
+    output_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let plan = plan::read_plan(plan_path)?;
+
+    // Read all sequences from every input file listed in the plan.
+    let mut seqs: HashMap<String, Sequence> = HashMap::new();
+    for file_path in &plan.input_files {
+        let mut parser = SequenceParser::from_path(file_path)?;
+        while let Some(result) = parser.next() {
+            let seq = result?;
+            seqs.insert(seq.id().to_string(), seq);
+        }
+    }
+
+    let query = seqs
+        .get(query_id)
+        .ok_or_else(|| format!("unknown query_id: {query_id}"))?;
+    let target = seqs
+        .get(target_id)
+        .ok_or_else(|| format!("unknown target_id: {target_id}"))?;
+
+    eprintln!("Aligning {query_id} to {target_id}");
+
+    let result = align_task(query, target, &plan)
+        .ok_or_else(|| format!("alignment failed for {query_id} vs {target_id}"))?;
+
+    // Build .phraya file
+    let coverage = CoverageTrack::new(result.coverage_track.iter().map(|&v| v as usize).collect());
+    let phraya_file = phraya::PhrayaFile::new(
+        target.len() as u32,
+        query_id.to_string(),
+        chrono::Utc::now().to_rfc3339(),
+        result.variants,
+        coverage,
+    );
+    phraya::write_phraya(output_path, &phraya_file)?;
+
+    // Build .phraya.queries sidecar
+    let mut index = queries::QueryIndex::new();
+    index.insert(query_id.to_string(), result.query_positions);
+    let queries_path = {
+        let mut p = output_path.as_os_str().to_owned();
+        p.push(".queries");
+        std::path::PathBuf::from(p)
+    };
+    queries::write_queries(&queries_path, &index)?;
 
     Ok(())
 }
@@ -241,8 +324,17 @@ fn detect_use_case(
     let num_input_sequences = all_sequences.len() - if has_reference { 1 } else { 0 };
 
     if has_reference {
-        // Case 2: Reads + reference
-        UseCase::ReadsWithRef
+        // Reference is stored first; check whether the remaining inputs are contigs (≥5kb).
+        let inputs_are_contigs = all_sequences
+            .iter()
+            .skip(1) // skip reference
+            .all(|(seq, _)| seq.len() >= 5000);
+
+        if inputs_are_contigs && num_input_sequences > 0 {
+            UseCase::ContigsOnly // Case 4: contigs + reference
+        } else {
+            UseCase::ReadsWithRef // Case 2: reads + reference
+        }
     } else if num_input_files > 1 || (num_input_files == 1 && num_input_sequences > 1) {
         // Case 3 or 4: We have multiple sequences without reference
         // Case 3: contigs + reads (multiple sequences in input files)
@@ -267,7 +359,7 @@ fn detect_use_case(
 fn generate_task_list(
     use_case: &UseCase,
     _num_input_files: usize,
-    _has_reference: bool,
+    has_reference: bool,
     sketches: &[phraya_index::MinimimizerSketch],
 ) -> Vec<(u32, u32)> {
     match use_case {
@@ -296,12 +388,18 @@ fn generate_task_list(
             tasks
         }
         UseCase::ContigsOnly => {
-            // Case 4: M contigs only
-            // Generate all pairwise alignments
             let mut tasks = Vec::new();
-            for i in 0..sketches.len() {
-                for j in (i + 1)..sketches.len() {
-                    tasks.push((i as u32, j as u32));
+            if has_reference {
+                // Case 4 with reference: reference is at index 0, contigs at 1..M
+                for contig_id in 1..sketches.len() {
+                    tasks.push((contig_id as u32, 0));
+                }
+            } else {
+                // Case 4 MSA: all-vs-all pairs
+                for i in 0..sketches.len() {
+                    for j in (i + 1)..sketches.len() {
+                        tasks.push((i as u32, j as u32));
+                    }
                 }
             }
             tasks
