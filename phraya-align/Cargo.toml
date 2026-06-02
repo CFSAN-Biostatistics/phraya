@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+log = "0.4"
 multiversion = "0.7"
 phraya-core = { path = "../phraya-core" }
 phraya-io = { path = "../phraya-io" }
