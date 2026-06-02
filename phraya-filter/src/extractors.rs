@@ -44,26 +44,23 @@ pub fn extract_allele_frequency(all_alleles: &HashMap<u8, usize>, allele: u8) ->
 /// Fraction of reads that multi-map (0.0-1.0) at this position.
 /// Returns 0.0 if position has no multi-mapping reads (query_index doesn't contain it, or is empty).
 pub fn extract_multi_map_fraction(position: u32, query_index: &QueryIndex) -> f64 {
+    // Count total reads that have at least one alignment at this position
     let total_reads_at_position: usize = query_index
         .values()
-        .map(|alignments| alignments.iter().filter(|&&(p, _)| p == position).count())
-        .sum();
+        .filter(|alignments| alignments.iter().any(|&(p, _)| p == position))
+        .count();
 
     if total_reads_at_position == 0 {
         return 0.0;
     }
 
+    // Count reads that have multiple alignments overall (multi-map reads)
     let multi_map_reads: usize = query_index
         .values()
-        .map(|alignments| {
-            let count_at_position = alignments.iter().filter(|&&(p, _)| p == position).count();
-            if count_at_position > 1 {
-                1
-            } else {
-                0
-            }
+        .filter(|alignments| {
+            alignments.iter().any(|&(p, _)| p == position) && alignments.len() > 1
         })
-        .sum();
+        .count();
 
     multi_map_reads as f64 / total_reads_at_position as f64
 }
