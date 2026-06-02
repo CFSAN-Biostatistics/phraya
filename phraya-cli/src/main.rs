@@ -3,7 +3,7 @@ use log::info;
 use phraya_align::executor::align_task;
 use phraya_core::types::{CoverageTrack, Sequence};
 use phraya_filter::{vcf, FilterBuilder};
-use phraya_index::{compute_kmer_uniqueness, sketch_sequence_default};
+use phraya_index::{compute_kmer_uniqueness, sketch_sequence_default, select_centroid};
 use phraya_io::{
     phraya,
     plan::{self, write_plan, PhrayaPlan, UseCase},
@@ -213,12 +213,13 @@ fn run_plan(
     reference_path: Option<&std::path::Path>,
     output_path: &PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Read all input sequences
+    // Read all input sequences and track which file they came from
     let mut all_sequences: Vec<(Sequence, String)> = Vec::new();
+    let mut sequence_to_file_index: Vec<usize> = Vec::new(); // Track which input file each sequence came from
     let mut input_file_list = Vec::new();
+    let mut ref_seq_index: Option<usize> = None;
 
     // First, read reference if provided
-    let mut ref_sequence: Option<(Sequence, String)> = None;
     if let Some(ref_path) = reference_path {
         let ref_path_str = ref_path.to_string_lossy().to_string();
         input_file_list.push(ref_path_str.clone());
@@ -226,17 +227,15 @@ fn run_plan(
         let mut parser = SequenceParser::from_path(ref_path)?;
         while let Some(seq_result) = parser.next() {
             let seq = seq_result?;
-            ref_sequence = Some((seq, ref_path_str.clone()));
+            ref_seq_index = Some(all_sequences.len());
+            all_sequences.push((seq, ref_path_str.clone()));
+            sequence_to_file_index.push(0); // File index 0 for reference
             break; // Take only the first sequence as reference
-        }
-
-        if let Some((ref_seq, _)) = &ref_sequence {
-            all_sequences.push((ref_seq.clone(), ref_path_str));
         }
     }
 
     // Read input sequences
-    for input_path in input_paths {
+    for (file_idx, input_path) in input_paths.iter().enumerate() {
         let input_path_str = input_path.to_string_lossy().to_string();
         input_file_list.push(input_path_str.clone());
 
@@ -244,6 +243,9 @@ fn run_plan(
         while let Some(seq_result) = parser.next() {
             let seq = seq_result?;
             all_sequences.push((seq, input_path_str.clone()));
+            // File indices: 1+ for input files (offset by 1 if there's a reference)
+            let file_index = if ref_seq_index.is_some() { file_idx + 1 } else { file_idx };
+            sequence_to_file_index.push(file_index);
         }
     }
 
@@ -280,6 +282,8 @@ fn run_plan(
         input_paths.len(),
         reference_path.is_some(),
         &sketches,
+        &sequence_to_file_index,
+        ref_seq_index,
     );
 
     // Create and write plan
@@ -361,6 +365,8 @@ fn generate_task_list(
     _num_input_files: usize,
     has_reference: bool,
     sketches: &[phraya_index::MinimimizerSketch],
+    sequence_to_file_index: &[usize],
+    ref_seq_index: Option<usize>,
 ) -> Vec<(u32, u32)> {
     match use_case {
         UseCase::ReadsWithRef => {
@@ -374,25 +380,38 @@ fn generate_task_list(
             tasks
         }
         UseCase::ContigsWithReads => {
-            // Case 3: M contigs + N reads, select centroid as reference
-            // Centroid = first contig (index 0) by convention
-            // Tasks: all other contigs and all reads align to centroid
-
+            // Case 3: M contigs + N reads, select centroid from contigs
+            // Contigs are in the first input file (or first two if there's a reference)
             let mut tasks = Vec::new();
 
-            // We need access to sequence lengths to distinguish contigs from reads
-            // However, we only have sketches. As a heuristic:
-            // - All sequences provided (sketches) contain both contigs and reads
-            // - We'll treat the first sequence as centroid contig
-            // - All others align to it
+            // Determine contig indices (all sequences from the first input file)
+            let first_input_file_index = if ref_seq_index.is_some() { 1 } else { 0 };
+            let contig_indices: Vec<usize> = sequence_to_file_index
+                .iter()
+                .enumerate()
+                .filter(|(_, &file_idx)| file_idx == first_input_file_index)
+                .map(|(seq_idx, _)| seq_idx)
+                .collect();
 
-            // For Case 3, centroid is the first contig (index 0)
-            // All other sequences (contigs and reads) align to it
-            let centroid_id = 0u32;
+            if contig_indices.is_empty() {
+                return tasks; // No contigs found
+            }
 
-            for query_id in 0..sketches.len() {
-                if query_id != centroid_id as usize {
-                    tasks.push((query_id as u32, centroid_id));
+            // Select centroid from contigs only
+            let contig_sketches: Vec<_> = contig_indices
+                .iter()
+                .map(|&i| sketches[i].clone())
+                .collect();
+            let centroid_offset = select_centroid(&contig_sketches)
+                .unwrap_or(0);
+            let centroid_idx = contig_indices[centroid_offset];
+
+            eprintln!("Case 3: Selected centroid contig at index {}", centroid_idx);
+
+            // Generate tasks: all other contigs and reads to centroid
+            for (seq_idx, _) in sketches.iter().enumerate() {
+                if seq_idx != centroid_idx {
+                    tasks.push((seq_idx as u32, centroid_idx as u32));
                 }
             }
 
