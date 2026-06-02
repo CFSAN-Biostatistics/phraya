@@ -12,6 +12,9 @@ zstd = "0.13"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 chrono = "0.4"
+noodles-bam = "0.67"
+noodles-cram = "0.68"
+noodles-sam = "0.64"
 
 [dev-dependencies]
 tempfile = "3"
