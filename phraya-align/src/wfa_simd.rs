@@ -382,7 +382,11 @@ pub fn get_compiled_implementations() -> Vec<&'static str> {
     {
         vec!["naive", "sse42"]
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        vec!["naive", "neon"]
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         vec!["naive"]
     }
@@ -403,6 +407,16 @@ pub fn force_implementation(
                 wfa_extend_simd_impl(query, target, seed)
             }
             #[cfg(not(target_arch = "x86_64"))]
+            {
+                wfa_extend_naive_impl(query, target, seed)
+            }
+        }
+        "neon" => {
+            #[cfg(target_arch = "aarch64")]
+            {
+                wfa_extend_neon_impl(query, target, seed)
+            }
+            #[cfg(not(target_arch = "aarch64"))]
             {
                 wfa_extend_naive_impl(query, target, seed)
             }
