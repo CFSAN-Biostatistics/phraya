@@ -375,16 +375,27 @@ fn generate_task_list(
         }
         UseCase::ContigsWithReads => {
             // Case 3: M contigs + N reads, select centroid as reference
-            // For simplicity, we generate all pairwise tasks
+            // Centroid = first contig (index 0) by convention
+            // Tasks: all other contigs and all reads align to centroid
+
             let mut tasks = Vec::new();
-            // Generate all pairwise alignments (reads vs contigs and reads vs reads)
-            for i in 0..sketches.len() {
-                for j in 0..sketches.len() {
-                    if i != j {
-                        tasks.push((i as u32, j as u32));
-                    }
+
+            // We need access to sequence lengths to distinguish contigs from reads
+            // However, we only have sketches. As a heuristic:
+            // - All sequences provided (sketches) contain both contigs and reads
+            // - We'll treat the first sequence as centroid contig
+            // - All others align to it
+
+            // For Case 3, centroid is the first contig (index 0)
+            // All other sequences (contigs and reads) align to it
+            let centroid_id = 0u32;
+
+            for query_id in 0..sketches.len() {
+                if query_id != centroid_id as usize {
+                    tasks.push((query_id as u32, centroid_id));
                 }
             }
+
             tasks
         }
         UseCase::ContigsOnly => {
