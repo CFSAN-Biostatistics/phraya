@@ -63,6 +63,15 @@ pub fn wfa_extend_simd(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResu
     }
 }
 
+/// NEON-accelerated WFA extension for ARM64.
+///
+/// Uses NEON intrinsics for diagonal fill operations on aarch64.
+/// NEON is mandatory on ARM64, so no runtime detection is needed.
+/// Falls back to naive implementation on non-aarch64 platforms.
+pub fn wfa_extend_neon(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
+    wfa_simd::wfa_extend_neon_impl(query, target, seed)
+}
+
 /// Runtime-dispatched WFA extension using multiversion.
 ///
 /// Automatically selects SSE4.2 (if available) or naive implementation
