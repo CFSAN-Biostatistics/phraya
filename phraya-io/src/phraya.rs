@@ -151,6 +151,31 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
     // Sort observations by position
     observations.sort_by_key(|obs| obs.position());
 
+    // Count observations per position (= reads supporting that variant after merge).
+    // Update each observation's local_coverage so downstream filters see merged depth.
+    let mut obs_count: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for obs in &observations {
+        *obs_count.entry(obs.position()).or_insert(0) += 1;
+    }
+    let observations: Vec<_> = observations
+        .into_iter()
+        .map(|obs| {
+            let depth = *obs_count.get(&obs.position()).unwrap_or(&1);
+            phraya_core::types::VariantObservation::new(
+                obs.position(),
+                obs.ref_base(),
+                obs.all_alleles().clone(),
+                obs.confidence(),
+                obs.cigar().to_string(),
+                obs.mapq(),
+                obs.edit_distance(),
+                vec![depth],
+                obs.avg_base_quality(),
+                obs.provenance().to_string(),
+            )
+        })
+        .collect();
+
     // Merge coverage tracks
     let mut merged_coverage_vec = vec![0usize; ref_length as usize];
     for file in &files {

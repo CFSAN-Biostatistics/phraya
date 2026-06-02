@@ -2,7 +2,7 @@ use crate::{score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{Sequence, VariantObservation};
 use phraya_index::{find_seeds, sketch_sequence_default};
 use phraya_io::plan::PhrayaPlan;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Result of a single alignment task.
 #[derive(Debug, Clone)]
@@ -25,22 +25,23 @@ pub fn align_task(
     let target_sketch = sketch_sequence_default(target);
     let seeds = find_seeds(&query_sketch, &target_sketch);
 
-    // Collect WFA alignments from each seed; fall back to anchor (0,0) for short sequences.
+    // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
+    // Seeds mid-query would miss variants before the seed; aligning from query position 0
+    // ensures the full query is aligned. Deduplicate by target_start to avoid redundant calls.
     let mut alignments = Vec::new();
 
     let anchors: Vec<SeedAnchor> = if seeds.is_empty() {
-        vec![SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        }]
+        vec![SeedAnchor { query_pos: 0, target_pos: 0 }]
     } else {
-        seeds
-            .iter()
-            .map(|s| SeedAnchor {
-                query_pos: s.query_pos as usize,
-                target_pos: s.target_pos as usize,
-            })
-            .collect()
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+        for s in &seeds {
+            let target_start = (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
+            if seen.insert(target_start) {
+                result.push(SeedAnchor { query_pos: 0, target_pos: target_start });
+            }
+        }
+        result
     };
 
     for anchor in anchors {
@@ -129,11 +130,12 @@ fn extract_variants_from_cigar(
                 q_pos += count;
                 t_pos += count;
             }
+            // WFA convention: 'I' = target has extra bases (standard 'D'); 'D' = query has extra.
             'I' => {
-                q_pos += count;
+                t_pos += count;
             }
             'D' => {
-                t_pos += count;
+                q_pos += count;
             }
             _ => {}
         }
@@ -294,6 +296,52 @@ mod tests {
         assert!(
             var.all_alleles().contains_key(&b'T'),
             "Allele T should be present"
+        );
+    }
+
+    /// Throughput: 20 reads × 100bp against a 200bp reference must complete
+    /// at ≥ 100 reads/sec (< 200ms wall time).
+    ///
+    /// Uses diverse (LCG-generated) sequences to avoid the minimizer-seed
+    /// explosion that repetitive sequences cause (~1274 seeds → hours).
+    /// With diverse sequences, ~6 seeds per alignment → ~120K DP cells total.
+    ///
+    /// CURRENTLY FAILS in debug builds: the naive O(n×m) DP is too slow for
+    /// even short sequences. Production target requires the true WFA wavefront
+    /// algorithm (sub-quadratic time/space) — the current DP is a placeholder.
+    #[test]
+    fn issue_88_throughput_100_reads_per_sec() {
+        fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
+            let mut x = seed;
+            (0..len).map(|_| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                b"ACGT"[((x >> 33) & 3) as usize]
+            }).collect()
+        }
+
+        let ref_seq = diverse_dna(200, 42);
+        let read_seq: Vec<u8> = ref_seq[..100].to_vec();
+
+        let target = Sequence::new(ref_seq, None, "ref".to_string(), None);
+        let plan = make_plan();
+
+        let start = std::time::Instant::now();
+        for i in 0..20 {
+            let query = Sequence::new(
+                read_seq.clone(),
+                None,
+                format!("read{i}"),
+                None,
+            );
+            let _ = align_task(&query, &target, &plan);
+        }
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed.as_millis() < 200,
+            "20 alignments (150bp vs 1000bp) took {}ms — below 100 reads/sec target.\n\
+             The naive O(n×m) DP must be replaced with true WFA wavefront algorithm.",
+            elapsed.as_millis()
         );
     }
 }
