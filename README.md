@@ -1,6 +1,8 @@
 # Phraya
 
-**Probabilistic Heuristic for Running Awesome Yield-Agnostic Alignments**
+**Pairwise Haplotype-Resolved Alignment, Yield Afterward**
+
+*The confluence of the two great streams.*
 
 General-purpose pairwise sequence aligner for bacterial genomics. Produces rich alignment superpositions with deferred filtering for SNP calling, in-silico typing, classification, and other downstream analyses. Zero binary dependencies. Native Rust implementation with SIMD optimization (AVX2/NEON).
 
