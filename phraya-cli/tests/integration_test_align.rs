@@ -24,7 +24,7 @@ fn write_test_plan(plan_path: &Path, fasta_path: &Path) {
         UseCase::ReadsWithRef,
         vec![fasta_path.to_string_lossy().to_string()],
         "2026-06-02T00:00:00Z".to_string(),
-        vec![],
+        HashMap::new(),
         HashMap::new(),
         vec![(1, 0)],
     );

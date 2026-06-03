@@ -1,9 +1,11 @@
 use clap::{Parser, Subcommand};
 use log::info;
 use phraya_align::executor::align_task;
-use phraya_core::types::{CoverageTrack, Sequence};
+use phraya_core::types::{
+    compute_kmer_uniqueness, select_centroid, sketch_sequence_default, CoverageTrack,
+    MinimizerSketch, Sequence,
+};
 use phraya_filter::{vcf, FilterBuilder};
-use phraya_index::{compute_kmer_uniqueness, sketch_sequence_default, select_centroid};
 use phraya_io::{
     phraya,
     plan::{self, write_plan, PhrayaPlan, UseCase},
@@ -253,8 +255,8 @@ fn run_plan(
         return Err("No sequences found in input files".into());
     }
 
-    // Compute sketches for all sequences
-    let sketches: Vec<_> = all_sequences
+    // Compute sketches for all sequences (ordered Vec for task generation)
+    let sketches: Vec<MinimizerSketch> = all_sequences
         .iter()
         .map(|(seq, _)| sketch_sequence_default(seq))
         .collect();
@@ -286,12 +288,19 @@ fn run_plan(
         ref_seq_index,
     );
 
+    // Build HashMap kmer_index keyed by sequence ID for reuse during alignment
+    let kmer_index: HashMap<String, MinimizerSketch> = all_sequences
+        .iter()
+        .zip(sketches.iter())
+        .map(|((seq, _), sketch)| (seq.id().to_string(), sketch.clone()))
+        .collect();
+
     // Create and write plan
     let plan = PhrayaPlan::new(
         use_case,
         input_file_list,
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        sketches,
+        kmer_index,
         kmer_uniqueness,
         task_list,
     );
@@ -321,7 +330,7 @@ fn plan_tasks(plan_file: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 fn detect_use_case(
     has_reference: bool,
     num_input_files: usize,
-    _sketches: &[phraya_index::MinimimizerSketch],
+    _sketches: &[MinimizerSketch],
     all_sequences: &[(Sequence, String)],
 ) -> UseCase {
     // Count sequences from input files only (exclude reference if provided)
@@ -364,7 +373,7 @@ fn generate_task_list(
     use_case: &UseCase,
     _num_input_files: usize,
     has_reference: bool,
-    sketches: &[phraya_index::MinimimizerSketch],
+    sketches: &[MinimizerSketch],
     sequence_to_file_index: &[usize],
     ref_seq_index: Option<usize>,
 ) -> Vec<(u32, u32)> {

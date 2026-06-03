@@ -135,7 +135,7 @@ fn issue_87_case4_align_contig_to_reference() {
             UseCase::ContigsOnly,
             vec![seqs.to_string_lossy().to_string()],
             "2026-06-02T00:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             vec![(1, 0), (2, 0)],
         );

@@ -1,11 +1,11 @@
-use phraya_index::MinimimizerSketch;
+use phraya_core::types::MinimizerSketch;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
 /// PhrayaPlan format version for forward compatibility
-pub const PHRAYAPLAN_VERSION: u32 = 1;
+pub const PHRAYAPLAN_VERSION: u32 = 2;
 
 /// Plan file format errors
 #[derive(Debug, Error, Serialize, Deserialize)]
@@ -46,8 +46,8 @@ pub struct PhrayaPlan {
     pub input_files: Vec<String>,
     /// Timestamp (ISO8601)
     pub timestamp: String,
-    /// K-mer sketches for all sequences
-    pub kmer_index: Vec<MinimimizerSketch>,
+    /// K-mer sketches keyed by sequence ID — for reuse during alignment
+    pub kmer_index: HashMap<String, MinimizerSketch>,
     /// K-mer uniqueness: position → uniqueness score
     pub kmer_uniqueness: HashMap<u32, f64>,
     /// Task list: (query_id, target_id) pairs
@@ -60,7 +60,7 @@ impl PhrayaPlan {
         use_case: UseCase,
         input_files: Vec<String>,
         timestamp: String,
-        kmer_index: Vec<MinimimizerSketch>,
+        kmer_index: HashMap<String, MinimizerSketch>,
         kmer_uniqueness: HashMap<u32, f64>,
         task_list: Vec<(u32, u32)>,
     ) -> Self {
@@ -73,6 +73,11 @@ impl PhrayaPlan {
             kmer_uniqueness,
             task_list,
         }
+    }
+
+    /// Look up a pre-computed sketch by sequence ID. Returns None if not in plan.
+    pub fn get_sketch(&self, sequence_id: &str) -> Option<&MinimizerSketch> {
+        self.kmer_index.get(sequence_id)
     }
 }
 
@@ -127,7 +132,7 @@ mod tests {
             UseCase::ReadsWithRef,
             vec![],
             "2026-05-31T12:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             vec![],
         );
@@ -147,7 +152,7 @@ mod tests {
             UseCase::ContigsWithReads,
             vec!["input.fa".to_string(), "reads.fq".to_string()],
             "2026-05-31T12:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             vec![(1, 2), (1, 3), (2, 3)],
         );
@@ -171,7 +176,7 @@ mod tests {
             UseCase::ReadsOnly,
             vec![],
             "2026-05-31T12:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             uniqueness.clone(),
             vec![],
         );
@@ -194,7 +199,7 @@ mod tests {
             UseCase::ContigsOnly,
             vec![],
             "2026-05-31T12:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             tasks.clone(),
         );
@@ -213,7 +218,7 @@ mod tests {
             UseCase::ReadsWithRef,
             vec![],
             "2026-05-31T12:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             vec![],
         );
@@ -247,7 +252,7 @@ mod tests {
             UseCase::ContigsWithReads,
             vec!["file1.fa".to_string(), "file2.fq".to_string()],
             "2026-05-31T12:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             tasks,
         );
@@ -272,7 +277,7 @@ mod tests {
                 *use_case,
                 vec![],
                 "2026-05-31T12:00:00Z".to_string(),
-                vec![],
+                HashMap::new(),
                 HashMap::new(),
                 vec![],
             );

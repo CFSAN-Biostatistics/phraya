@@ -1038,3 +1038,139 @@ mod tests {
         }
     }
 }
+
+// ============================================================================
+// Minimizer sketching
+// ============================================================================
+
+/// Default k-mer length for minimizer sketching (standard for bacterial genomics)
+pub const DEFAULT_K: usize = 21;
+
+/// Default window length for minimizer sketching
+pub const DEFAULT_W: usize = 11;
+
+/// A minimizer sketch: sparse representation of a sequence as (hash, position) pairs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MinimizerSketch {
+    /// (minimizer_hash, position) pairs — position is 0-indexed into the original sequence
+    pub minimizers: Vec<(u64, u32)>,
+    /// k-mer length
+    pub k: usize,
+    /// window length
+    pub w: usize,
+}
+
+impl MinimizerSketch {
+    pub fn len(&self) -> usize {
+        self.minimizers.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.minimizers.is_empty()
+    }
+
+    /// Find minimizers shared between self and other.
+    /// Returns Vec of (hash, self_pos, other_pos).
+    pub fn find_shared_minimizers(&self, other: &MinimizerSketch) -> Vec<(u64, u32, u32)> {
+        let mut other_map: HashMap<u64, Vec<u32>> = HashMap::new();
+        for &(val, pos) in &other.minimizers {
+            other_map.entry(val).or_default().push(pos);
+        }
+        let mut shared = Vec::new();
+        for &(val, qpos) in &self.minimizers {
+            if let Some(tposs) = other_map.get(&val) {
+                for &tpos in tposs {
+                    shared.push((val, qpos, tpos));
+                }
+            }
+        }
+        shared.sort_by_key(|&(_, qpos, _)| qpos);
+        shared
+    }
+}
+
+/// Sketch a raw byte sequence using simd-minimizers canonical minimizers.
+pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimizerSketch {
+    use packed_seq::AsciiSeq;
+    let mut positions = Vec::new();
+    let output = simd_minimizers::canonical_minimizers(k, w)
+        .run(AsciiSeq(sequence), &mut positions);
+    let minimizers: Vec<(u64, u32)> = output
+        .pos_and_values_u64()
+        .map(|(pos, val)| (val, pos))
+        .collect();
+    MinimizerSketch { minimizers, k, w }
+}
+
+/// Sketch a Sequence using given k and w.
+pub fn sketch_sequence(seq: &Sequence, k: usize, w: usize) -> MinimizerSketch {
+    sketch(seq.bases(), k, w)
+}
+
+/// Sketch a Sequence using default parameters (k=21, w=11).
+pub fn sketch_sequence_default(seq: &Sequence) -> MinimizerSketch {
+    sketch_sequence(seq, DEFAULT_K, DEFAULT_W)
+}
+
+fn jaccard_similarity(a: &MinimizerSketch, b: &MinimizerSketch) -> f64 {
+    let set_a: HashSet<u64> = a.minimizers.iter().map(|&(val, _)| val).collect();
+    let set_b: HashSet<u64> = b.minimizers.iter().map(|&(val, _)| val).collect();
+    if set_a.is_empty() && set_b.is_empty() {
+        return 1.0;
+    }
+    let intersection = set_a.intersection(&set_b).count();
+    let union = set_a.union(&set_b).count();
+    if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
+}
+
+/// Select the centroid sketch — the one with median Jaccard similarity to all others.
+/// Returns the index of the centroid in the input slice, or None if empty.
+pub fn select_centroid(sketches: &[MinimizerSketch]) -> Option<usize> {
+    if sketches.is_empty() {
+        return None;
+    }
+    if sketches.len() == 1 {
+        return Some(0);
+    }
+    let mut avg_sims: Vec<f64> = sketches
+        .iter()
+        .enumerate()
+        .map(|(i, sk_i)| {
+            let mut sims: Vec<f64> = sketches
+                .iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .map(|(_, sk_j)| jaccard_similarity(sk_i, sk_j))
+                .collect();
+            sims.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = sims.len();
+            if n % 2 == 0 { (sims[n / 2 - 1] + sims[n / 2]) / 2.0 } else { sims[n / 2] }
+        })
+        .collect();
+    let mut indexed: Vec<(usize, f64)> = avg_sims.drain(..).enumerate().collect();
+    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    Some(indexed[indexed.len() / 2].0)
+}
+
+/// Compute k-mer uniqueness scores from multiple sketches.
+/// Returns position → uniqueness score in (0.0, 1.0].
+pub fn compute_kmer_uniqueness(sketches: &[MinimizerSketch]) -> HashMap<u32, f64> {
+    if sketches.is_empty() {
+        return HashMap::new();
+    }
+    let mut counts: HashMap<(u64, u32), usize> = HashMap::new();
+    for sk in sketches {
+        for &(val, pos) in &sk.minimizers {
+            *counts.entry((val, pos)).or_insert(0) += 1;
+        }
+    }
+    let mut uniqueness: HashMap<u32, f64> = HashMap::new();
+    for ((_, pos), count) in counts {
+        let score = 1.0 / count as f64;
+        uniqueness
+            .entry(pos)
+            .and_modify(|s| *s = s.min(score))
+            .or_insert(score);
+    }
+    uniqueness
+}

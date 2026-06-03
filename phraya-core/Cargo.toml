@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
+simd-minimizers = "2.3"
+packed-seq = "4"
 
 [dev-dependencies]
 serde_json = "1.0"

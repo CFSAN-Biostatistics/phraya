@@ -1,6 +1,6 @@
+use crate::seeding::find_seeds;
 use crate::{score_alignments, wfa_extend, SeedAnchor};
-use phraya_core::types::{Sequence, VariantObservation};
-use phraya_index::{find_seeds, sketch_sequence_default};
+use phraya_core::types::{sketch_sequence_default, Sequence, VariantObservation};
 use phraya_io::plan::PhrayaPlan;
 use std::collections::{HashMap, HashSet};
 
@@ -19,10 +19,17 @@ pub struct AlignmentResult {
 pub fn align_task(
     query: &Sequence,
     target: &Sequence,
-    _plan: &PhrayaPlan,
+    plan: &PhrayaPlan,
 ) -> Option<AlignmentResult> {
-    let query_sketch = sketch_sequence_default(query);
-    let target_sketch = sketch_sequence_default(target);
+    // Reuse pre-computed sketches from plan if available; fall back to recomputing
+    let query_sketch = plan
+        .get_sketch(query.id())
+        .cloned()
+        .unwrap_or_else(|| sketch_sequence_default(query));
+    let target_sketch = plan
+        .get_sketch(target.id())
+        .cloned()
+        .unwrap_or_else(|| sketch_sequence_default(target));
     let seeds = find_seeds(&query_sketch, &target_sketch);
 
     // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
@@ -193,7 +200,7 @@ mod tests {
             phraya_io::plan::UseCase::ReadsWithRef,
             vec!["test".to_string()],
             "2026-06-01T00:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             vec![],
         )

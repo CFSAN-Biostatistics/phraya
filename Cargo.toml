@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "phraya-core",
     "phraya-align",
-    "phraya-index",
     "phraya-io",
     "phraya-filter",
     "phraya-cli",
@@ -21,7 +20,6 @@ repository = "https://github.com/CFSAN-Biostatistics/phraya"
 # Internal crates
 phraya-core = { path = "phraya-core" }
 phraya-align = { path = "phraya-align" }
-phraya-index = { path = "phraya-index" }
 phraya-io = { path = "phraya-io" }
 phraya-filter = { path = "phraya-filter" }
 

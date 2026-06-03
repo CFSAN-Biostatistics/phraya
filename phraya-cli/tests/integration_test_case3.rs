@@ -219,7 +219,7 @@ fn issue_86_case3_align_contig_to_centroid() {
             UseCase::ContigsWithReads,
             vec![contigs_path.to_string_lossy().to_string()],
             "2026-06-02T00:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             vec![(1, 0)], // ctg1 aligns to ctg0 (centroid)
         );
@@ -276,7 +276,7 @@ fn issue_86_case3_align_read_to_centroid() {
             UseCase::ContigsWithReads,
             vec![seqs_path.to_string_lossy().to_string()],
             "2026-06-02T00:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             vec![(1, 0)], // read0 aligns to ctg0 (centroid)
         );

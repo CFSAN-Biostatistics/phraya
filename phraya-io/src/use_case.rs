@@ -6,7 +6,7 @@ use crate::SequenceParser;
 /// Case 3: M contigs + N reads, no reference (with centroid selection)
 /// Case 4: M contigs ± reference (or contig MSA)
 /// Case 1: reads only, no reference (deferred to Phase 2)
-use phraya_index::{select_centroid, sketch_sequence_default};
+use phraya_core::types::{select_centroid, sketch_sequence_default};
 use std::path::Path;
 use thiserror::Error;
 

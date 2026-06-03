@@ -106,7 +106,7 @@ fn issue_58_phrayaplan_format_round_trip() {
         UseCase::ReadsWithRef,
         vec!["ref.fa".to_string(), "reads.fq".to_string()],
         "2026-06-01T12:00:00Z".to_string(),
-        vec![],               // sketches
+        HashMap::new(),               // sketches
         HashMap::new(),       // kmer_uniqueness
         vec![(1, 0), (2, 0)], // task_list
     );
@@ -155,7 +155,7 @@ fn issue_58_phrayaplan_contains_required_fields() {
         UseCase::ContigsWithReads,
         vec!["contigs.fa".to_string(), "reads.fq".to_string()],
         "2026-06-01T12:00:00Z".to_string(),
-        vec![], // sketches
+        HashMap::new(), // sketches
         uniqueness,
         vec![(0, 1), (1, 0), (2, 0)],
     );
@@ -399,7 +399,7 @@ fn issue_58_task_list_case2_one_per_read() {
         UseCase::ReadsWithRef,
         vec!["ref.fa".to_string(), "reads.fq".to_string()],
         "2026-06-01T12:00:00Z".to_string(),
-        vec![], // sketches
+        HashMap::new(), // sketches
         HashMap::new(),
         vec![(1, 0), (2, 0), (3, 0)], // 3 tasks: each read vs reference
     );
@@ -433,7 +433,7 @@ fn issue_58_task_list_structure_valid() {
         UseCase::ContigsOnly,
         vec!["contigs.fa".to_string()],
         "2026-06-01T12:00:00Z".to_string(),
-        vec![], // sketches
+        HashMap::new(), // sketches
         HashMap::new(),
         vec![(0, 1), (0, 2), (1, 2)], // pairwise
     );

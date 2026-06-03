@@ -49,7 +49,7 @@ fn create_plan_file(dir: &Path, filename: &str, task_list: Vec<(u32, u32)>) -> P
         UseCase::ReadsWithRef,
         vec![],
         "2026-05-31T12:00:00Z".to_string(),
-        vec![],
+        HashMap::new(),
         HashMap::new(),
         task_list,
     );

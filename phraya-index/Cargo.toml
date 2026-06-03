@@ -1,8 +1,0 @@
-[package]
-name = "phraya-index"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-phraya-core = { path = "../phraya-core" }
-serde = { version = "1", features = ["derive"] }

@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 phraya-core = { workspace = true }
 phraya-io = { workspace = true }
-phraya-index = { workspace = true }
 phraya-align = { workspace = true }
 phraya-filter = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }

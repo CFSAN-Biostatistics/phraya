@@ -1,7 +1,10 @@
 pub mod executor;
+pub mod seeding;
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
 pub mod wfa_simd_safety;
+
+pub use seeding::{find_seeds, Seed};
 
 /// Seed anchor position for WFA extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
