@@ -7,8 +7,8 @@
 
 #[cfg(test)]
 mod issue_130_local_coverage_tests {
-    use phraya_core::types::{Sequence, VariantObservation};
     use crate::executor::align_task;
+    use phraya_core::types::{Sequence, VariantObservation};
     use phraya_io::plan::PhrayaPlan;
     use std::collections::HashMap;
 
@@ -38,12 +38,7 @@ mod issue_130_local_coverage_tests {
         );
         let mut target_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec();
         target_bases[100] = b'T'; // Create variant at position 100
-        let target = Sequence::new(
-            target_bases,
-            None,
-            "ref".to_string(),
-            None,
-        );
+        let target = Sequence::new(target_bases, None, "ref".to_string(), None);
         let plan = create_test_plan();
 
         let result = align_task(&query, &target, &plan);
@@ -129,7 +124,10 @@ mod issue_130_local_coverage_tests {
         assert!(result.is_some());
 
         let result = result.unwrap();
-        let variant = result.variants.iter().find(|v| v.position() == (seq_len - 1) as u32);
+        let variant = result
+            .variants
+            .iter()
+            .find(|v| v.position() == (seq_len - 1) as u32);
         assert!(variant.is_some());
 
         let var = variant.unwrap();
@@ -244,7 +242,7 @@ mod issue_130_local_coverage_tests {
             None,
         );
         let mut target_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec();
-        target_bases[30] = b'T';  // Variant at position 30
+        target_bases[30] = b'T'; // Variant at position 30
         target_bases[100] = b'T'; // Variant at position 100
         let target = Sequence::new(target_bases, None, "ref".to_string(), None);
         let plan = create_test_plan();
