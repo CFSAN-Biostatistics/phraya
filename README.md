@@ -58,18 +58,17 @@ Phraya automatically detects your workflow:
 
 ## Architecture
 
-Workspace with 6 crates:
+Workspace with 5 crates:
 
-- **phraya-core**: Core types (Sequence, VariantObservation, EvidenceLayer, CoverageTrack), errors
-- **phraya-index**: K-mer sketching (wraps simd-minimizers), uniqueness, centroid selection, seeding
-- **phraya-io**: FASTA/FASTQ parsing, `.phrayaplan`/`.phraya`/`.phraya.queries` formats (MessagePack + zstd)
-- **phraya-align**: WFA extension, SIMD diagonal fill (SSE4.2/NEON)
+- **phraya-core**: Core types (Sequence, VariantObservation, EvidenceLayer, CoverageTrack, MinimizerSketch), errors, k-mer sketching (via simd-minimizers), centroid selection, k-mer uniqueness
+- **phraya-io**: FASTA/FASTQ/BAM/CRAM parsing, `.phrayaplan`/`.phraya`/`.phraya.queries` formats (MessagePack + zstd)
+- **phraya-align**: WFA extension, SIMD diagonal fill (SSE4.2/NEON), seeding from minimizer sketches
 - **phraya-filter**: Filtering library (threshold/expression/preset), output formatters (VCF/TSV/phraya)
 - **phraya-cli**: Binary CLI (plan/plan-tasks/align/filter subcommands)
 
 ## File Formats
 
-- **`.phrayaplan`**: Plan file (k-mer evidence + task list). Read-only during alignment. Binary MessagePack + zstd.
+- **`.phrayaplan`** (v2): Plan file (k-mer evidence + task list). Read-only during alignment. Binary MessagePack + zstd.
 - **`.phraya`**: Position index (variant observations + coverage track). Mergeable. Binary MessagePack + zstd.
 - **`.phraya.queries`**: Query index (multi-mapping alternatives per read). Sidecar file. Binary MessagePack + zstd.
 
@@ -79,14 +78,30 @@ Workspace with 6 crates:
 cargo build --release
 ```
 
-Requires Rust 1.75+. No external dependencies (BWA, minimap2, samtools).
+Requires Rust 1.75+. No external binary dependencies (BWA, minimap2, samtools).
+
+For best k-mer sketching performance, enable native SIMD:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+Without `-C target-cpu=native`, simd-minimizers falls back to a scalar path and is slower. On ARM64 (Graviton, Apple Silicon), NEON is always enabled.
+
+## Dependencies
+
+Phraya depends on [**simd-minimizers**](https://github.com/ragnargrootkoerkamp/simd-minimizers) for k-mer sketching and seeding. This library implements SIMD-accelerated canonical minimizers using AVX2 (x86-64) or NEON (ARM64), and is described in:
+
+> Ragnar Groot Koerkamp, Igor Martayan. **SimdMinimizers: Computing random minimizers, fast.** *SEA 2025.* doi:[10.4230/LIPIcs.SEA.2025.20](https://doi.org/10.4230/LIPIcs.SEA.2025.20)
+
+We use canonical minimizers with default parameters k=21, w=11 (appropriate for bacterial genomics) and ntHash rolling hashes. Sketches are computed once during `phraya plan` and reused during `phraya align`, eliminating redundant computation.
 
 ## Design Decisions
 
 - **Score ratio threshold**: 0.95 (hard-coded). Stores alternatives within 95% of best identity. Opinionated choice for storage efficiency.
-- **K-mer parameters**: k=21, w=11 (defaults from simd-minimizers). Reasonable for bacterial genomes.
-- **Coverage quantization**: Nearest 5. Enables RLE compression, negligible precision loss.
-- **SIMD library**: Uses `simd-minimizers` crate (AVX2/NEON dispatch). State-of-the-art k-mer sketching.
+- **K-mer parameters**: k=21, w=11 (canonical minimizers, standard for bacterial genomes). l = w+k-1 = 31 satisfies the odd-l canonicality requirement of simd-minimizers.
+- **Coverage quantization**: Nearest 5. Enables RLE compression, negligible precision loss for variant calling decisions.
+- **Sketch reuse**: Plan-time sketches stored in `.phrayaplan` (v2) keyed by sequence ID; alignment reuses them rather than recomputing.
 
 ## Inspired By
 
