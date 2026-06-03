@@ -1,3 +1,4 @@
+pub mod bam_cram;
 pub mod phraya;
 pub mod plan;
 pub mod queries;
