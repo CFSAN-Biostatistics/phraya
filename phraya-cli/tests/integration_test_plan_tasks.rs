@@ -61,7 +61,6 @@ fn create_plan_file(dir: &Path, filename: &str, task_list: Vec<(u32, u32)>) -> P
 
 /// Test: phraya plan-tasks reads plan file and outputs TSV
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_basic_output() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -111,7 +110,6 @@ fn issue_69_plan_tasks_basic_output() {
 
 /// Test: output TSV format is correct (tab-separated)
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_tsv_format() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -161,7 +159,6 @@ fn issue_69_plan_tasks_tsv_format() {
 
 /// Test: row count matches task count
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_row_count_matches_task_count() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -200,7 +197,6 @@ fn issue_69_plan_tasks_row_count_matches_task_count() {
 
 /// Test: can be piped to wc -l for task count
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_pipeline_wc_l() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -245,7 +241,6 @@ fn issue_69_plan_tasks_pipeline_wc_l() {
 
 /// Test: missing plan file returns non-zero exit code
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_missing_file_error() {
     let nonexistent_path = "/tmp/nonexistent_plan_69_12345.phrayaplan";
 
@@ -278,7 +273,6 @@ fn issue_69_plan_tasks_missing_file_error() {
 
 /// Test: corrupt plan file returns non-zero exit code
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_corrupt_plan_file_error() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -316,7 +310,6 @@ fn issue_69_plan_tasks_corrupt_plan_file_error() {
 
 /// Test: empty task list produces only header
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_empty_task_list() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -360,7 +353,6 @@ fn issue_69_plan_tasks_empty_task_list() {
 
 /// Test: large task list is handled correctly
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_large_task_list() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -398,7 +390,6 @@ fn issue_69_plan_tasks_large_task_list() {
 
 /// Test: integration with phraya plan (plan → plan-tasks → verify output)
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_integration_with_plan_command() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -421,17 +412,17 @@ fn issue_69_plan_tasks_integration_with_plan_command() {
             (
                 "read1",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
             (
                 "read2",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
             (
                 "read3",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
         ],
     );
@@ -502,7 +493,6 @@ fn issue_69_plan_tasks_integration_with_plan_command() {
 
 /// Test: stdin cannot be used (file argument required)
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_requires_file_argument() {
     let output = std::process::Command::new("cargo")
         .args(&[
@@ -527,7 +517,6 @@ fn issue_69_plan_tasks_requires_file_argument() {
 
 /// Test: header format is exactly "query_id\ttarget_id" (case-sensitive)
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_header_exact_format() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -564,7 +553,6 @@ fn issue_69_plan_tasks_header_exact_format() {
 
 /// Test: numeric output is plain integers (no leading zeros or extra formatting)
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_numeric_format() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -598,7 +586,6 @@ fn issue_69_plan_tasks_numeric_format() {
 
 /// Test: all tasks are output, none are skipped
 #[test]
-#[ignore = "test: implement phraya plan-tasks CLI"]
 fn issue_69_plan_tasks_all_tasks_present() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();

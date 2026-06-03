@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-fn get_manifest_path() -> std::path::PathBuf {
+/// Helper to get phraya-cli manifest path for cargo run commands
+fn get_manifest_path() -> PathBuf {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    std::path::Path::new(&manifest_dir).join("Cargo.toml")
+    Path::new(&manifest_dir).join("Cargo.toml")
 }
 
 /// Helper to create a temporary .phraya file
