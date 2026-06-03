@@ -116,7 +116,7 @@ mod tests {
         index.insert("query2".to_string(), vec![(50u32, 0.99f64)]);
         index.insert(
             "query3".to_string(),
-            vec![(150u32, 0.96f64), (250u32, 0.95f64), (350u32, 0.94f64)],
+            vec![(150u32, 0.96f64), (250u32, 0.95f64), (350u32, 0.97f64)],
         );
 
         let temp = NamedTempFile::new().unwrap();

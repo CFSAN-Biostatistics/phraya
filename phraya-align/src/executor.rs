@@ -31,14 +31,20 @@ pub fn align_task(
     let mut alignments = Vec::new();
 
     let anchors: Vec<SeedAnchor> = if seeds.is_empty() {
-        vec![SeedAnchor { query_pos: 0, target_pos: 0 }]
+        vec![SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        }]
     } else {
         let mut seen = HashSet::new();
         let mut result = Vec::new();
         for s in &seeds {
             let target_start = (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
             if seen.insert(target_start) {
-                result.push(SeedAnchor { query_pos: 0, target_pos: target_start });
+                result.push(SeedAnchor {
+                    query_pos: 0,
+                    target_pos: target_start,
+                });
             }
         }
         result
@@ -56,8 +62,7 @@ pub fn align_task(
     }
 
     let scored = score_alignments(&alignments, query.len());
-    let primary_score =
-        1.0 - (scored.primary.edit_distance as f64 / query.len().max(1) as f64);
+    let primary_score = 1.0 - (scored.primary.edit_distance as f64 / query.len().max(1) as f64);
 
     let variants = extract_variants_from_cigar(
         &scored.primary.cigar,
@@ -159,10 +164,7 @@ fn parse_cigar(cigar: &str) -> Vec<(usize, char)> {
     ops
 }
 
-fn compute_coverage_track(
-    scored: &crate::ScoredAlignments,
-    target_len: usize,
-) -> Vec<u32> {
+fn compute_coverage_track(scored: &crate::ScoredAlignments, target_len: usize) -> Vec<u32> {
     let mut track = vec![0u32; target_len];
 
     let all_alns = std::iter::once(&scored.primary).chain(scored.alternatives.iter());
@@ -241,7 +243,10 @@ mod tests {
 
         let result = align_task(&query, &target, &plan).expect("alignment should succeed");
 
-        assert!(!result.query_positions.is_empty(), "should have at least one position");
+        assert!(
+            !result.query_positions.is_empty(),
+            "should have at least one position"
+        );
         let (_pos, score) = result.query_positions[0];
         assert!(
             score > 0.0 && score <= 1.0,
@@ -266,7 +271,10 @@ mod tests {
             cigar.contains('X') || cigar.contains('M'),
             "CIGAR should contain M or X ops, got: {cigar}"
         );
-        assert!(cigar.len() > 2, "CIGAR should represent the full alignment, got: {cigar}");
+        assert!(
+            cigar.len() > 2,
+            "CIGAR should represent the full alignment, got: {cigar}"
+        );
     }
 
     #[test]
@@ -313,10 +321,14 @@ mod tests {
     fn issue_88_throughput_100_reads_per_sec() {
         fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
             let mut x = seed;
-            (0..len).map(|_| {
-                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                b"ACGT"[((x >> 33) & 3) as usize]
-            }).collect()
+            (0..len)
+                .map(|_| {
+                    x = x
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    b"ACGT"[((x >> 33) & 3) as usize]
+                })
+                .collect()
         }
 
         let ref_seq = diverse_dna(200, 42);
@@ -327,12 +339,7 @@ mod tests {
 
         let start = std::time::Instant::now();
         for i in 0..20 {
-            let query = Sequence::new(
-                read_seq.clone(),
-                None,
-                format!("read{i}"),
-                None,
-            );
+            let query = Sequence::new(read_seq.clone(), None, format!("read{i}"), None);
             let _ = align_task(&query, &target, &plan);
         }
         let elapsed = start.elapsed();

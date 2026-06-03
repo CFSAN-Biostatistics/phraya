@@ -270,7 +270,8 @@ mod tests {
 
     #[test]
     fn returns_empty_vector_for_sequence_without_repeats() {
-        let seq = "ATGCTAGCTAGCTAGC"; // No tandem repeats
+        // ATGCATGATCGATCG has no tandem repeats (all substrings unique)
+        let seq = "ATGCATGATCGATCG";
         let config = RepeatDetectorConfig::default();
         let regions = detect_tandem_repeats(seq, &config);
 
