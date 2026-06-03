@@ -8,7 +8,7 @@
 #[cfg(test)]
 mod issue_130_local_coverage_tests {
     use crate::executor::align_task;
-    use phraya_core::types::{Sequence, VariantObservation};
+    use phraya_core::types::Sequence;
     use phraya_io::plan::PhrayaPlan;
     use std::collections::HashMap;
 
@@ -31,12 +31,12 @@ mod issue_130_local_coverage_tests {
     fn issue_130_local_coverage_window_at_middle_position() {
         // Sequence long enough that window fits entirely (position 100)
         let query = Sequence::new(
-            b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
             None,
             "query1".to_string(),
             None,
         );
-        let mut target_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec();
+        let mut target_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec();
         target_bases[100] = b'T'; // Create variant at position 100
         let target = Sequence::new(target_bases, None, "ref".to_string(), None);
         let plan = create_test_plan();
@@ -188,13 +188,13 @@ mod issue_130_local_coverage_tests {
     #[test]
     fn issue_130_local_coverage_per_position_depth() {
         let query = Sequence::new(
-            b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
             None,
             "query1".to_string(),
             None,
         );
-        let mut target_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec();
-        target_bases[75] = b'T'; // Create variant
+        let mut target_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec();
+        target_bases[75] = b'A'; // Create variant (position 75 is 'T' in query, change to 'A')
         let target = Sequence::new(target_bases, None, "ref".to_string(), None);
         let plan = create_test_plan();
 
