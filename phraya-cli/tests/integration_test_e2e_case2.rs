@@ -226,11 +226,6 @@ fn issue_88_merge_produces_parseable_file() {
 // ── Test 4: SNP position appears in VCF ──────────────────────────────────────
 
 /// VCF (no coverage filter) contains a data line at the SNP position
-///
-/// CURRENTLY FAILS: extract_variants_from_cigar uses wrong position accounting
-/// for CIGAR 'I'/'D' ops — the trailing target bases are emitted as 'I' but
-/// the extractor treats 'I' as advancing q_pos, not t_pos, causing the mismatch
-/// offset to be computed incorrectly.
 #[test]
 fn issue_88_snp_appears_in_vcf_no_coverage_filter() {
     let dir = TempDir::new().unwrap();
@@ -252,8 +247,6 @@ fn issue_88_snp_appears_in_vcf_no_coverage_filter() {
 // ── Test 5: correct REF/ALT alleles ──────────────────────────────────────────
 
 /// VCF line at the SNP position shows the correct REF and ALT bases
-///
-/// CURRENTLY FAILS (same root cause as test 4).
 #[test]
 fn issue_88_vcf_correct_ref_alt_alleles() {
     let dir = TempDir::new().unwrap();
@@ -336,10 +329,6 @@ fn issue_88_perfect_reads_no_false_variants() {
 // ── Test 7: SNP survives --min-coverage 5 ────────────────────────────────────
 
 /// 3 reads with the same SNP must survive --min-coverage 5
-///
-/// CURRENTLY FAILS: VariantObservation.local_coverage is hardcoded to vec![1]
-/// in the executor, so every observation fails min_coverage=5 regardless of
-/// how many reads support it.
 #[test]
 fn issue_88_snp_survives_min_coverage_5() {
     let dir = TempDir::new().unwrap();
@@ -366,11 +355,6 @@ fn issue_88_snp_survives_min_coverage_5() {
 // ── Test 8: binary format smaller than VCF text ───────────────────────────────
 
 /// The merged .phraya binary must be smaller than the VCF text for the same content
-///
-/// CURRENTLY FAILS: with zero observations (CIGAR bug), the VCF is header-only
-/// (~350B) while the .phraya binary still contains coverage track overhead,
-/// so .phraya ≥ VCF.  Once variants are detected correctly, the binary format
-/// (MessagePack + zstd) will be more compact than text VCF.
 #[test]
 fn issue_88_binary_smaller_than_vcf_text() {
     let dir = TempDir::new().unwrap();
