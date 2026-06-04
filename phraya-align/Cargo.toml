@@ -12,6 +12,7 @@ phraya-io = { path = "../phraya-io" }
 
 [dev-dependencies]
 criterion = "0.5"
+phraya-filter = { path = "../phraya-filter" }
 
 [[bench]]
 name = "wfa_simd_bench"

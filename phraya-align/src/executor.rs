@@ -125,6 +125,14 @@ fn extract_variants_from_cigar(
                         let ref_base = target[tp];
                         let mut alleles = HashMap::new();
                         alleles.insert(alt_base, 1u32);
+
+                        // Compute local coverage: ±50bp window around the variant
+                        let window_start = if tp >= 50 { tp - 50 } else { 0 };
+                        let window_end = (tp + 51).min(target.len());
+                        let local_coverage: Vec<u32> = (window_start..window_end)
+                            .map(|_| 1) // Each position in the window has 1 read
+                            .collect();
+
                         variants.push(VariantObservation::new(
                             tp as u32,
                             ref_base,
@@ -133,7 +141,7 @@ fn extract_variants_from_cigar(
                             cigar.to_string(),
                             60,
                             edit_distance,
-                            vec![1],
+                            local_coverage,
                             60.0,
                             provenance.clone(),
                         ));

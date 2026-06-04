@@ -6,6 +6,9 @@ pub mod wfa_simd_safety;
 
 pub use seeding::{find_seeds, Seed};
 
+#[cfg(test)]
+mod local_coverage_tests;
+
 /// Seed anchor position for WFA extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeedAnchor {
