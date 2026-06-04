@@ -9,6 +9,15 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 // ============================================================================
+// Portable manifest path helper
+// ============================================================================
+
+/// Get the portable path to phraya-cli/Cargo.toml using compile-time env var
+fn get_manifest_path() -> String {
+    format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"))
+}
+
+// ============================================================================
 // Helper functions for test setup
 // ============================================================================
 
@@ -94,7 +103,6 @@ fn create_phraya_file(
 
 /// Test: .phrayaplan file can be written and read back
 #[test]
-#[ignore = "test: implement .phrayaplan format write/read (issue #58)"]
 fn issue_58_phrayaplan_format_round_trip() {
     use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
 
@@ -140,7 +148,6 @@ fn issue_58_phrayaplan_format_round_trip() {
 
 /// Test: .phrayaplan contains all required fields
 #[test]
-#[ignore = "test: implement .phrayaplan format fields (issue #58)"]
 fn issue_58_phrayaplan_contains_required_fields() {
     use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
 
@@ -195,7 +202,6 @@ fn issue_58_phrayaplan_contains_required_fields() {
 
 /// Test: Case 2 detection - Reads with reference
 #[test]
-#[ignore = "test: implement use case detection case 2 (issue #58)"]
 fn issue_58_use_case_case2_reads_with_reference() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -233,7 +239,7 @@ fn issue_58_use_case_case2_reads_with_reference() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "plan",
             "--inputs",
@@ -264,7 +270,6 @@ fn issue_58_use_case_case2_reads_with_reference() {
 
 /// Test: Case 3 detection - Contigs with reads
 #[test]
-#[ignore = "test: implement use case detection case 3 (issue #58)"]
 fn issue_58_use_case_case3_contigs_with_reads() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -301,7 +306,7 @@ fn issue_58_use_case_case3_contigs_with_reads() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "plan",
             "--inputs",
@@ -330,7 +335,6 @@ fn issue_58_use_case_case3_contigs_with_reads() {
 
 /// Test: Case 4 detection - Contigs only
 #[test]
-#[ignore = "test: implement use case detection case 4 (issue #58)"]
 fn issue_58_use_case_case4_contigs_only() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -360,7 +364,7 @@ fn issue_58_use_case_case4_contigs_only() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "plan",
             "--inputs",
@@ -387,7 +391,6 @@ fn issue_58_use_case_case4_contigs_only() {
 
 /// Test: Task list for Case 2 (reads + ref) has one task per read
 #[test]
-#[ignore = "test: implement task list for case 2 (issue #58)"]
 fn issue_58_task_list_case2_one_per_read() {
     use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
 
@@ -422,7 +425,6 @@ fn issue_58_task_list_case2_one_per_read() {
 
 /// Test: Task list contains valid (query_id, target_id) tuples
 #[test]
-#[ignore = "test: implement task list structure (issue #58)"]
 fn issue_58_task_list_structure_valid() {
     use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
 
@@ -455,7 +457,6 @@ fn issue_58_task_list_structure_valid() {
 
 /// Test: VariantObservation has CIGAR field
 #[test]
-#[ignore = "test: implement VariantObservation CIGAR field (issue #58)"]
 fn issue_58_variant_observation_has_cigar() {
     use phraya_core::types::VariantObservation;
 
@@ -480,7 +481,6 @@ fn issue_58_variant_observation_has_cigar() {
 
 /// Test: VariantObservation has edit_distance field
 #[test]
-#[ignore = "test: implement VariantObservation edit_distance field (issue #58)"]
 fn issue_58_variant_observation_has_edit_distance() {
     use phraya_core::types::VariantObservation;
 
@@ -505,7 +505,6 @@ fn issue_58_variant_observation_has_edit_distance() {
 
 /// Test: VariantObservation has local_coverage vector
 #[test]
-#[ignore = "test: implement VariantObservation local_coverage field (issue #58)"]
 fn issue_58_variant_observation_has_local_coverage() {
     use phraya_core::types::VariantObservation;
 
@@ -536,7 +535,6 @@ fn issue_58_variant_observation_has_local_coverage() {
 
 /// Test: VariantObservation has all_alleles with counts
 #[test]
-#[ignore = "test: implement VariantObservation all_alleles field (issue #58)"]
 fn issue_58_variant_observation_has_all_alleles() {
     use phraya_core::types::VariantObservation;
 
@@ -574,7 +572,6 @@ fn issue_58_variant_observation_has_all_alleles() {
 
 /// Test: CoverageTrack quantizes to nearest 5
 #[test]
-#[ignore = "test: implement CoverageTrack quantization (issue #58)"]
 fn issue_58_coverage_track_quantizes_to_5() {
     use phraya_core::types::CoverageTrack;
 
@@ -590,7 +587,6 @@ fn issue_58_coverage_track_quantizes_to_5() {
 
 /// Test: CoverageTrack compresses with RLE
 #[test]
-#[ignore = "test: implement CoverageTrack RLE compression (issue #58)"]
 fn issue_58_coverage_track_rle_compression() {
     use phraya_core::types::CoverageTrack;
 
@@ -609,7 +605,6 @@ fn issue_58_coverage_track_rle_compression() {
 
 /// Test: CoverageTrack provides position lookups
 #[test]
-#[ignore = "test: implement CoverageTrack lookups (issue #58)"]
 fn issue_58_coverage_track_position_lookup() {
     use phraya_core::types::CoverageTrack;
 
@@ -635,7 +630,6 @@ fn issue_58_coverage_track_position_lookup() {
 
 /// Test: Query index can be written and read
 #[test]
-#[ignore = "test: implement query index write/read (issue #58)"]
 fn issue_58_query_index_round_trip() {
     use phraya_io::queries::{read_queries, write_queries};
     use std::collections::HashMap;
@@ -667,7 +661,6 @@ fn issue_58_query_index_round_trip() {
 
 /// Test: Query index enforces score_ratio >= 0.95
 #[test]
-#[ignore = "test: implement query index score filtering (issue #58)"]
 fn issue_58_query_index_filters_by_score_ratio() {
     use phraya_io::queries::{read_queries, write_queries};
 
@@ -702,7 +695,6 @@ fn issue_58_query_index_filters_by_score_ratio() {
 
 /// Test: Filter with min_coverage threshold
 #[test]
-#[ignore = "test: implement filter min_coverage (issue #58)"]
 fn issue_58_filter_min_coverage() {
     use phraya_core::types::VariantObservation;
     use phraya_filter::FilterBuilder;
@@ -751,7 +743,6 @@ fn issue_58_filter_min_coverage() {
 
 /// Test: Filter with min_mapq threshold
 #[test]
-#[ignore = "test: implement filter min_mapq (issue #58)"]
 fn issue_58_filter_min_mapq() {
     use phraya_core::types::VariantObservation;
     use phraya_filter::FilterBuilder;
@@ -798,7 +789,6 @@ fn issue_58_filter_min_mapq() {
 
 /// Test: Filter composition (multiple thresholds)
 #[test]
-#[ignore = "test: implement filter composition (issue #58)"]
 fn issue_58_filter_composition() {
     use phraya_core::types::VariantObservation;
     use phraya_filter::FilterBuilder;
@@ -834,7 +824,6 @@ fn issue_58_filter_composition() {
 
 /// Test: filter command outputs VCF format
 #[test]
-#[ignore = "test: implement filter VCF output (issue #58)"]
 fn issue_58_filter_vcf_output() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -857,7 +846,7 @@ fn issue_58_filter_vcf_output() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "filter",
             phraya_path.to_str().unwrap(),
@@ -883,7 +872,6 @@ fn issue_58_filter_vcf_output() {
 
 /// Test: filter command outputs TSV format
 #[test]
-#[ignore = "test: implement filter TSV output (issue #58)"]
 fn issue_58_filter_tsv_output() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -905,7 +893,7 @@ fn issue_58_filter_tsv_output() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "filter",
             phraya_path.to_str().unwrap(),
@@ -928,7 +916,6 @@ fn issue_58_filter_tsv_output() {
 
 /// Test: filter command with --min-coverage threshold
 #[test]
-#[ignore = "test: implement filter min-coverage CLI (issue #58)"]
 fn issue_58_filter_min_coverage_cli() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -963,7 +950,7 @@ fn issue_58_filter_min_coverage_cli() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "filter",
             phraya_path.to_str().unwrap(),
@@ -989,7 +976,6 @@ fn issue_58_filter_min_coverage_cli() {
 
 /// Test: filter command outputs filtered .phraya format
 #[test]
-#[ignore = "test: implement filter phraya output (issue #58)"]
 fn issue_58_filter_phraya_output() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -1012,7 +998,7 @@ fn issue_58_filter_phraya_output() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "filter",
             input_path.to_str().unwrap(),
@@ -1048,7 +1034,6 @@ fn issue_58_filter_phraya_output() {
 
 /// Test: .phraya file round-trip with observations
 #[test]
-#[ignore = "test: implement .phraya file round-trip (issue #58)"]
 fn issue_58_phraya_file_round_trip() {
     use phraya_core::types::{CoverageTrack, VariantObservation};
     use phraya_io::phraya::{read_phraya, write_phraya, PhrayaFile};
@@ -1096,7 +1081,6 @@ fn issue_58_phraya_file_round_trip() {
 
 /// Test: .phraya coverage track is preserved through write/read
 #[test]
-#[ignore = "test: implement .phraya coverage track preservation (issue #58)"]
 fn issue_58_phraya_coverage_track_preserved() {
     use phraya_core::types::CoverageTrack;
     use phraya_io::phraya::{read_phraya, write_phraya, PhrayaFile};
@@ -1132,14 +1116,13 @@ fn issue_58_phraya_coverage_track_preserved() {
 
 /// Test: Missing input file returns error
 #[test]
-#[ignore = "test: implement error handling for missing file (issue #58)"]
 fn issue_58_error_missing_input_file() {
     let nonexistent = "/tmp/nonexistent_issue_58_xyz.fa";
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "plan",
             "--inputs",
@@ -1155,7 +1138,6 @@ fn issue_58_error_missing_input_file() {
 
 /// Test: Invalid .phraya file returns error
 #[test]
-#[ignore = "test: implement error handling for corrupt file (issue #58)"]
 fn issue_58_error_corrupt_phraya_file() {
     let temp_dir = TempDir::new().unwrap();
     let bad_file = temp_dir.path().join("corrupt.phraya");
@@ -1166,7 +1148,7 @@ fn issue_58_error_corrupt_phraya_file() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "filter",
             bad_file.to_str().unwrap(),
@@ -1185,7 +1167,6 @@ fn issue_58_error_corrupt_phraya_file() {
 
 /// Test: Full workflow - plan → plan-tasks → data preservation
 #[test]
-#[ignore = "test: implement full MVP workflow (issue #58)"]
 fn issue_58_mvp_workflow_plan_to_tasks() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -1225,7 +1206,7 @@ fn issue_58_mvp_workflow_plan_to_tasks() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "plan",
             "--inputs",
@@ -1245,7 +1226,7 @@ fn issue_58_mvp_workflow_plan_to_tasks() {
         .args(&[
             "run",
             "--manifest-path",
-            "/home/justin/phraya/phraya-cli/Cargo.toml",
+            &get_manifest_path(),
             "--",
             "plan-tasks",
             plan_path.to_str().unwrap(),
