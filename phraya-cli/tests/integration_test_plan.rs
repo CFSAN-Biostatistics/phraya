@@ -42,7 +42,6 @@ fn create_fastq_file(dir: &Path, filename: &str, sequences: &[(&str, &str, &str)
 
 /// Test: phraya plan with FASTA reference and FASTQ reads (Case 2)
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_case2_reads_with_reference() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -65,12 +64,12 @@ fn issue_68_plan_case2_reads_with_reference() {
             (
                 "read1",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
             (
                 "read2",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
         ],
     );
@@ -149,7 +148,6 @@ fn issue_68_plan_case2_reads_with_reference() {
 
 /// Test: phraya plan with contigs and reads, no reference (Case 3)
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_case3_contigs_with_reads() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -178,12 +176,12 @@ fn issue_68_plan_case3_contigs_with_reads() {
             (
                 "read1",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
             (
                 "read2",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
         ],
     );
@@ -242,7 +240,6 @@ fn issue_68_plan_case3_contigs_with_reads() {
 
 /// Test: phraya plan with contigs only (Case 4)
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_case4_contigs_only() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -310,7 +307,6 @@ fn issue_68_plan_case4_contigs_only() {
 
 /// Test: phraya plan with invalid input file
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_invalid_input_file() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -356,7 +352,6 @@ fn issue_68_plan_invalid_input_file() {
 
 /// Test: phraya plan parses command-line arguments correctly
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_cli_argument_parsing() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -408,7 +403,6 @@ fn issue_68_plan_cli_argument_parsing() {
 
 /// Test: phraya plan computes k-mer uniqueness
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_kmer_uniqueness_computed() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -474,7 +468,6 @@ fn issue_68_plan_kmer_uniqueness_computed() {
 
 /// Test: phraya plan logs detected use case to stderr
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_logs_use_case() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -494,7 +487,7 @@ fn issue_68_plan_logs_use_case() {
         &[(
             "read1",
             "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
         )],
     );
 
@@ -531,7 +524,6 @@ fn issue_68_plan_logs_use_case() {
 
 /// Test: phraya plan with multiple input files
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_multiple_input_files() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -551,7 +543,7 @@ fn issue_68_plan_multiple_input_files() {
         &[(
             "read1",
             "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
         )],
     );
 
@@ -561,7 +553,7 @@ fn issue_68_plan_multiple_input_files() {
         &[(
             "read2",
             "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
         )],
     );
 
@@ -608,7 +600,6 @@ fn issue_68_plan_multiple_input_files() {
 
 /// Test: phraya plan generates valid task list
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_task_list_valid() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
@@ -629,17 +620,17 @@ fn issue_68_plan_task_list_valid() {
             (
                 "read1",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
             (
                 "read2",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
             (
                 "read3",
                 "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
             ),
         ],
     );
@@ -681,7 +672,6 @@ fn issue_68_plan_task_list_valid() {
 
 /// Test: phraya plan returns non-zero exit code on success and writes file
 #[test]
-#[ignore = "test: implement phraya plan CLI"]
 fn issue_68_plan_exit_code_on_success() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
