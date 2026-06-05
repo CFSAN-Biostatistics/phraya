@@ -58,7 +58,17 @@ pub fn align_task(
     };
 
     for anchor in anchors {
-        match wfa_extend(query.bases(), target.bases(), anchor) {
+        // Window the target to ~2× query length from the anchor position.
+        // WFA is O(s·n) where s = edit distance; for s << min(|q|,|t|) it is
+        // dramatically faster than O(|q|×|t|) DP, but s grows with the length
+        // difference — passing the full reference to a 150bp read makes the
+        // edit distance ~|target|-|query| (length gap) rather than ~2% divergence,
+        // turning O(s) into O(target²). The 2× margin accommodates indels while
+        // keeping the aligned window tractable.
+        let margin = query.len() * 2;
+        let window_end = (anchor.target_pos + margin).min(target.bases().len());
+        let target_window = &target.bases()[..window_end];
+        match wfa_extend(query.bases(), target_window, anchor) {
             Ok(aln) => alignments.push(aln),
             Err(e) => log::warn!("WFA failed for anchor {:?}: {:?}", anchor, e),
         }

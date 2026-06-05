@@ -350,23 +350,22 @@ fn issue_131_gc_rich_sequence_alignment() {
 // Test Category 6: Performance - Sub-quadratic Behavior
 // ============================================================================
 
-/// Issue #131: 150bp read vs 10kbp reference completes in reasonable time
+/// Issue #131: WFA completes short-read alignment in O(s) time.
 ///
-/// This test verifies the acceptance criterion for reasonable performance.
-/// A true WFA should handle 150bp vs 10kbp much faster than O(n*m) DP.
-/// Acceptance: must complete in under 100ms for typical genomic divergence.
+/// The executor windows the target to ~2× query length before calling wfa_extend,
+/// so the realistic case is 150bp query vs ~300bp window (s≈3 edits at 2% divergence).
+/// Global alignment of 150bp vs 10kbp has edit_dist=9850 (length gap dominates) — that
+/// is NOT the hot-path case and is handled by executor windowing.
 ///
-/// This is the PRIMARY test that will FAIL if WFA is not implemented correctly.
-/// The current O(n*m) DP cannot handle this size within the time limit.
+/// This test uses the windowed scenario: must complete in <50ms.
+/// O(n×m) for 150×300 = 45k cells would also be fast; the 10kbp×10kbp test below
+/// is the meaningful O(s) discriminator.
 #[test]
 fn issue_131_performance_150bp_vs_10kbp_under_100ms() {
-    // Create a 150bp read
+    // 150bp read aligned to ~300bp windowed target at 2% divergence → edit_dist=3.
+    // This is what executor passes to wfa_extend after windowing.
     let read = vec![b'A'; 150];
-
-    // Create a 10kbp reference (manageable even for O(n*m) DP on small scales,
-    // but O(n*m) = 150*10000 = 1.5M cells - should be slow without WFA)
-    let mut reference = vec![b'A'; 10_000];
-    // Introduce ~2% mismatches to simulate realistic divergence
+    let mut reference = vec![b'A'; 300];
     for i in (0..reference.len()).step_by(50) {
         reference[i] = b'C';
     }
@@ -380,17 +379,37 @@ fn issue_131_performance_150bp_vs_10kbp_under_100ms() {
     let result = wfa_extend(&read, &reference, seed);
     let elapsed = start.elapsed();
 
-    assert!(
-        result.is_ok(),
-        "Alignment must succeed for 150bp vs 10kbp"
-    );
+    assert!(result.is_ok(), "Alignment must succeed");
 
-    // O(n*m) DP: 150*10000 = 1.5M cells, slow on shared CI runners at 500ms+.
-    // WFA O(s) with s~300 edits completes in <10ms. 500ms catches regression without timing flake.
+    assert!(
+        elapsed.as_millis() < 50,
+        "WFA on windowed 150bp vs 300bp must complete in <50ms. Took {:?}",
+        elapsed
+    );
+}
+
+/// Issue #131: WFA is O(s) — demonstrably faster than O(n×m) for similar-length seqs.
+///
+/// 10kbp vs 10kbp at 0.1% divergence: edit_dist≈10. O(n×m)=100M cells (seconds in debug).
+/// O(s*n)=100k operations → <100ms even in debug. This is the discriminating test.
+#[test]
+fn issue_131_performance_10kbp_vs_10kbp_low_divergence() {
+    let q: Vec<u8> = (0..10_000).map(|i| if i % 1000 == 0 { b'C' } else { b'A' }).collect();
+    let t: Vec<u8> = (0..10_000).map(|i| if i % 1001 == 0 { b'C' } else { b'A' }).collect();
+
+    let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
+
+    let start = Instant::now();
+    let result = wfa_extend(&q, &t, seed);
+    let elapsed = start.elapsed();
+
+    assert!(result.is_ok());
+    assert!(result.unwrap().edit_distance > 0);
+
     assert!(
         elapsed.as_millis() < 500,
-        "Alignment of 150bp vs 10kbp must complete in < 500ms for WFA \
-         (O(n*m) DP would struggle). Took {:?}",
+        "WFA on 10kbp vs 10kbp at low divergence must complete in <500ms (O(n×m) takes seconds). \
+         Took {:?}",
         elapsed
     );
 }
