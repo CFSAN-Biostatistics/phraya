@@ -1,6 +1,7 @@
 use crate::seeding::find_seeds;
 use crate::{score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{sketch_sequence_default, Sequence, VariantObservation};
+use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
 use std::collections::{HashMap, HashSet};
 
@@ -86,6 +87,10 @@ pub fn align_task(
     let raw_coverage = compute_raw_coverage(&scored, target.len());
     let coverage_track = quantize_coverage(&raw_coverage);
 
+    // Compute tandem repeat regions in the target once for the whole task.
+    let target_str = String::from_utf8_lossy(target.bases());
+    let repeat_regions = detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
+
     let variants = extract_variants_from_cigar(
         &scored.primary.cigar,
         scored.primary.target_start,
@@ -94,6 +99,7 @@ pub fn align_task(
         scored.primary.edit_distance as u32,
         query.id().to_string(),
         &raw_coverage,
+        &repeat_regions,
     );
 
     let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
@@ -118,6 +124,7 @@ fn extract_variants_from_cigar(
     edit_distance: u32,
     provenance: String,
     coverage: &[u32],
+    repeat_regions: &[phraya_core::RepeatRegion],
 ) -> Vec<VariantObservation> {
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
@@ -148,6 +155,10 @@ fn extract_variants_from_cigar(
                             .map(|pos| coverage.get(pos).copied().unwrap_or(0))
                             .collect();
 
+                        let in_repeat = repeat_regions
+                            .iter()
+                            .any(|r| tp >= r.start && tp < r.end);
+
                         variants.push(VariantObservation::new(
                             tp as u32,
                             ref_base,
@@ -159,7 +170,7 @@ fn extract_variants_from_cigar(
                             local_coverage,
                             60.0,
                             provenance.clone(),
-                        ));
+                        ).with_tandem_repeat(in_repeat));
                     }
                 }
                 q_pos += count;
@@ -375,6 +386,44 @@ mod tests {
             lc[0] >= 1,
             "position within alignment window must have non-zero coverage, got {}",
             lc[0]
+        );
+    }
+
+    #[test]
+    fn tandem_repeat_variants_are_annotated() {
+        // Build a target with a clear tandem repeat (ATATAT...) flanked by unique sequence.
+        // A query with a SNP inside the repeat should produce a variant with in_tandem_repeat=true.
+        // A SNP outside the repeat should produce in_tandem_repeat=false.
+        let mut target_bases = b"TTAACCGGTA".to_vec(); // unique prefix (10bp)
+        target_bases.extend_from_slice(b"ATATATATATATATATATATAT"); // tandem repeat (22bp, pos 10..32)
+        target_bases.extend_from_slice(b"CGTACCGATT"); // unique suffix (10bp)
+        // Total: 42bp
+
+        // Query matches target except: SNP in repeat at pos 15, SNP outside repeat at pos 2.
+        let mut query_bases = target_bases.clone();
+        query_bases[2] = if query_bases[2] == b'G' { b'C' } else { b'G' }; // SNP at pos 2 (unique region)
+        query_bases[15] = if query_bases[15] == b'A' { b'T' } else { b'A' }; // SNP at pos 15 (repeat)
+
+        let query = Sequence::new(query_bases, None, "q".to_string(), None);
+        let target = Sequence::new(target_bases, None, "ref".to_string(), None);
+        let plan = make_plan();
+
+        let result = align_task(&query, &target, &plan).expect("alignment must succeed");
+        assert!(result.variants.len() >= 2, "must have at least 2 variants");
+
+        let repeat_variant = result.variants.iter().find(|v| v.position() == 15);
+        let unique_variant = result.variants.iter().find(|v| v.position() == 2);
+
+        assert!(repeat_variant.is_some(), "variant at pos 15 must exist");
+        assert!(unique_variant.is_some(), "variant at pos 2 must exist");
+
+        assert!(
+            repeat_variant.unwrap().in_tandem_repeat(),
+            "variant inside repeat region must be annotated in_tandem_repeat=true"
+        );
+        assert!(
+            !unique_variant.unwrap().in_tandem_repeat(),
+            "variant outside repeat region must be annotated in_tandem_repeat=false"
         );
     }
 

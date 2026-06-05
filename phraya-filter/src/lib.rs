@@ -16,6 +16,7 @@ pub struct FilterBuilder {
     max_mapq: Option<u8>,
     min_base_quality: Option<f64>,
     min_allele_frequency: Option<f64>,
+    exclude_tandem_repeats: bool,
 }
 
 impl FilterBuilder {
@@ -28,6 +29,7 @@ impl FilterBuilder {
             max_mapq: None,
             min_base_quality: None,
             min_allele_frequency: None,
+            exclude_tandem_repeats: false,
         }
     }
 
@@ -67,6 +69,12 @@ impl FilterBuilder {
         self
     }
 
+    /// Exclude variants in tandem repeat regions.
+    pub fn exclude_tandem_repeats(mut self, value: bool) -> Self {
+        self.exclude_tandem_repeats = value;
+        self
+    }
+
     /// Build the filter
     pub fn build(self) -> ThresholdFilter {
         ThresholdFilter {
@@ -76,6 +84,7 @@ impl FilterBuilder {
             max_mapq: self.max_mapq,
             min_base_quality: self.min_base_quality,
             min_allele_frequency: self.min_allele_frequency,
+            exclude_tandem_repeats: self.exclude_tandem_repeats,
         }
     }
 }
@@ -95,6 +104,7 @@ pub struct ThresholdFilter {
     max_mapq: Option<u8>,
     min_base_quality: Option<f64>,
     min_allele_frequency: Option<f64>,
+    exclude_tandem_repeats: bool,
 }
 
 impl ThresholdFilter {
@@ -154,6 +164,11 @@ impl ThresholdFilter {
             if max_alt_freq < min_freq {
                 return false;
             }
+        }
+
+        // Exclude tandem repeat variants
+        if self.exclude_tandem_repeats && obs.in_tandem_repeat() {
+            return false;
         }
 
         true
@@ -370,5 +385,56 @@ mod tests {
 
         let strict_filter = FilterBuilder::new().min_allele_frequency(0.15).build();
         assert!(!strict_filter.apply(&obs)); // 10% fails 15% threshold
+    }
+
+    #[test]
+    fn exclude_tandem_repeats_filter() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 10u32);
+
+        let obs_in_repeat = VariantObservation::new(
+            100,
+            b'A',
+            alleles.clone(),
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "test:read".to_string(),
+        )
+        .with_tandem_repeat(true);
+
+        let obs_not_in_repeat = VariantObservation::new(
+            200,
+            b'A',
+            alleles,
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "test:read".to_string(),
+        )
+        .with_tandem_repeat(false);
+
+        let filter = FilterBuilder::new().exclude_tandem_repeats(true).build();
+
+        assert!(
+            !filter.apply(&obs_in_repeat),
+            "variant in tandem repeat must be excluded"
+        );
+        assert!(
+            filter.apply(&obs_not_in_repeat),
+            "variant outside tandem repeat must pass"
+        );
+
+        let permissive = FilterBuilder::new().exclude_tandem_repeats(false).build();
+        assert!(
+            permissive.apply(&obs_in_repeat),
+            "when exclude_tandem_repeats=false, repeat variants must pass"
+        );
     }
 }

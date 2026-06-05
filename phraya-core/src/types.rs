@@ -114,6 +114,9 @@ pub struct VariantObservation {
     avg_base_quality: f64,
     /// Provenance: identifies the sample and read (e.g., "sample1:read42")
     provenance: String,
+    /// Whether this variant falls within a tandem repeat region
+    #[serde(default)]
+    in_tandem_repeat: bool,
 }
 
 impl VariantObservation {
@@ -142,7 +145,19 @@ impl VariantObservation {
             local_coverage,
             avg_base_quality,
             provenance,
+            in_tandem_repeat: false,
         }
+    }
+
+    /// Mark whether this variant falls in a tandem repeat region.
+    pub fn with_tandem_repeat(mut self, value: bool) -> Self {
+        self.in_tandem_repeat = value;
+        self
+    }
+
+    /// Whether this variant is in a tandem repeat region.
+    pub fn in_tandem_repeat(&self) -> bool {
+        self.in_tandem_repeat
     }
 
     /// Get the position of this variant
