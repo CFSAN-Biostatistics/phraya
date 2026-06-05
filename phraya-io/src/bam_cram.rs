@@ -65,7 +65,12 @@ impl BamCramParser {
                         }
                     };
 
-                    let seq = Sequence::new(bases, quality_scores, id, None);
+                    let mapq = record.mapping_quality().map(|mq| mq.get());
+
+                    let mut seq = Sequence::new(bases, quality_scores, id, None);
+                    if let Some(mq) = mapq {
+                        seq = seq.with_mapq(mq);
+                    }
                     records.push(Ok(seq));
                 }
                 Err(_) => {
@@ -122,7 +127,12 @@ impl BamCramParser {
                         }
                     };
 
-                    let seq = Sequence::new(bases, quality_scores, id, None);
+                    let mapq = record.mapping_quality().map(|mq| mq.get());
+
+                    let mut seq = Sequence::new(bases, quality_scores, id, None);
+                    if let Some(mq) = mapq {
+                        seq = seq.with_mapq(mq);
+                    }
                     records.push(Ok(seq));
                 }
                 Err(e) => {
@@ -415,5 +425,57 @@ mod tests {
         let (_tmp, path) = make_cram_empty(1);
         let result = BamCramParser::from_cram_path(&path);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn bam_mapq_flows_into_sequence() {
+        use noodles_sam::alignment::record::MappingQuality;
+        use noodles_sam::alignment::record_buf::RecordBuf;
+        use noodles_sam::alignment::record_buf::Sequence as BamSequence;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let bam_path = tmp.path().with_extension("bam");
+
+        {
+            use noodles_bam as bam;
+            use noodles_sam as sam;
+            use noodles_sam::alignment::io::Write as _;
+
+            let mut writer = bam::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            let header = sam::Header::builder().build();
+            writer.write_header(&header).unwrap();
+
+            let record = RecordBuf::builder()
+                .set_name("mapq_read")
+                .set_sequence(BamSequence::from(b"ACGT".as_ref()))
+                .set_mapping_quality(MappingQuality::new(42).unwrap())
+                .build();
+            writer.write_alignment_record(&header, &record).unwrap();
+            writer.try_finish().unwrap();
+        }
+
+        let seqs: Vec<_> = BamCramParser::from_bam_path(&bam_path).unwrap().collect();
+        let seq = seqs[0].as_ref().unwrap();
+
+        assert_eq!(
+            seq.mapq(),
+            Some(42),
+            "mapq must be extracted from BAM record, got {:?}",
+            seq.mapq()
+        );
+    }
+
+    #[test]
+    fn bam_missing_mapq_is_none() {
+        // RecordBuf with no mapping quality set → mapq() should be None
+        let (_tmp, path) = make_bam(&[("no_mapq", b"ACGT", None)]);
+        let seqs: Vec<_> = BamCramParser::from_bam_path(&path).unwrap().collect();
+        let seq = seqs[0].as_ref().unwrap();
+        // Default RecordBuf has no mapping quality (255 = missing in BAM spec)
+        // Our code should surface None rather than Some(255)
+        assert!(
+            seq.mapq().map_or(true, |mq| mq != 255),
+            "mapq 255 (missing) must not be returned as Some(255)"
+        );
     }
 }

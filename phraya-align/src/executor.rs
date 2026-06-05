@@ -91,6 +91,9 @@ pub fn align_task(
     let target_str = String::from_utf8_lossy(target.bases());
     let repeat_regions = detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
 
+    let query_mapq = query.mapq().unwrap_or(60);
+    let query_avg_bq = query.avg_quality().unwrap_or(60.0);
+
     let variants = extract_variants_from_cigar(
         &scored.primary.cigar,
         scored.primary.target_start,
@@ -100,6 +103,9 @@ pub fn align_task(
         query.id().to_string(),
         &raw_coverage,
         &repeat_regions,
+        query_mapq,
+        query_avg_bq,
+        primary_score,
     );
 
     let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
@@ -125,6 +131,9 @@ fn extract_variants_from_cigar(
     provenance: String,
     coverage: &[u32],
     repeat_regions: &[phraya_core::RepeatRegion],
+    mapq: u8,
+    avg_base_quality: f64,
+    confidence: f64,
 ) -> Vec<VariantObservation> {
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
@@ -163,12 +172,12 @@ fn extract_variants_from_cigar(
                             tp as u32,
                             ref_base,
                             alleles,
-                            1.0,
+                            confidence,
                             cigar.to_string(),
-                            60,
+                            mapq,
                             edit_distance,
                             local_coverage,
-                            60.0,
+                            avg_base_quality,
                             provenance.clone(),
                         ).with_tandem_repeat(in_repeat));
                     }

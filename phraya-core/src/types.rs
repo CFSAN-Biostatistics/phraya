@@ -16,6 +16,9 @@ pub struct Sequence {
     id: String,
     /// Optional description
     description: Option<String>,
+    /// Mapping quality from BAM/CRAM record (0–254); None for FASTA/FASTQ input
+    #[serde(default)]
+    mapq: Option<u8>,
 }
 
 impl Sequence {
@@ -38,7 +41,19 @@ impl Sequence {
             quality_scores,
             id,
             description,
+            mapq: None,
         }
+    }
+
+    /// Set the mapping quality (from BAM/CRAM records).
+    pub fn with_mapq(mut self, mapq: u8) -> Self {
+        self.mapq = Some(mapq);
+        self
+    }
+
+    /// Return the mapping quality if available.
+    pub fn mapq(&self) -> Option<u8> {
+        self.mapq
     }
 
     /// Return the length of the sequence
