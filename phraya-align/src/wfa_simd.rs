@@ -888,7 +888,6 @@ mod simd_diff_tests {
 mod tests {
     use crate::{wfa_extend, wfa_extend_naive, wfa_extend_simd, SeedAnchor};
 
-    // Test will fail: wfa_extend_simd does not exist yet
     #[test]
     fn test_simd_exact_match() {
         let query = b"ACGTACGTACGT";
@@ -909,7 +908,6 @@ mod tests {
         assert_eq!(alignment.edit_distance, 0); // perfect match, no edits
     }
 
-    // Test will fail: wfa_extend_simd does not exist yet
     #[test]
     fn test_simd_single_mismatch() {
         let query = b"ACGTACGTACGT";
@@ -931,7 +929,6 @@ mod tests {
         assert!(alignment.edit_distance > 0); // has edit distance
     }
 
-    // Test will fail: wfa_extend_simd does not exist yet
     #[test]
     fn test_simd_insertion() {
         let query = b"ACGTACGT";
@@ -951,7 +948,6 @@ mod tests {
         assert!(alignment.cigar.contains("I"));
     }
 
-    // Test will fail: wfa_extend_simd does not exist yet
     #[test]
     fn test_simd_deletion() {
         let query = b"ACGTAACGT";
@@ -971,7 +967,6 @@ mod tests {
         assert!(alignment.cigar.contains("D"));
     }
 
-    // Test will fail: wfa_extend_simd does not exist yet
     #[test]
     fn test_simd_complex_alignment() {
         let query = b"ACGTACGTTAGC";
@@ -992,7 +987,6 @@ mod tests {
         assert!(alignment.edit_distance > 0);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_exact() {
         let query = b"ACGTACGTACGT";
@@ -1015,7 +1009,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_mismatch() {
         let query = b"ACGTACGTACGT";
@@ -1038,7 +1031,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_insertion() {
         let query = b"ACGTACGT";
@@ -1061,7 +1053,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_deletion() {
         let query = b"ACGTAACGT";
@@ -1084,7 +1075,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_long_sequence() {
         let query = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
@@ -1107,7 +1097,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_high_divergence() {
         let query = b"ACGTACGTACGTACGT";
@@ -1130,7 +1119,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_short_sequences() {
         let query = b"ACGT";
@@ -1153,7 +1141,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_mid_seed() {
         let query = b"ACGTACGTACGT";
@@ -1176,7 +1163,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_multiple_indels() {
         let query = b"ACGTACGTACGTACGT";
@@ -1199,7 +1185,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_consecutive_indels() {
         let query = b"ACGTAAAACGT";
@@ -1222,7 +1207,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_complex_pattern_1() {
         let query = b"ACGTACGTTAGCTTGCA";
@@ -1245,7 +1229,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_complex_pattern_2() {
         let query = b"TTAACCGGTTAA";
@@ -1268,7 +1251,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_repeat_regions() {
         let query = b"ATATATATATATAT";
@@ -1291,7 +1273,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_gc_rich() {
         let query = b"GCGCGCGCGCGCGCGC";
@@ -1314,7 +1295,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_at_rich() {
         let query = b"ATATATATATATAT";
@@ -1337,7 +1317,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_edge_case_empty_prefix() {
         let query = b"ACGTACGTACGT";
@@ -1360,7 +1339,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_edge_case_near_end() {
         let query = b"ACGTACGTACGT";
@@ -1383,7 +1361,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_random_sequence_1() {
         let query = b"ACGTTAGCTAGCTAGC";
@@ -1406,7 +1383,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_random_sequence_2() {
         let query = b"TGCATGCATGCATGCA";
@@ -1429,7 +1405,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: wfa_extend_naive does not exist yet
     #[test]
     fn test_simd_matches_naive_random_sequence_3() {
         let query = b"CCGGAATTCCGGAATT";
@@ -1452,7 +1427,6 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
 
-    // Test will fail: multiversion attribute does not exist yet
     #[test]
     fn test_runtime_dispatch_uses_sse42_when_available() {
         // This test verifies that multiversion correctly dispatches to SSE4.2
@@ -1471,7 +1445,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Test will fail: multiversion attribute does not exist yet
     #[test]
     fn test_runtime_dispatch_fallback_on_non_sse42() {
         // This test verifies that on non-SSE4.2 CPUs, the code falls back
@@ -1490,7 +1463,6 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // Test will fail: wfa_extend does not exist yet
     #[test]
     #[cfg(not(target_arch = "x86_64"))]
     fn test_compiles_and_runs_on_non_x86() {
@@ -1511,7 +1483,6 @@ mod tests {
         assert_eq!(alignment.cigar, "12M");
     }
 
-    // Test will fail: wfa_extend does not exist yet
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn test_arm64_fallback() {

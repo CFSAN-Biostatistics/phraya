@@ -7,7 +7,6 @@
 mod tests {
     use crate::{wfa_extend, wfa_extend_naive, wfa_extend_simd, SeedAnchor};
 
-    // Test will fail: get_active_dispatch_target function does not exist yet
     #[test]
     fn test_multiversion_dispatch_selects_correct_target() {
         // This test verifies that multiversion correctly identifies the best
@@ -15,15 +14,14 @@ mod tests {
 
         let dispatch_target = crate::wfa_simd::get_active_dispatch_target();
 
-        // Should be either "sse42" or "naive" depending on CPU
+        // Valid targets: "sse42" / "naive" on x86_64, "neon" on aarch64.
         assert!(
-            dispatch_target == "sse42" || dispatch_target == "naive",
-            "Dispatch target must be 'sse42' or 'naive', got: {}",
+            matches!(dispatch_target.as_str(), "sse42" | "naive" | "neon"),
+            "Dispatch target must be 'sse42', 'neon', or 'naive', got: {}",
             dispatch_target
         );
     }
 
-    // Test will fail: is_sse42_available function does not exist yet
     #[test]
     fn test_sse42_feature_detection() {
         // This test verifies that SSE4.2 feature detection works correctly.
@@ -37,7 +35,6 @@ mod tests {
         );
     }
 
-    // Test will fail: wfa_extend function does not exist yet
     #[test]
     fn test_dispatched_function_matches_manual_selection() {
         // This test verifies that the multiversion-dispatched function
@@ -69,7 +66,6 @@ mod tests {
         assert_eq!(dispatched_result.edit_distance, manual_result.edit_distance);
     }
 
-    // Test will fail: multiversion attribute does not exist yet
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_x86_64_has_multiple_implementations() {
@@ -121,7 +117,6 @@ mod tests {
         assert_eq!(implementations.len(), 1, "other arches are naive-only");
     }
 
-    // Test will fail: dispatch overhead tracking does not exist yet
     #[test]
     fn test_dispatch_has_minimal_overhead() {
         // This test verifies that the runtime dispatch overhead is negligible.
@@ -156,7 +151,6 @@ mod tests {
         );
     }
 
-    // Test will fail: force_implementation function does not exist yet
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_can_force_naive_implementation() {
@@ -177,7 +171,6 @@ mod tests {
         assert!(naive_result.is_ok());
     }
 
-    // Test will fail: force_implementation function does not exist yet
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_can_force_sse42_implementation() {
@@ -203,7 +196,6 @@ mod tests {
         assert!(simd_result.is_ok());
     }
 
-    // Test will fail: implementation verification does not exist yet
     #[test]
     fn test_dispatched_implementation_logs_selection() {
         // This test verifies that the selected implementation is logged or
@@ -226,13 +218,12 @@ mod tests {
         );
 
         assert!(
-            selected_impl == "naive" || selected_impl == "sse42",
+            matches!(selected_impl.as_str(), "naive" | "sse42" | "neon"),
             "Selected implementation must be valid: {}",
             selected_impl
         );
     }
 
-    // Test will fail: CPUID access does not exist yet
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn test_cpuid_detection_works() {
@@ -248,7 +239,6 @@ mod tests {
         assert_eq!(cpuid_result["sse42"], crate::wfa_simd::is_sse42_available());
     }
 
-    // Test will fail: fallback mechanism does not exist yet
     #[test]
     fn test_fallback_on_unsupported_feature() {
         // This test verifies that attempting to use an unsupported feature
@@ -472,8 +462,9 @@ mod tests {
     fn issue_71_runtime_dispatch_valid_target() {
         let dispatch_target = crate::wfa_simd::get_active_dispatch_target();
         assert!(
-            dispatch_target == "sse42" || dispatch_target == "naive",
-            "Dispatch target must be valid"
+            matches!(dispatch_target.as_str(), "sse42" | "naive" | "neon"),
+            "Dispatch target must be valid, got: {}",
+            dispatch_target
         );
     }
 
