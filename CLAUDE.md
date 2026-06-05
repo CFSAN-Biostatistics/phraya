@@ -43,10 +43,11 @@ phraya filter → VCF | TSV | filtered .phraya
 
 ### Use Cases (detected by `phraya plan`)
 
-1. **Case 1**: N reads, no reference → MSA (N×(N-1)/2 alignments) [Phase 2+]
-2. **Case 2**: N reads + reference → N alignments (BWA-like, main use case)
-3. **Case 3**: M contigs + N reads, no ref → centroid selection + M+N-1 alignments (key innovation)
-4. **Case 4**: M contigs ± reference → M or M×(M-1)/2 alignments (minimap2-like)
+1. **Case 2**: N reads + reference → N alignments (BWA-like, main use case)
+2. **Case 3**: M contigs + N reads, no ref → centroid selection + M+N-1 alignments (key innovation)
+3. **Case 4**: M contigs ± reference → M or M×(M-1)/2 alignments (minimap2-like)
+
+**Not supported**: reads-only with no reference and no contigs. All-vs-all short-read pairwise is de novo assembly (PRD §Won't Have). Phraya requires a coordinate space — provide a reference or mix in contigs and Case 3 auto-selects a centroid.
 
 ### Alignment Algorithm
 
@@ -136,9 +137,7 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 - NEON diagonal fill in phraya-align (aarch64)
 
 **Deferred to Phase 2+:**
-- Case 1 (MSA without reference)
 - Expression-based filters (`--expr`)
-- Named presets (`--preset conservative`)
 - Variation hotspot estimation in plan
 - Two-tier evidence (k-mer → alignment refinement)
 - Python bindings / R integration

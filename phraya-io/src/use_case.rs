@@ -5,7 +5,7 @@ use crate::SequenceParser;
 /// Case 2: N reads + reference
 /// Case 3: M contigs + N reads, no reference (with centroid selection)
 /// Case 4: M contigs ± reference (or contig MSA)
-/// Case 1: reads only, no reference (deferred to Phase 2)
+/// Reads-only without reference: not supported (see error variant)
 use phraya_core::types::{select_centroid, sketch_sequence_default};
 use std::path::Path;
 use thiserror::Error;
@@ -46,9 +46,11 @@ pub enum UseCase {
 /// Errors during use case detection
 #[derive(Debug, Clone, Error)]
 pub enum UseCaseError {
-    /// Case 1 (reads only, no reference) deferred to Phase 2
-    #[error("Case 1 (reads only, no reference) deferred to Phase 2")]
-    Case1Deferred,
+    /// Reads-only input with no reference or contigs is not supported.
+    /// Provide a reference sequence or include assembly contigs so Phraya
+    /// can establish a coordinate space (Case 2, 3, or 4).
+    #[error("reads-only input without a reference is not supported — provide a reference (--reference) or include assembly contigs to use as coordinate space")]
+    ReadsOnlyNoReference,
 
     /// Invalid input specification
     #[error("invalid input: {0}")]
@@ -97,7 +99,7 @@ pub fn classify_input(path: &Path) -> Result<InputType, UseCaseError> {
 /// - Case 2: has reference, inputs are reads → N tasks
 /// - Case 3: no reference, mixed contigs + reads → select centroid, M+N tasks
 /// - Case 4: contigs only → M tasks (with ref) or M×(M-1)/2 (without ref, MSA)
-/// - Case 1: reads only, no reference → ERROR (deferred)
+/// - Reads only, no reference → ERROR (not supported)
 ///
 /// # Arguments
 /// * `inputs` - Slice of paths to input FASTA/FASTQ files (can be &[Path] or &[PathBuf])
@@ -164,9 +166,9 @@ pub fn detect_use_case<P: AsRef<Path>>(
                 }
             }
         }
-        // Case 1: reads only, no reference (deferred)
+        // Reads only, no reference or contigs — not supported
         (None, 0, _) if num_reads > 0 => {
-            return Err(UseCaseError::Case1Deferred);
+            return Err(UseCaseError::ReadsOnlyNoReference);
         }
         // All other combinations are invalid
         _ => {
@@ -590,18 +592,18 @@ mod tests {
 
     #[test]
     fn test_issue_67_case1_error_reads_only_no_reference() {
-        // Case 1 should return error: deferred to Phase 2
+        // Reads only, no reference → not supported
         let read = ">read1\nACGT\n";
         let read_f = write_fasta(read);
 
         let result = detect_use_case(&[read_f.path().to_path_buf()], None);
 
-        assert!(matches!(result, Err(UseCaseError::Case1Deferred)));
+        assert!(matches!(result, Err(UseCaseError::ReadsOnlyNoReference)));
     }
 
     #[test]
     fn test_issue_67_multiple_reads_only_error() {
-        // Multiple reads with no reference → Case 1 error
+        // Multiple reads with no reference → not supported
         let read1 = ">read1\nACGT\n";
         let read2 = ">read2\nTGCA\n";
         let read1_f = write_fasta(read1);
@@ -612,7 +614,7 @@ mod tests {
             None,
         );
 
-        assert!(matches!(result, Err(UseCaseError::Case1Deferred)));
+        assert!(matches!(result, Err(UseCaseError::ReadsOnlyNoReference)));
     }
 
     #[test]

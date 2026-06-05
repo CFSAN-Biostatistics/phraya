@@ -369,7 +369,7 @@ fn detect_use_case(
             UseCase::ContigsOnly
         }
     } else {
-        // Case 1: Reads only (should not happen in MVP)
+        // Reads only, no reference — not supported
         UseCase::ReadsOnly
     }
 }
@@ -450,7 +450,7 @@ fn generate_task_list(
             tasks
         }
         UseCase::ReadsOnly => {
-            // Case 1: N reads only (not in MVP)
+            // Reads only, no reference — not supported
             // For now, return empty task list
             Vec::new()
         }
