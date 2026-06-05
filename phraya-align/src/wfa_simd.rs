@@ -83,75 +83,10 @@ pub fn wfa_extend_naive_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
         });
     }
 
-    // Build edit distance DP table - O(nm) space is acceptable
-    let mut dp = vec![vec![0i32; target_len + 1]; query_len + 1];
-    let mut traceback = vec![vec![None; target_len + 1]; query_len + 1];
-
-    // Initialize boundaries
-    for i in 1..=query_len {
-        dp[i][0] = i as i32;
-        traceback[i][0] = Some('D');
-    }
-    for j in 1..=target_len {
-        dp[0][j] = j as i32;
-        traceback[0][j] = Some('I');
-    }
-
-    // Fill DP table - standard row-by-row Levenshtein with traceback
-    for i in 1..=query_len {
-        for j in 1..=target_len {
-            let cost = if query_suffix[i-1] == target_suffix[j-1] { 0 } else { 1 };
-
-            let del = dp[i-1][j] + 1;
-            let ins = dp[i][j-1] + 1;
-            let mat = dp[i-1][j-1] + cost;
-
-            if del < ins && del < mat {
-                dp[i][j] = del;
-                traceback[i][j] = Some('D');
-            } else if ins < mat {
-                dp[i][j] = ins;
-                traceback[i][j] = Some('I');
-            } else {
-                dp[i][j] = mat;
-                traceback[i][j] = Some(if cost == 0 { 'M' } else { 'X' });
-            }
-        }
-    }
-
-    let edit_distance = dp[query_len][target_len] as usize;
-
-    // Traceback to build CIGAR
-    let mut cigar_ops = Vec::new();
-    let mut i = query_len;
-    let mut j = target_len;
-
-    while i > 0 || j > 0 {
-        match traceback[i][j] {
-            Some('D') => {
-                cigar_ops.push('D');
-                i -= 1;
-            }
-            Some('I') => {
-                cigar_ops.push('I');
-                j -= 1;
-            }
-            Some('M') => {
-                cigar_ops.push('M');
-                i -= 1;
-                j -= 1;
-            }
-            Some('X') => {
-                cigar_ops.push('X');
-                i -= 1;
-                j -= 1;
-            }
-            _ => break,
-        }
-    }
-
-    cigar_ops.reverse();
-    let cigar = compact_cigar(&cigar_ops);
+    // Scalar reference fill, then shared traceback. The SIMD path produces an
+    // identical matrix and reuses the same traceback, so the two cannot diverge.
+    let dp = fill_scalar(query_suffix, target_suffix);
+    let (cigar, edit_distance) = traceback(&dp, query_suffix, target_suffix);
 
     Ok(Alignment {
         cigar,
@@ -161,6 +96,78 @@ pub fn wfa_extend_naive_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
         target_start: seed.target_pos,
         target_end: seed.target_pos + target_len,
     })
+}
+
+/// Flat row-major edit-distance DP matrix, `(q.len()+1) * (t.len()+1)`,
+/// indexed `dp[i * (t.len()+1) + j]`. Scalar reference fill.
+fn fill_scalar(q: &[u8], t: &[u8]) -> Vec<i32> {
+    let qn = q.len();
+    let tn = t.len();
+    let stride = tn + 1;
+    let mut dp = vec![0i32; (qn + 1) * stride];
+    for i in 1..=qn {
+        dp[i * stride] = i as i32;
+    }
+    for j in 1..=tn {
+        dp[j] = j as i32;
+    }
+    for i in 1..=qn {
+        for j in 1..=tn {
+            let cost = if q[i - 1] == t[j - 1] { 0 } else { 1 };
+            let del = dp[(i - 1) * stride + j] + 1;
+            let ins = dp[i * stride + (j - 1)] + 1;
+            let mat = dp[(i - 1) * stride + (j - 1)] + cost;
+            dp[i * stride + j] = del.min(ins).min(mat);
+        }
+    }
+    dp
+}
+
+/// Reconstruct (CIGAR, edit_distance) from a DP matrix exposed via `get(i, j)`.
+///
+/// Tie-break priority (deletion, then insertion, then match/mismatch) depends
+/// only on the cell values, not on how the matrix was filled or stored — so the
+/// scalar (row-major) and SIMD (diagonal-stored) paths feed the same logic and
+/// emit byte-identical CIGARs.
+fn traceback_with<F: Fn(usize, usize) -> i32>(get: F, q: &[u8], t: &[u8]) -> (String, usize) {
+    let (qn, tn) = (q.len(), t.len());
+    let edit_distance = get(qn, tn) as usize;
+
+    let mut ops = Vec::new();
+    let (mut i, mut j) = (qn, tn);
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 {
+            let cost = if q[i - 1] == t[j - 1] { 0 } else { 1 };
+            let del = get(i - 1, j) + 1;
+            let ins = get(i, j - 1) + 1;
+            let mat = get(i - 1, j - 1) + cost;
+            if del < ins && del < mat {
+                ops.push('D');
+                i -= 1;
+            } else if ins < mat {
+                ops.push('I');
+                j -= 1;
+            } else {
+                ops.push(if cost == 0 { 'M' } else { 'X' });
+                i -= 1;
+                j -= 1;
+            }
+        } else if i > 0 {
+            ops.push('D');
+            i -= 1;
+        } else {
+            ops.push('I');
+            j -= 1;
+        }
+    }
+    ops.reverse();
+    (compact_cigar(&ops), edit_distance)
+}
+
+/// Row-major convenience wrapper over [`traceback_with`] for [`fill_scalar`].
+fn traceback(dp: &[i32], q: &[u8], t: &[u8]) -> (String, usize) {
+    let stride = t.len() + 1;
+    traceback_with(|i, j| dp[i * stride + j], q, t)
 }
 
 /// Compact CIGAR operations into a standard CIGAR string.
@@ -189,51 +196,150 @@ fn compact_cigar(ops: &[char]) -> String {
 }
 
 // ============================================================================
-// SSE4.2 SIMD Implementation
+// Portable-SIMD anti-diagonal diagonal fill (NEON on aarch64, SSE/AVX on x86)
 // ============================================================================
 
-/// SSE4.2-accelerated WFA extension using x86_64 intrinsics.
+/// SIMD lane width for the diagonal fill. `wide::i32x8` lowers to NEON
+/// (`int32x4_t` pairs) on aarch64 and SSE/AVX2 on x86_64.
+const SIMD_LANES: usize = 8;
+
+/// DP matrix in **anti-diagonal storage**: diagonal `d = i + j` occupies the
+/// contiguous block `data[base[d] .. base[d+1]]`, cells ordered by ascending
+/// `i`. Cell `(i, j)` lives at `base[d] + (i - i_lo(d))` where `i_lo(d)` is the
+/// smallest `i` on the diagonal.
 ///
-/// Uses SSE4.2 instructions for parallelized character comparisons
-/// and packed minimum operations on DP values.
+/// This layout is the whole point of the SIMD path: `fill_simd` writes each
+/// diagonal sequentially (a contiguous, bandwidth-friendly store) instead of
+/// scattering anti-diagonal results into a row-major matrix, which is
+/// cache-hostile and made an earlier version *slower* than scalar past L2.
+/// `at(i, j)` then gives the random access the shared traceback needs.
+struct DiagMatrix {
+    data: Vec<i32>,
+    tn: usize,
+    base: Vec<usize>,
+}
+
+impl DiagMatrix {
+    #[inline]
+    fn at(&self, i: usize, j: usize) -> i32 {
+        let d = i + j;
+        let i_lo = d.saturating_sub(self.tn);
+        self.data[self.base[d] + (i - i_lo)]
+    }
+}
+
+/// Portable-SIMD anti-diagonal edit-distance fill.
 ///
-/// # SAFETY
+/// Computes cells along anti-diagonals `d = i + j`. Every cell on diagonal `d`
+/// depends only on diagonals `d-1` and `d-2`, so a run of consecutive `i` is
+/// data-independent and the 3-way `min` over `del/ins/mat` vectorises across
+/// lanes — unlike a row-major fill, where each cell needs its just-computed
+/// left neighbour. Neighbours `(i-1,j)`, `(i,j-1)`, `(i-1,j-1)` lie in the two
+/// preceding diagonals as contiguous slices, so they load straight into vectors
+/// and the result stores straight into diagonal `d`'s block (see [`DiagMatrix`]).
 ///
-/// - Requires x86_64 CPU with SSE4.2 support (verified at call site via is_x86_feature_detected)
-/// - Uses standard Rust operations (no actual intrinsics in final version for stability)
-/// - Bounds checking on all loop iterations prevents out-of-bounds DP matrix access
-/// - Input slices must be valid UTF-8 or ASCII bytes
-/// - All unsafe blocks (if any) documented with SAFETY comments explaining invariants
-///
-/// # Algorithm
-///
-/// Standard edit distance DP with SSE4.2 optimization strategy:
-/// - Process DP matrix row-by-row (column-major in SIMD regs)
-/// - Character comparisons parallelizable across vector lanes
-/// - Min operations use packed minimum instructions (standard in SSE4.2)
-/// - Generate CIGAR string from final traceback (scalar, not SIMD)
-#[cfg(target_arch = "x86_64")]
-pub fn wfa_extend_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    // Ensure we have valid input
+/// `#[inline(never)]` keeps this a distinct symbol so `scripts/assert_simd.sh`
+/// can disassemble it and confirm the loop lowered to real vector instructions.
+#[inline(never)]
+fn fill_simd(q: &[u8], t: &[u8]) -> DiagMatrix {
+    use wide::i32x8;
+
+    let qn = q.len();
+    let tn = t.len();
+    let nd = qn + tn; // highest diagonal index
+
+    // base[d] = start offset of diagonal d; base[nd+1] = total cell count.
+    let mut base = vec![0usize; nd + 2];
+    for d in 0..=nd {
+        let len = d.min(qn) - d.saturating_sub(tn) + 1;
+        base[d + 1] = base[d] + len;
+    }
+    let mut data = vec![0i32; base[nd + 1]];
+    data[0] = 0; // diagonal 0: cell (0,0)
+
+    let one = i32x8::splat(1);
+
+    for d in 1..=nd {
+        let i_lo = d.saturating_sub(tn); // smallest i (j = d-i <= tn)
+        let i_hi = d.min(qn); // largest i (i <= qn)
+        let bd = base[d];
+
+        // First row / first column boundary cells: (0,d)=d and (d,0)=d.
+        if i_lo == 0 {
+            data[bd] = d as i32;
+        }
+        if i_hi == d {
+            data[bd + (d - i_lo)] = d as i32;
+        }
+
+        // Interior cells: 1 <= i <= qn and 1 <= j = d-i (i.e. i <= d-1).
+        let i_start = i_lo.max(1);
+        let i_end = i_hi.min(d - 1);
+        if i_start <= i_end {
+            let il1 = (d - 1).saturating_sub(tn); // i_lo of diagonal d-1
+            let il2 = (d - 2).saturating_sub(tn); // i_lo of diagonal d-2
+            let bd1 = base[d - 1];
+            let bd2 = base[d - 2];
+            // Split off already-written diagonals (prev) from this one (cur),
+            // so neighbour loads and the current store don't alias.
+            let (prev, cur) = data.split_at_mut(bd);
+
+            let mut i = i_start;
+            while i + SIMD_LANES <= i_end + 1 {
+                let up = i32x8::from(load8(prev, bd1 + (i - 1 - il1))); // (i-1, j)
+                let left = i32x8::from(load8(prev, bd1 + (i - il1))); // (i, j-1)
+                let diag = i32x8::from(load8(prev, bd2 + (i - 1 - il2))); // (i-1, j-1)
+
+                let mut costs = [0i32; SIMD_LANES];
+                for (k, c) in costs.iter_mut().enumerate() {
+                    let ii = i + k;
+                    *c = (q[ii - 1] != t[d - ii - 1]) as i32;
+                }
+                let cost = i32x8::from(costs);
+
+                let m = (up + one).min(left + one).min(diag + cost);
+                let w = i - i_lo;
+                cur[w..w + SIMD_LANES].copy_from_slice(&m.to_array());
+                i += SIMD_LANES;
+            }
+            while i <= i_end {
+                let cost = (q[i - 1] != t[d - i - 1]) as i32;
+                let up = prev[bd1 + (i - 1 - il1)] + 1;
+                let left = prev[bd1 + (i - il1)] + 1;
+                let mat = prev[bd2 + (i - 1 - il2)] + cost;
+                cur[i - i_lo] = up.min(left).min(mat);
+                i += 1;
+            }
+        }
+    }
+
+    DiagMatrix { data, tn, base }
+}
+
+/// Copy 8 contiguous `i32`s from `v` starting at `at` into an array (for
+/// `i32x8::from`). The caller guarantees `at + 8 <= v.len()`.
+#[inline]
+fn load8(v: &[i32], at: usize) -> [i32; SIMD_LANES] {
+    let mut a = [0i32; SIMD_LANES];
+    a.copy_from_slice(&v[at..at + SIMD_LANES]);
+    a
+}
+
+/// Shared entry point for the SIMD diagonal fill used by both the x86 (SSE/AVX)
+/// and aarch64 (NEON) paths. The arithmetic lowers to real vector instructions
+/// for the build target (see `scripts/assert_simd.sh`).
+fn wfa_extend_diag_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
     if seed.query_pos > query.len() || seed.target_pos > target.len() {
         return Err(WfaError::InvalidInput(
             "Seed position beyond sequence length".to_string(),
         ));
     }
 
-    // Track the last implementation used
-    LAST_IMPL.with(|last| {
-        *last.borrow_mut() = "sse42".to_string();
-    });
-
-    // Extract the suffix sequences from seed position
     let query_suffix = &query[seed.query_pos..];
     let target_suffix = &target[seed.target_pos..];
-
     let query_len = query_suffix.len();
     let target_len = target_suffix.len();
 
-    // Handle empty suffixes
     if query_len == 0 && target_len == 0 {
         return Ok(Alignment {
             cigar: String::new(),
@@ -245,109 +351,8 @@ pub fn wfa_extend_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> Wf
         });
     }
 
-    // Build edit distance DP table with SSE4.2 acceleration strategy
-    // SAFETY: Vector allocation creates valid heap memory for (query_len+1) x (target_len+1) matrix
-    let mut dp = vec![vec![0i32; target_len + 1]; query_len + 1];
-    let mut traceback = vec![vec![None; target_len + 1]; query_len + 1];
-
-    // Initialize boundaries
-    // SAFETY: Loop bounds (1..=query_len) ensure valid indexing into allocated matrix
-    for i in 1..=query_len {
-        dp[i][0] = i as i32;
-        traceback[i][0] = Some('D');
-    }
-    // SAFETY: Loop bounds (1..=target_len) ensure valid indexing into allocated matrix
-    for j in 1..=target_len {
-        dp[0][j] = j as i32;
-        traceback[0][j] = Some('I');
-    }
-
-    // Fill DP table - SSE4.2 optimized character comparison and min operations
-    // SAFETY: Nested loop bounds ensure valid indexing:
-    // - i ranges from 1 to query_len (inclusive), so i-1 ranges 0 to query_len-1
-    // - j ranges from 1 to target_len (inclusive), so j-1 ranges 0 to target_len-1
-    // - Both i and j are valid indices into dp and traceback matrices
-    // - query_suffix and target_suffix slices are valid from seed.query_pos and seed.target_pos
-    for i in 1..=query_len {
-        for j in 1..=target_len {
-            // SAFETY: Bounds checking before slice access:
-            // - query_suffix has length query_len, so i-1 < query_len is valid
-            // - target_suffix has length target_len, so j-1 < target_len is valid
-            let query_byte = query_suffix[i - 1];
-            let target_byte = target_suffix[j - 1];
-
-            // SSE4.2 character comparison (vectorizable across lanes)
-            // SAFETY: Single-byte comparison is always safe; no intrinsics needed for safety
-            let cost = if query_byte == target_byte { 0 } else { 1 };
-
-            // Compute three candidate edit distances
-            // SAFETY: DP matrix access with validated indices:
-            // - dp[i-1][j] is valid because i >= 1, so i-1 >= 0
-            // - dp[i][j-1] is valid because j >= 1, so j-1 >= 0
-            // - dp[i-1][j-1] is valid because i >= 1 and j >= 1
-            // - All indices fit within allocated (query_len+1) x (target_len+1) matrix
-            let del = dp[i - 1][j] + 1;
-            let ins = dp[i][j - 1] + 1;
-            let mat = dp[i - 1][j - 1] + cost;
-
-            // SSE4.2 packed minimum operation (simulated with standard Rust min)
-            // SAFETY: Min comparison of three i32 values is always safe
-            // In actual SSE4.2 implementation, would use _mm_min_epi32 for vectorization
-            if del < ins && del < mat {
-                dp[i][j] = del;
-                traceback[i][j] = Some('D');
-            } else if ins < mat {
-                dp[i][j] = ins;
-                traceback[i][j] = Some('I');
-            } else {
-                dp[i][j] = mat;
-                traceback[i][j] = Some(if cost == 0 { 'M' } else { 'X' });
-            }
-        }
-    }
-
-    let edit_distance = dp[query_len][target_len] as usize;
-
-    // Traceback to build CIGAR string (scalar, not SIMD)
-    let mut cigar_ops = Vec::new();
-    let mut i = query_len;
-    let mut j = target_len;
-
-    // SAFETY: Traceback loop bounds ensure valid indexing:
-    // - Start from (query_len, target_len), both valid indices
-    // - Each iteration decreases i or j by 1
-    // - Loop terminates when both i == 0 and j == 0
-    // - All traceback array accesses stay within bounds
-    while i > 0 || j > 0 {
-        // SAFETY: traceback[i][j] access is valid:
-        // - i ranges from query_len down to 0
-        // - j ranges from target_len down to 0
-        // - Both are valid indices into allocated matrix
-        match traceback[i][j] {
-            Some('D') => {
-                cigar_ops.push('D');
-                i -= 1;
-            }
-            Some('I') => {
-                cigar_ops.push('I');
-                j -= 1;
-            }
-            Some('M') => {
-                cigar_ops.push('M');
-                i -= 1;
-                j -= 1;
-            }
-            Some('X') => {
-                cigar_ops.push('X');
-                i -= 1;
-                j -= 1;
-            }
-            _ => break,
-        }
-    }
-
-    cigar_ops.reverse();
-    let cigar = compact_cigar(&cigar_ops);
+    let dm = fill_simd(query_suffix, target_suffix);
+    let (cigar, edit_distance) = traceback_with(|i, j| dm.at(i, j), query_suffix, target_suffix);
 
     Ok(Alignment {
         cigar,
@@ -357,6 +362,23 @@ pub fn wfa_extend_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> Wf
         target_start: seed.target_pos,
         target_end: seed.target_pos + target_len,
     })
+}
+
+// ============================================================================
+// SSE4.2 SIMD Implementation (x86_64)
+// ============================================================================
+
+/// SSE/AVX-accelerated WFA extension on x86_64.
+///
+/// Thin wrapper that records dispatch selection and delegates to the portable
+/// SIMD diagonal fill ([`wfa_extend_diag_simd_impl`]), which lowers to SSE4.2
+/// (`pminsd`/`pcmpeqd`) or AVX2 depending on the build target.
+#[cfg(target_arch = "x86_64")]
+pub fn wfa_extend_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
+    LAST_IMPL.with(|last| {
+        *last.borrow_mut() = "sse42".to_string();
+    });
+    wfa_extend_diag_simd_impl(query, target, seed)
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -371,79 +393,16 @@ pub fn wfa_extend_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> Wf
 
 /// NEON-accelerated WFA diagonal fill for ARM64.
 ///
-/// # SAFETY
-///
-/// This function uses unsafe NEON intrinsics. Invariants:
-/// - Requires ARM64 architecture with NEON support (mandatory on aarch64)
-/// - Uses unaligned loads (vld1q_s32) for flexible alignment
-/// - Bounds checking prevents out-of-bounds access
-/// - Input slices must be valid and properly initialized
-/// - No runtime detection needed: NEON is mandatory on aarch64
+/// Thin wrapper that records dispatch selection and delegates to the portable
+/// SIMD diagonal fill ([`wfa_extend_diag_simd_impl`]). On aarch64 the kernel
+/// lowers to NEON instructions (`smin`/`cmeq` over `*.4s`); NEON is mandatory
+/// on aarch64 so no runtime detection is needed.
 #[cfg(target_arch = "aarch64")]
 pub fn wfa_extend_neon_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    // Ensure we have valid input
-    if seed.query_pos > query.len() || seed.target_pos > target.len() {
-        return Err(WfaError::InvalidInput(
-            "Seed position beyond sequence length".to_string(),
-        ));
-    }
-
-    // Track the last implementation used
     LAST_IMPL.with(|last| {
         *last.borrow_mut() = "neon".to_string();
     });
-
-    // Extract the suffix sequences from seed position
-    let query_suffix = &query[seed.query_pos..];
-    let target_suffix = &target[seed.target_pos..];
-
-    // Simple scoring: +1 for mismatch, 0 for match, +1 for indel
-    let query_len = query_suffix.len();
-    let target_len = target_suffix.len();
-
-    // Build edit distance matrix using simple DP
-    // SAFETY: Allocating dense DP matrix with bounds checking
-    let mut dp = vec![vec![0i32; target_len + 1]; query_len + 1];
-
-    // Initialize first row and column
-    for i in 0..=query_len {
-        dp[i][0] = i as i32;
-    }
-    for j in 0..=target_len {
-        dp[0][j] = j as i32;
-    }
-
-    // Fill DP table
-    // SAFETY: Loop bounds ensure we stay within allocated matrix
-    for i in 1..=query_len {
-        for j in 1..=target_len {
-            let match_cost = if query_suffix[i - 1] == target_suffix[j - 1] {
-                0
-            } else {
-                1
-            };
-
-            dp[i][j] = std::cmp::min(
-                std::cmp::min(
-                    dp[i - 1][j] + 1, // deletion
-                    dp[i][j - 1] + 1, // insertion
-                ),
-                dp[i - 1][j - 1] + match_cost, // match/mismatch
-            );
-        }
-    }
-
-    let edit_distance = dp[query_len][target_len] as usize;
-    let cigar = build_cigar(&dp, query_suffix, target_suffix, query_len, target_len);
-
-    Ok(Alignment {
-        cigar,
-        edit_distance,
-        query_start: seed.query_pos,
-        query_end: seed.query_pos + query_len,
-        target_start: seed.target_pos,
-        target_end: seed.target_pos + target_len,
-    })
+    wfa_extend_diag_simd_impl(query, target, seed)
 }
 
 #[cfg(not(target_arch = "aarch64"))]
@@ -635,6 +594,153 @@ pub fn get_used_intrinsics() -> Vec<String> {
 /// Check if intrinsic is documented.
 pub fn intrinsic_is_documented(_intrinsic: &str) -> bool {
     true
+}
+
+#[cfg(test)]
+mod simd_diff_tests {
+    //! Differential property tests: the portable-SIMD diagonal fill must produce
+    //! a byte-identical DP matrix to the scalar reference for every input, and
+    //! the public SIMD entry point must produce identical CIGAR + edit distance
+    //! to the naive entry point. A delegation-to-scalar would pass these; a
+    //! *wrong* SIMD fill (e.g. an anti-diagonal indexing bug) would not. The
+    //! companion `scripts/assert_simd.sh` proves the kernel is actually SIMD.
+    use super::{fill_scalar, fill_simd};
+    use crate::{wfa_extend_naive, wfa_extend_simd, SeedAnchor};
+
+    /// Deterministic, dependency-free PRNG (SplitMix64) for reproducible cases.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    fn random_seq(rng: &mut Rng, len: usize) -> Vec<u8> {
+        const BASES: &[u8; 4] = b"ACGT";
+        (0..len).map(|_| BASES[rng.below(4)]).collect()
+    }
+
+    /// Mutate `seq` with substitutions/insertions/deletions at the given rate.
+    fn diverge(rng: &mut Rng, seq: &[u8], rate_pct: usize) -> Vec<u8> {
+        const BASES: &[u8; 4] = b"ACGT";
+        let mut out = Vec::with_capacity(seq.len());
+        for &b in seq {
+            if rng.below(100) < rate_pct {
+                match rng.below(3) {
+                    0 => out.push(BASES[rng.below(4)]), // substitution
+                    1 => {}                             // deletion
+                    _ => {
+                        out.push(BASES[rng.below(4)]); // insertion
+                        out.push(b);
+                    }
+                }
+            } else {
+                out.push(b);
+            }
+        }
+        out
+    }
+
+    /// The core anti-fraud-adjacent invariant: the SIMD fill equals the scalar
+    /// fill, cell for cell, over a wide sweep of lengths and divergences.
+    /// Lengths deliberately straddle the SIMD lane width (8) and its multiples.
+    #[test]
+    fn fill_simd_matches_fill_scalar_property() {
+        let mut rng = Rng(0xC0FFEE_D15EA5E);
+        let lengths = [
+            0usize, 1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100, 250, 500, 1000,
+        ];
+        let divergences = [0usize, 1, 5, 20, 50];
+        let mut cases = 0u32;
+
+        for &ql in &lengths {
+            for &dv in &divergences {
+                for _ in 0..15 {
+                    let q = random_seq(&mut rng, ql);
+                    let t = diverge(&mut rng, &q, dv);
+                    let scalar = fill_scalar(&q, &t); // row-major reference
+                    let simd = fill_simd(&q, &t); // anti-diagonal storage
+                    let stride = t.len() + 1;
+                    // Compare every cell across the two layouts; the index
+                    // remapping is itself part of what's under test.
+                    for i in 0..=q.len() {
+                        for j in 0..=t.len() {
+                            let s = simd.at(i, j);
+                            let r = scalar[i * stride + j];
+                            assert!(
+                                s == r,
+                                "SIMD != scalar at ({i}, {j}): simd={s} scalar={r} \
+                                 (q.len={}, t.len={}, div={dv}%)",
+                                q.len(),
+                                t.len(),
+                            );
+                        }
+                    }
+                    cases += 1;
+                }
+            }
+        }
+        assert!(cases > 1000, "expected a broad sweep, ran {cases}");
+    }
+
+    /// End-to-end: the public SIMD path matches the naive path on CIGAR + edit
+    /// distance (shared traceback => identical CIGAR when matrices agree).
+    #[test]
+    fn wfa_extend_simd_matches_naive_property() {
+        let mut rng = Rng(0x5EED_1234_5678);
+        let lengths = [1usize, 8, 9, 50, 200, 500, 1000];
+        let divergences = [0usize, 2, 10, 30];
+
+        for &ql in &lengths {
+            for &dv in &divergences {
+                for _ in 0..10 {
+                    let q = random_seq(&mut rng, ql);
+                    let t = diverge(&mut rng, &q, dv);
+                    let seed = SeedAnchor {
+                        query_pos: 0,
+                        target_pos: 0,
+                    };
+                    let naive = wfa_extend_naive(&q, &t, seed).unwrap();
+                    let simd = wfa_extend_simd(&q, &t, seed).unwrap();
+                    assert_eq!(
+                        naive.edit_distance, simd.edit_distance,
+                        "edit distance mismatch (q.len={}, t.len={}, div={}%)",
+                        q.len(),
+                        t.len(),
+                        dv
+                    );
+                    assert_eq!(
+                        naive.cigar, simd.cigar,
+                        "CIGAR mismatch (q.len={}, t.len={}, div={}%)",
+                        q.len(),
+                        t.len(),
+                        dv
+                    );
+                }
+            }
+        }
+    }
+
+    /// Edit distance is a metric: the matrix corner must equal the known answer
+    /// on hand-checked cases (guards against scalar and SIMD sharing a bug).
+    #[test]
+    fn fill_simd_known_edit_distances() {
+        let stride_corner = |q: &[u8], t: &[u8]| -> i32 { fill_simd(q, t).at(q.len(), t.len()) };
+        assert_eq!(stride_corner(b"ACGT", b"ACGT"), 0);
+        assert_eq!(stride_corner(b"ACGT", b"AGGT"), 1); // one substitution
+        assert_eq!(stride_corner(b"ACGT", b"ACT"), 1); // one deletion
+        assert_eq!(stride_corner(b"ACGT", b"ACGGT"), 1); // one insertion
+        assert_eq!(stride_corner(b"AAAA", b"TTTT"), 4); // all substituted
+        assert_eq!(stride_corner(b"", b"ACGT"), 4); // empty query
+        assert_eq!(stride_corner(b"ACGT", b""), 4); // empty target
+    }
 }
 
 #[cfg(test)]

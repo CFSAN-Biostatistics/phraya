@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 log = "0.4"
 multiversion = "0.7"
+wide = "0.7"
 phraya-core = { path = "../phraya-core" }
 serde = { workspace = true }
 phraya-io = { path = "../phraya-io" }
