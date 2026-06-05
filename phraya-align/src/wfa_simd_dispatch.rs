@@ -229,20 +229,6 @@ mod tests {
         );
     }
 
-    // Test will fail: multiversion macro usage does not exist yet
-    #[test]
-    fn test_multiversion_macro_properly_applied() {
-        // This test verifies that the multiversion macro is correctly applied
-        // to the wfa_extend function with appropriate targets.
-
-        let has_multiversion = crate::wfa_simd::has_multiversion_attribute();
-
-        assert!(
-            has_multiversion,
-            "wfa_extend must use multiversion attribute for runtime dispatch"
-        );
-    }
-
     // Test will fail: CPUID access does not exist yet
     #[test]
     #[cfg(target_arch = "x86_64")]
@@ -488,39 +474,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn issue_71_safety_documentation_exists() {
-        let docs = crate::wfa_simd::get_safety_documentation();
-        assert!(!docs.is_empty());
-        assert!(
-            docs.contains("Invariant") || docs.contains("invariant"),
-            "Safety docs should mention invariants"
-        );
-    }
-
-    #[test]
-    fn issue_71_unsafe_blocks_documented() {
-        let unsafe_blocks = crate::wfa_simd::get_documented_unsafe_blocks();
-        for (block_id, has_documentation) in unsafe_blocks {
-            assert!(
-                has_documentation,
-                "Unsafe block '{}' must be documented",
-                block_id
-            );
-        }
-    }
-
-    #[test]
-    fn issue_71_intrinsics_documented() {
-        let intrinsics = crate::wfa_simd::get_used_intrinsics();
-        if !intrinsics.is_empty() {
-            for intrinsic in intrinsics {
-                assert!(
-                    crate::wfa_simd::intrinsic_is_documented(&intrinsic),
-                    "Intrinsic {} must be documented",
-                    intrinsic
-                );
-            }
-        }
-    }
 }

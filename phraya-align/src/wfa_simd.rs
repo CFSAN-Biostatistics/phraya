@@ -25,10 +25,6 @@
 use crate::{Alignment, SeedAnchor, WfaError, WfaResult};
 use std::collections::HashMap;
 
-// Safety documentation flag
-// SAFETY: Set to true when all unsafe blocks have documented invariants.
-pub const SAFETY_INVARIANTS_DOCUMENTED: bool = true;
-
 // Thread-local tracking of last selected implementation
 use std::cell::RefCell;
 thread_local! {
@@ -492,12 +488,6 @@ pub fn get_last_selected_implementation() -> String {
     get_active_dispatch_target()
 }
 
-/// Check if multiversion attribute is present.
-pub fn has_multiversion_attribute() -> bool {
-    // Verify by checking if the dispatched function exists and works
-    true // This is always true since wfa_extend in lib.rs uses multiversion
-}
-
 /// Query CPUID features.
 pub fn query_cpuid_features() -> HashMap<&'static str, bool> {
     let mut features = HashMap::new();
@@ -506,94 +496,6 @@ pub fn query_cpuid_features() -> HashMap<&'static str, bool> {
         features.insert("sse42", is_sse42_available());
     }
     features
-}
-
-// ============================================================================
-// Safety verification functions
-// ============================================================================
-
-/// Check if memory safety proof exists.
-pub fn has_memory_safety_proof() -> bool {
-    true
-}
-
-/// Validate alignment requirements can be met.
-pub fn validate_alignment_requirements(_query: &[u8], _target: &[u8]) -> bool {
-    // Unaligned loads are used, so any alignment works
-    true
-}
-
-/// Validate bounds checking exists.
-pub fn validate_bounds_checking(_query: &[u8], _target: &[u8]) -> bool {
-    true
-}
-
-/// Validate feature detection exists.
-pub fn validate_feature_detection() -> bool {
-    // Feature detection is done at call site via multiversion
-    true
-}
-
-/// Get documented unsafe blocks.
-pub fn get_documented_unsafe_blocks() -> Vec<(String, bool)> {
-    // Document all unsafe blocks in SIMD code
-    vec![
-        ("sse42_diagonal_fill".to_string(), true),
-        ("bounds_check_before_simd".to_string(), true),
-    ]
-}
-
-/// Check SSE4.2 intrinsics safety.
-pub fn check_sse42_intrinsics_safety() -> bool {
-    true
-}
-
-/// Validate no undefined behavior in SIMD.
-pub fn validate_no_ub_in_simd(_query: &[u8], _target: &[u8]) -> bool {
-    true
-}
-
-/// Get safety documentation string.
-pub fn get_safety_documentation() -> String {
-    r#"
-# SSE4.2 WFA Safety Documentation
-
-## Invariants
-
-1. **Input Validity**: Query and target slices must be valid byte sequences
-   - Example: Valid - `b"ACGT"`, Invalid - uninitialized memory
-
-2. **Alignment Requirements**: Uses unaligned loads (_mm_loadu_si128), so alignment is unrestricted
-   - Example: Any pointer alignment works
-
-3. **Bounds Checking**: All vector operations stay within slice bounds
-   - Example: DP matrix indices verified before access
-
-4. **Feature Detection**: SSE4.2 availability verified at runtime via multiversion
-   - Example: CPUID check via is_sse42_available()
-
-5. **Memory Layout**: Dense DP matrix allocated on heap with vec!
-   - Example: Safe allocation patterns
-
-## Unsafe Blocks
-
-All unsafe blocks contain SAFETY comments documenting invariants.
-    "#
-    .to_string()
-}
-
-/// Get list of intrinsics used.
-pub fn get_used_intrinsics() -> Vec<String> {
-    vec![
-        "_mm_loadu_si128".to_string(),
-        "_mm_storeu_si128".to_string(),
-        "_mm_min_epu8".to_string(),
-    ]
-}
-
-/// Check if intrinsic is documented.
-pub fn intrinsic_is_documented(_intrinsic: &str) -> bool {
-    true
 }
 
 #[cfg(test)]
@@ -740,6 +642,36 @@ mod simd_diff_tests {
         assert_eq!(stride_corner(b"AAAA", b"TTTT"), 4); // all substituted
         assert_eq!(stride_corner(b"", b"ACGT"), 4); // empty query
         assert_eq!(stride_corner(b"ACGT", b""), 4); // empty target
+    }
+
+    /// Real replacement for the deleted `SAFETY_INVARIANTS_DOCUMENTED = true`
+    /// theater: scan the implementation (everything before the test modules) and
+    /// require every `unsafe` to carry a `// SAFETY:` comment within two lines.
+    /// The portable-SIMD kernel currently uses no `unsafe` at all (so this passes
+    /// vacuously) — but it guards any future raw-pointer fast path from sneaking
+    /// in undocumented.
+    #[test]
+    fn every_unsafe_in_impl_has_safety_comment() {
+        let src = include_str!("wfa_simd.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap();
+        let lines: Vec<&str> = impl_src.lines().collect();
+        for (n, line) in lines.iter().enumerate() {
+            let tr = line.trim_start();
+            if tr.starts_with("//") {
+                continue;
+            }
+            let uses_unsafe = tr.starts_with("unsafe ") || tr.contains(" unsafe {");
+            if uses_unsafe {
+                let documented =
+                    (1..=2).any(|d| n >= d && lines[n - d].trim_start().starts_with("// SAFETY:"));
+                assert!(
+                    documented,
+                    "unsafe at wfa_simd.rs:{} has no `// SAFETY:` within 2 lines: {}",
+                    n + 1,
+                    line.trim()
+                );
+            }
+        }
     }
 }
 
@@ -1780,20 +1712,6 @@ mod tests {
         assert_eq!(alignment.query_end, 12);
         assert_eq!(alignment.target_start, 4);
         assert_eq!(alignment.target_end, 12);
-    }
-
-    // Safety: all unsafe blocks documented
-    #[test]
-    #[cfg(target_arch = "aarch64")]
-    fn issue_72_neon_unsafe_blocks_documented() {
-        // Verify that the NEON implementation has documented unsafe blocks
-        // This is a compile-time and code inspection verification
-        // The implementation must have SAFETY comments on all unsafe blocks
-        let documented = crate::wfa_simd::SAFETY_INVARIANTS_DOCUMENTED;
-        assert!(
-            documented,
-            "NEON implementation must have documented unsafe blocks"
-        );
     }
 
     // High divergence: NEON handles high-divergence sequences
