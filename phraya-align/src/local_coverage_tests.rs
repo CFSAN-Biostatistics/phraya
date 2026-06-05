@@ -18,7 +18,7 @@ mod issue_130_local_coverage_tests {
             phraya_io::plan::UseCase::ReadsWithRef,
             vec!["test".to_string()],
             "2026-06-03T00:00:00Z".to_string(),
-            vec![],
+            HashMap::new(),
             HashMap::new(),
             vec![],
         )
