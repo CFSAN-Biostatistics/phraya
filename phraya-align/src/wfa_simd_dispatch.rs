@@ -93,29 +93,32 @@ mod tests {
         );
     }
 
-    // Test will fail: multiversion fallback does not exist yet
     #[test]
     #[cfg(not(target_arch = "x86_64"))]
-    fn test_non_x86_64_uses_naive_only() {
-        // On non-x86_64 architectures, only the naive implementation should be available.
-
+    fn test_non_x86_64_implementation_set() {
+        // Off x86_64 there is no SSE4.2 path. aarch64 additionally has a real
+        // NEON implementation; other architectures are naive-only.
         let implementations = crate::wfa_simd::get_compiled_implementations();
 
         assert!(
             implementations.contains(&"naive"),
             "Non-x86_64 builds must include naive implementation"
         );
-
         assert!(
             !implementations.contains(&"sse42"),
-            "Non-x86_64 builds should not include SSE4.2 implementation"
+            "Non-x86_64 builds must not include the SSE4.2 implementation"
         );
 
-        assert_eq!(
-            implementations.len(),
-            1,
-            "Non-x86_64 builds should have exactly 1 implementation (naive)"
-        );
+        #[cfg(target_arch = "aarch64")]
+        {
+            assert!(
+                implementations.contains(&"neon"),
+                "aarch64 builds must include the NEON implementation"
+            );
+            assert_eq!(implementations.len(), 2, "aarch64 has naive + neon");
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        assert_eq!(implementations.len(), 1, "other arches are naive-only");
     }
 
     // Test will fail: dispatch overhead tracking does not exist yet
