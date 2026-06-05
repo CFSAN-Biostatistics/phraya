@@ -5,7 +5,7 @@ use phraya_core::types::{
     compute_kmer_uniqueness, select_centroid, sketch_sequence_default, CoverageTrack,
     MinimizerSketch, Sequence,
 };
-use phraya_filter::{vcf, FilterBuilder};
+use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
     phraya,
     plan::{self, write_plan, PhrayaPlan, UseCase},
@@ -102,6 +102,10 @@ enum Commands {
         /// Output file (required for phraya format)
         #[arg(long, value_name = "FILE")]
         output: Option<PathBuf>,
+
+        /// Named filter preset (conservative or sensitive). Individual threshold flags override preset values.
+        #[arg(long, value_name = "PRESET")]
+        preset: Option<String>,
     },
 }
 
@@ -140,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_mapq,
             format,
             output,
+            preset,
         } => {
             run_filter(
                 &input,
@@ -149,6 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_mapq,
                 &format,
                 output.as_deref(),
+                preset.as_deref(),
             )?;
         }
     }
@@ -492,6 +498,7 @@ fn run_filter(
     max_mapq: Option<u8>,
     format: &str,
     output_path: Option<&std::path::Path>,
+    preset: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate format
     if !["vcf", "tsv", "phraya"].contains(&format) {
@@ -507,8 +514,19 @@ fn run_filter(
 
     let initial_count = phraya_file.observations.len();
 
-    // Build filter
-    let mut filter_builder = FilterBuilder::new();
+    // Start from preset defaults if specified, then apply explicit overrides on top.
+    let mut filter_builder = match preset {
+        Some("conservative") => FilterPreset::Conservative.builder(),
+        Some("sensitive") => FilterPreset::Sensitive.builder(),
+        Some(other) => {
+            return Err(format!(
+                "Unknown preset '{}'. Valid presets: conservative, sensitive",
+                other
+            )
+            .into())
+        }
+        None => FilterBuilder::new(),
+    };
     if let Some(min_cov) = min_coverage {
         filter_builder = filter_builder.min_coverage(min_cov);
     }

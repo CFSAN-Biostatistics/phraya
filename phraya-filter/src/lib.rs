@@ -7,6 +7,36 @@ pub mod vcf;
 
 pub use extractors::{extract_allele_frequency, extract_cigar_ops, extract_multi_map_fraction};
 
+/// Named filter presets.
+///
+/// Presets return a pre-configured `FilterBuilder` as a starting point.
+/// Any individual threshold set afterward overrides the preset value.
+///
+/// - **conservative**: high-confidence calls only. Good for clinical/typing use.
+/// - **sensitive**: catches low-frequency variants at the cost of more noise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterPreset {
+    Conservative,
+    Sensitive,
+}
+
+impl FilterPreset {
+    /// Return a `FilterBuilder` seeded with this preset's defaults.
+    pub fn builder(self) -> FilterBuilder {
+        match self {
+            FilterPreset::Conservative => FilterBuilder::new()
+                .min_coverage(10)
+                .min_mapq(30)
+                .min_allele_frequency(0.10)
+                .exclude_tandem_repeats(true),
+            FilterPreset::Sensitive => FilterBuilder::new()
+                .min_coverage(3)
+                .min_mapq(20)
+                .min_allele_frequency(0.02),
+        }
+    }
+}
+
 /// Threshold-based filter configuration
 #[derive(Debug, Clone)]
 pub struct FilterBuilder {
@@ -436,5 +466,99 @@ mod tests {
             permissive.apply(&obs_in_repeat),
             "when exclude_tandem_repeats=false, repeat variants must pass"
         );
+    }
+
+    #[test]
+    fn conservative_preset_rejects_low_quality() {
+        // obs with coverage=5, mapq=25, allele_freq=0.05 — below all conservative thresholds
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 5u32); // 5/100 = 5% alt freq — below 10%
+        alleles.insert(b'A', 95u32);
+        let low_quality = VariantObservation::new(
+            100, b'A', alleles, 0.5, "10M".to_string(), 25, 1, vec![100], 30.0, "s:r".to_string(),
+        );
+
+        let filter = FilterPreset::Conservative.builder().build();
+        assert!(!filter.apply(&low_quality), "conservative must reject low-quality obs");
+    }
+
+    #[test]
+    fn conservative_preset_passes_high_quality() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 20u32); // 20/100 = 20% alt freq — above 10%
+        alleles.insert(b'A', 80u32);
+        let high_quality = VariantObservation::new(
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![100], 35.0, "s:r".to_string(),
+        );
+
+        let filter = FilterPreset::Conservative.builder().build();
+        assert!(filter.apply(&high_quality), "conservative must pass high-quality obs");
+    }
+
+    #[test]
+    fn sensitive_preset_passes_low_coverage_variant() {
+        // coverage=3, mapq=20, allele_freq=0.03 — just at sensitive thresholds
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 3u32);
+        alleles.insert(b'A', 97u32); // 3% alt freq
+        let obs = VariantObservation::new(
+            100, b'A', alleles, 0.9, "10M".to_string(), 20, 1, vec![3], 30.0, "s:r".to_string(),
+        );
+
+        let filter = FilterPreset::Sensitive.builder().build();
+        assert!(filter.apply(&obs), "sensitive must pass low-coverage variants");
+    }
+
+    #[test]
+    fn sensitive_preset_rejects_below_its_thresholds() {
+        // mapq=19 — below sensitive's min_mapq=20
+        let obs = create_observation(100, 19, 5, 30.0);
+        let filter = FilterPreset::Sensitive.builder().build();
+        assert!(!filter.apply(&obs), "sensitive must still reject mapq<20");
+    }
+
+    #[test]
+    fn preset_can_be_overridden_by_explicit_threshold() {
+        // Conservative preset has min_coverage=10. Override to min_coverage=5.
+        // Use an obs that passes all other conservative thresholds (mapq=40, allele_freq=20%).
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 2u32); // 2/10 = 20% alt freq → passes conservative's 10% threshold
+        alleles.insert(b'A', 8u32);
+        // local_coverage[0]=7 → below conservative's min_coverage=10, above override of 5
+        let obs = VariantObservation::new(
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![7], 35.0, "s:r".to_string(),
+        );
+
+        let default_filter = FilterPreset::Conservative.builder().build();
+        assert!(!default_filter.apply(&obs), "local_coverage[0]=7 fails conservative default (min=10)");
+
+        let overridden = FilterPreset::Conservative.builder().min_coverage(5).build();
+        assert!(overridden.apply(&obs), "local_coverage[0]=7 passes after override to min_coverage=5");
+    }
+
+    #[test]
+    fn conservative_excludes_tandem_repeats_by_default() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 20u32);
+        alleles.insert(b'A', 80u32);
+        let obs = VariantObservation::new(
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![100], 35.0, "s:r".to_string(),
+        ).with_tandem_repeat(true);
+
+        let filter = FilterPreset::Conservative.builder().build();
+        assert!(!filter.apply(&obs), "conservative must exclude tandem repeat variants");
+    }
+
+    #[test]
+    fn sensitive_does_not_exclude_tandem_repeats_by_default() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 5u32);
+        alleles.insert(b'A', 95u32);
+        let obs = VariantObservation::new(
+            100, b'A', alleles, 0.9, "10M".to_string(), 25, 0, vec![10], 30.0, "s:r".to_string(),
+        ).with_tandem_repeat(true);
+
+        let filter = FilterPreset::Sensitive.builder().build();
+        assert!(filter.apply(&obs), "sensitive must not exclude tandem repeat variants");
     }
 }
