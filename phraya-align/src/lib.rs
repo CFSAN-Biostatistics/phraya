@@ -4,6 +4,7 @@ pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
 
 pub use seeding::{find_seeds, Seed};
+pub use wfa_simd::myers_edit_distance;
 
 #[cfg(test)]
 mod local_coverage_tests;
