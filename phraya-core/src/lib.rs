@@ -1,5 +1,6 @@
 // Module declarations
 pub mod types;
+mod hotspot_tests;
 
 /// Represents a detected tandem repeat region in a sequence.
 ///
