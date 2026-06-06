@@ -23,7 +23,6 @@
 /// // Produces CIGAR "8M" with score 0 for perfect match
 /// ```
 use crate::{Alignment, SeedAnchor, WfaError, WfaResult};
-use std::collections::HashMap;
 
 // Thread-local tracking of last selected implementation
 use std::cell::RefCell;
@@ -698,20 +697,6 @@ pub fn force_implementation(
     }
 }
 
-/// Get the last selected implementation (for verification).
-pub fn get_last_selected_implementation() -> String {
-    get_active_dispatch_target()
-}
-
-/// Query CPUID features.
-pub fn query_cpuid_features() -> HashMap<&'static str, bool> {
-    let mut features = HashMap::new();
-    #[cfg(target_arch = "x86_64")]
-    {
-        features.insert("sse42", is_sse42_available());
-    }
-    features
-}
 
 #[cfg(test)]
 mod simd_diff_tests {
@@ -986,6 +971,14 @@ mod tests {
         // Mixed insertions, deletions, mismatches
         assert!(alignment.edit_distance > 0);
     }
+
+    // Differential tests: naive vs SIMD must agree on edit distance.
+    // Only meaningful on x86_64 where wfa_extend_simd uses a different kernel
+    // (wfa_extend_diag_simd_impl) than wfa_extend_naive (fill_wfa). On other
+    // architectures, wfa_extend_simd delegates to naive — comparing them is tautological.
+    #[cfg(target_arch = "x86_64")]
+    mod simd_vs_naive_differential {
+        use crate::{wfa_extend_naive, wfa_extend_simd, SeedAnchor};
 
     #[test]
     fn test_simd_matches_naive_exact() {
@@ -1426,6 +1419,8 @@ mod tests {
         assert_eq!(naive.edit_distance, simd.edit_distance);
         assert_eq!(naive.edit_distance, simd.edit_distance);
     }
+
+    } // mod simd_vs_naive_differential
 
     #[test]
     fn test_runtime_dispatch_uses_sse42_when_available() {
