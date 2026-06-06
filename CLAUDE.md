@@ -6,7 +6,7 @@ General-purpose pairwise sequence aligner for bacterial genomics. Reads/assembli
 
 ## Status
 
-Phase 1 MVP substantially complete (2026-06-03). Cases 2, 3, 4 working end-to-end. BAM/CRAM input supported. simd-minimizers integration complete.
+Phase 1 MVP shipped (2026-06-06). Cases 2, 3, 4 working end-to-end. Real WFA, SIMD diagonal fill, named filter presets, tandem repeat wiring, real mapq/base-quality/confidence all complete.
 
 ## Workspace Structure
 
@@ -126,15 +126,19 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 - Alleles: allele_frequency, ref_base, alt_bases
 - Quality: avg_base_quality, confidence
 
-## Phase 1 MVP (Current State)
+## Phase 1 MVP (Shipped 2026-06-06)
 
 **Complete:**
-- Cases 2 (reads + ref), 3 (contigs + reads, centroid), 4 (contigs only) working end-to-end
+- Cases 2 (reads + ref), 3 (contigs + reads, auto-centroid), 4 (contigs only) working end-to-end
+- Automatic centroid selection (Case 3): providing `--reference` overrides; omitting it triggers centroid selection. No separate flag needed.
 - BAM/CRAM input via `noodles` (pure Rust, no htslib)
 - `.phrayaplan` v2 with sketch reuse
-- `phraya filter` threshold-based, outputs VCF/TSV/phraya
+- Real WFA O(s·n) alignment with SIMD diagonal fill (SSE4.2 / NEON)
+- Real local coverage (±50bp window from alignment, not stubbed)
+- mapq, avg_base_quality, confidence derived from input data (BAM records / alignment score)
+- Tandem repeat detection wired end-to-end: annotation on variants, `exclude_tandem_repeats` filter option
+- `phraya filter` threshold-based + named presets (conservative / sensitive), outputs VCF/TSV/phraya
 - `phraya-filter` crate library API with feature extractors (cigar_ops, allele_frequency, multi_map_fraction)
-- NEON diagonal fill in phraya-align (aarch64)
 
 **Deferred to Phase 2+:**
 - Expression-based filters (`--expr`)
