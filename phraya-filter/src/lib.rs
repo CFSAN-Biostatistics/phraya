@@ -562,3 +562,409 @@ mod tests {
         assert!(filter.apply(&obs), "sensitive must not exclude tandem repeat variants");
     }
 }
+
+/// Expression-based filter for VariantObservations.
+///
+/// Parses and evaluates boolean expressions over VariantObservation fields.
+/// Example: `"coverage >= 10 && mapq > 30"`
+///
+/// Supported fields: coverage, mapq, allele_frequency, base_quality, confidence,
+/// kmer_uniqueness, edit_distance, in_tandem_repeat
+///
+/// Supported operators: >=, >, <=, <, ==, !=, &&, ||, !, parentheses
+#[derive(Debug, Clone)]
+pub struct ExprFilter {
+    _expr: String,
+}
+
+impl ExprFilter {
+    /// Create a new expression filter from a string expression.
+    /// Returns an error if the expression is malformed or references unknown fields.
+    pub fn new(_expr: &str) -> Result<Self, ExprParseError> {
+        // Stub: not yet implemented
+        unimplemented!("ExprFilter::new not yet implemented for issue #150")
+    }
+
+    /// Apply the filter to an observation.
+    pub fn apply(&self, _obs: &VariantObservation) -> bool {
+        // Stub: not yet implemented
+        unimplemented!("ExprFilter::apply not yet implemented for issue #150")
+    }
+
+    /// Filter observations, returning an iterator
+    pub fn filter<'a>(
+        &'a self,
+        observations: &'a [VariantObservation],
+    ) -> impl Iterator<Item = &'a VariantObservation> {
+        observations.iter().filter(move |_obs| false)
+    }
+}
+
+/// Parse error for expression parsing
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExprParseError {
+    UnknownField(String),
+    MalformedExpression(String),
+    UnmatchedParen,
+    MissingOperand,
+}
+
+impl std::fmt::Display for ExprParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExprParseError::UnknownField(name) => {
+                write!(f, "unknown field: '{}'", name)
+            }
+            ExprParseError::MalformedExpression(msg) => {
+                write!(f, "malformed expression: {}", msg)
+            }
+            ExprParseError::UnmatchedParen => {
+                write!(f, "unmatched parenthesis")
+            }
+            ExprParseError::MissingOperand => {
+                write!(f, "missing operand")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ExprParseError {}
+
+#[cfg(test)]
+mod expr_filter_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn create_obs(
+        position: u32,
+        mapq: u8,
+        coverage: u32,
+        base_quality: f64,
+        confidence: f64,
+        edit_distance: u32,
+        in_tandem_repeat: bool,
+    ) -> VariantObservation {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'A', coverage);
+
+        let mut obs = VariantObservation::new(
+            position,
+            b'A',
+            alleles,
+            confidence,
+            "10M".to_string(),
+            mapq,
+            edit_distance,
+            vec![coverage],
+            base_quality,
+            "test:read".to_string(),
+        );
+
+        if in_tandem_repeat {
+            obs = obs.with_tandem_repeat(true);
+        }
+
+        obs
+    }
+
+    /// Issue #150: Single coverage comparison
+    #[test]
+    fn issue_150_expr_single_coverage_gte() {
+        let filter = ExprFilter::new("coverage >= 10").expect("valid expr");
+        let obs_pass = create_obs(100, 60, 15, 35.0, 0.95, 0, false);
+        let obs_fail = create_obs(100, 60, 5, 35.0, 0.95, 0, false);
+
+        assert!(
+            filter.apply(&obs_pass),
+            "coverage >= 10 should pass obs with coverage=15"
+        );
+        assert!(
+            !filter.apply(&obs_fail),
+            "coverage >= 10 should fail obs with coverage=5"
+        );
+    }
+
+    /// Issue #150: AND operator combines two conditions
+    #[test]
+    fn issue_150_expr_and_operator() {
+        let filter = ExprFilter::new("mapq > 30 && allele_frequency >= 0.1")
+            .expect("valid expr");
+
+        let obs_both_pass = create_obs(100, 40, 20, 35.0, 0.95, 0, false);
+        let obs_mapq_fails = create_obs(100, 20, 20, 35.0, 0.95, 0, false);
+        let obs_freq_fails = create_obs(100, 40, 5, 35.0, 0.95, 0, false);
+
+        assert!(
+            filter.apply(&obs_both_pass),
+            "mapq > 30 && allele_frequency >= 0.1 should pass when both conditions true"
+        );
+        assert!(
+            !filter.apply(&obs_mapq_fails),
+            "mapq > 30 && allele_frequency >= 0.1 should fail when mapq condition fails"
+        );
+        assert!(
+            !filter.apply(&obs_freq_fails),
+            "mapq > 30 && allele_frequency >= 0.1 should fail when allele_frequency condition fails"
+        );
+    }
+
+    /// Issue #150: OR operator
+    #[test]
+    fn issue_150_expr_or_operator() {
+        let filter = ExprFilter::new("coverage >= 10 || mapq > 40").expect("valid expr");
+
+        let obs_coverage_pass = create_obs(100, 20, 15, 35.0, 0.95, 0, false);
+        let obs_mapq_pass = create_obs(100, 50, 5, 35.0, 0.95, 0, false);
+        let obs_both_fail = create_obs(100, 20, 5, 35.0, 0.95, 0, false);
+
+        assert!(
+            filter.apply(&obs_coverage_pass),
+            "coverage >= 10 || mapq > 40 should pass when coverage condition true"
+        );
+        assert!(
+            filter.apply(&obs_mapq_pass),
+            "coverage >= 10 || mapq > 40 should pass when mapq condition true"
+        );
+        assert!(
+            !filter.apply(&obs_both_fail),
+            "coverage >= 10 || mapq > 40 should fail when both conditions false"
+        );
+    }
+
+    /// Issue #150: Unknown field name produces parse error with field name in message
+    #[test]
+    fn issue_150_expr_unknown_field() {
+        let result = ExprFilter::new("unknown_field >= 10");
+
+        assert!(
+            result.is_err(),
+            "expression with unknown field should produce error"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("unknown_field"),
+            "error message should mention the unknown field name"
+        );
+    }
+
+    /// Issue #150: Malformed expression — unclosed paren
+    #[test]
+    fn issue_150_expr_unclosed_paren() {
+        let result = ExprFilter::new("(coverage >= 10");
+
+        assert!(
+            result.is_err(),
+            "expression with unclosed paren should produce error"
+        );
+    }
+
+    /// Issue #150: Malformed expression — missing operand
+    #[test]
+    fn issue_150_expr_missing_operand() {
+        let result = ExprFilter::new("coverage >= ");
+
+        assert!(
+            result.is_err(),
+            "expression with missing operand should produce error"
+        );
+    }
+
+    /// Issue #150: Both expr and threshold filters can be composed
+    #[test]
+    fn issue_150_expr_and_threshold_together() {
+        let expr_filter = ExprFilter::new("coverage >= 10").expect("valid expr");
+        let threshold_filter = FilterBuilder::new().min_mapq(30).build();
+
+        let obs = create_obs(100, 40, 15, 35.0, 0.95, 0, false);
+
+        // Both filters should pass
+        assert!(
+            expr_filter.apply(&obs),
+            "expr filter should pass obs with coverage=15"
+        );
+        assert!(
+            threshold_filter.apply(&obs),
+            "threshold filter should pass obs with mapq=40"
+        );
+    }
+
+    /// Issue #150: Parentheses work correctly
+    #[test]
+    fn issue_150_expr_parentheses() {
+        let filter = ExprFilter::new("(coverage >= 10 && mapq > 30) || mapq > 50")
+            .expect("valid expr");
+
+        let obs1 = create_obs(100, 20, 15, 35.0, 0.95, 0, false); // coverage ok, mapq not
+        let obs2 = create_obs(100, 60, 5, 35.0, 0.95, 0, false); // high mapq saves it
+
+        assert!(
+            !filter.apply(&obs1),
+            "coverage ok but mapq not ok, and overall mapq not > 50"
+        );
+        assert!(
+            filter.apply(&obs2),
+            "mapq > 50 should pass despite low coverage"
+        );
+    }
+
+    /// Issue #150: base_quality field comparison
+    #[test]
+    fn issue_150_expr_base_quality() {
+        let filter = ExprFilter::new("base_quality >= 30.0").expect("valid expr");
+
+        let obs_pass = create_obs(100, 60, 10, 35.0, 0.95, 0, false);
+        let obs_fail = create_obs(100, 60, 10, 25.0, 0.95, 0, false);
+
+        assert!(filter.apply(&obs_pass), "base_quality >= 30.0 should pass");
+        assert!(
+            !filter.apply(&obs_fail),
+            "base_quality >= 30.0 should fail"
+        );
+    }
+
+    /// Issue #150: confidence field comparison
+    #[test]
+    fn issue_150_expr_confidence() {
+        let filter = ExprFilter::new("confidence >= 0.9").expect("valid expr");
+
+        let obs_pass = create_obs(100, 60, 10, 35.0, 0.95, 0, false);
+        let obs_fail = create_obs(100, 60, 10, 35.0, 0.85, 0, false);
+
+        assert!(filter.apply(&obs_pass), "confidence >= 0.9 should pass");
+        assert!(
+            !filter.apply(&obs_fail),
+            "confidence >= 0.9 should fail"
+        );
+    }
+
+    /// Issue #150: edit_distance field comparison
+    #[test]
+    fn issue_150_expr_edit_distance() {
+        let filter = ExprFilter::new("edit_distance <= 5").expect("valid expr");
+
+        let obs_pass = create_obs(100, 60, 10, 35.0, 0.95, 3, false);
+        let obs_fail = create_obs(100, 60, 10, 35.0, 0.95, 10, false);
+
+        assert!(
+            filter.apply(&obs_pass),
+            "edit_distance <= 5 should pass"
+        );
+        assert!(
+            !filter.apply(&obs_fail),
+            "edit_distance <= 5 should fail"
+        );
+    }
+
+    /// Issue #150: in_tandem_repeat boolean field
+    #[test]
+    fn issue_150_expr_in_tandem_repeat() {
+        let filter = ExprFilter::new("in_tandem_repeat == 0").expect("valid expr");
+
+        let obs_pass = create_obs(100, 60, 10, 35.0, 0.95, 0, false);
+        let obs_fail = create_obs(100, 60, 10, 35.0, 0.95, 0, true);
+
+        assert!(
+            filter.apply(&obs_pass),
+            "in_tandem_repeat == 0 should pass for non-repeat variant"
+        );
+        assert!(
+            !filter.apply(&obs_fail),
+            "in_tandem_repeat == 0 should fail for repeat variant"
+        );
+    }
+
+    /// Issue #150: NOT operator
+    #[test]
+    fn issue_150_expr_not_operator() {
+        let filter = ExprFilter::new("!(mapq < 30)").expect("valid expr");
+
+        let obs_pass = create_obs(100, 40, 10, 35.0, 0.95, 0, false);
+        let obs_fail = create_obs(100, 20, 10, 35.0, 0.95, 0, false);
+
+        assert!(
+            filter.apply(&obs_pass),
+            "!(mapq < 30) should pass for mapq >= 30"
+        );
+        assert!(
+            !filter.apply(&obs_fail),
+            "!(mapq < 30) should fail for mapq < 30"
+        );
+    }
+
+    /// Issue #150: Complex expression with multiple operators
+    #[test]
+    fn issue_150_expr_complex() {
+        let filter = ExprFilter::new("(coverage >= 10 && mapq > 20) || base_quality >= 35.0")
+            .expect("valid expr");
+
+        let obs1 = create_obs(100, 25, 15, 30.0, 0.95, 0, false); // coverage & mapq ok
+        let obs2 = create_obs(100, 15, 5, 36.0, 0.95, 0, false); // base_quality ok
+        let obs3 = create_obs(100, 15, 5, 25.0, 0.95, 0, false); // all fail
+
+        assert!(
+            filter.apply(&obs1),
+            "should pass with coverage & mapq condition"
+        );
+        assert!(filter.apply(&obs2), "should pass with base_quality");
+        assert!(!filter.apply(&obs3), "should fail when all conditions false");
+    }
+
+    /// Issue #150: Filter iterator
+    #[test]
+    fn issue_150_expr_filter_iterator() {
+        let filter = ExprFilter::new("coverage >= 10").expect("valid expr");
+        let observations = vec![
+            create_obs(100, 60, 5, 35.0, 0.95, 0, false),
+            create_obs(100, 60, 15, 35.0, 0.95, 0, false),
+            create_obs(100, 60, 25, 35.0, 0.95, 0, false),
+        ];
+
+        let filtered: Vec<_> = filter.filter(&observations).collect();
+
+        assert_eq!(
+            filtered.len(),
+            2,
+            "filter iterator should return only obs with coverage >= 10"
+        );
+        assert_eq!(filtered[0].position(), 100);
+        assert_eq!(filtered[1].position(), 100);
+    }
+
+    /// Issue #150: Equality operator
+    #[test]
+    fn issue_150_expr_equality() {
+        let filter = ExprFilter::new("mapq == 60").expect("valid expr");
+
+        let obs_equal = create_obs(100, 60, 10, 35.0, 0.95, 0, false);
+        let obs_not_equal = create_obs(100, 50, 10, 35.0, 0.95, 0, false);
+
+        assert!(
+            filter.apply(&obs_equal),
+            "mapq == 60 should pass for mapq=60"
+        );
+        assert!(
+            !filter.apply(&obs_not_equal),
+            "mapq == 60 should fail for mapq=50"
+        );
+    }
+
+    /// Issue #150: Inequality operator
+    #[test]
+    fn issue_150_expr_inequality() {
+        let filter = ExprFilter::new("mapq != 30").expect("valid expr");
+
+        let obs_pass1 = create_obs(100, 60, 10, 35.0, 0.95, 0, false);
+        let obs_pass2 = create_obs(100, 20, 10, 35.0, 0.95, 0, false);
+        let obs_fail = create_obs(100, 30, 10, 35.0, 0.95, 0, false);
+
+        assert!(filter.apply(&obs_pass1), "mapq != 30 should pass for mapq=60");
+        assert!(
+            filter.apply(&obs_pass2),
+            "mapq != 30 should pass for mapq=20"
+        );
+        assert!(
+            !filter.apply(&obs_fail),
+            "mapq != 30 should fail for mapq=30"
+        );
+    }
+}
