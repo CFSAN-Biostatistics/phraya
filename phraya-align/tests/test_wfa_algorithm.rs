@@ -30,7 +30,10 @@ fn issue_131_exact_match_produces_correct_cigar_and_edit_distance() {
 
     let alignment = result.unwrap();
     // For exact match, edit distance must be 0
-    assert_eq!(alignment.edit_distance, 0, "Exact match must have edit_distance 0");
+    assert_eq!(
+        alignment.edit_distance, 0,
+        "Exact match must have edit_distance 0"
+    );
     // CIGAR should be "12M" (12 matches)
     assert_eq!(alignment.cigar, "12M", "Exact match CIGAR must be '12M'");
 }
@@ -227,7 +230,10 @@ fn issue_131_empty_suffix_at_seed_position() {
     assert!(result.is_ok());
 
     let alignment = result.unwrap();
-    assert_eq!(alignment.edit_distance, 0, "Empty alignment must have edit_distance 0");
+    assert_eq!(
+        alignment.edit_distance, 0,
+        "Empty alignment must have edit_distance 0"
+    );
     assert_eq!(alignment.cigar, "", "Empty alignment must have empty CIGAR");
 }
 
@@ -246,11 +252,20 @@ fn issue_131_seed_in_middle_of_sequence() {
 
     let alignment = result.unwrap();
     // Should align the suffix starting at position 4
-    assert_eq!(alignment.query_start, 4, "query_start must be seed position");
-    assert_eq!(alignment.target_start, 4, "target_start must be seed position");
+    assert_eq!(
+        alignment.query_start, 4,
+        "query_start must be seed position"
+    );
+    assert_eq!(
+        alignment.target_start, 4,
+        "target_start must be seed position"
+    );
     assert_eq!(alignment.query_end, 12, "query_end must be sequence end");
     assert_eq!(alignment.target_end, 12, "target_end must be sequence end");
-    assert_eq!(alignment.edit_distance, 0, "Exact match suffix has edit_distance 0");
+    assert_eq!(
+        alignment.edit_distance, 0,
+        "Exact match suffix has edit_distance 0"
+    );
 }
 
 /// Issue #131: Very short sequences (boundary case)
@@ -394,10 +409,17 @@ fn issue_131_performance_150bp_vs_10kbp_under_100ms() {
 /// O(s*n)=100k operations → <100ms even in debug. This is the discriminating test.
 #[test]
 fn issue_131_performance_10kbp_vs_10kbp_low_divergence() {
-    let q: Vec<u8> = (0..10_000).map(|i| if i % 1000 == 0 { b'C' } else { b'A' }).collect();
-    let t: Vec<u8> = (0..10_000).map(|i| if i % 1001 == 0 { b'C' } else { b'A' }).collect();
+    let q: Vec<u8> = (0..10_000)
+        .map(|i| if i % 1000 == 0 { b'C' } else { b'A' })
+        .collect();
+    let t: Vec<u8> = (0..10_000)
+        .map(|i| if i % 1001 == 0 { b'C' } else { b'A' })
+        .collect();
 
-    let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
+    let seed = SeedAnchor {
+        query_pos: 0,
+        target_pos: 0,
+    };
 
     let start = Instant::now();
     let result = wfa_extend(&q, &t, seed);
@@ -576,7 +598,10 @@ fn issue_131_deterministic_results() {
         align1.edit_distance, align2.edit_distance,
         "Edit distance must be deterministic"
     );
-    assert_eq!(align1.cigar, align3.cigar, "Results must be stable across calls");
+    assert_eq!(
+        align1.cigar, align3.cigar,
+        "Results must be stable across calls"
+    );
 }
 
 // ============================================================================
@@ -633,5 +658,276 @@ fn issue_131_snp_and_indel_combined() {
     assert!(
         alignment.edit_distance >= 2,
         "SNP+indel should have edit_distance >= 2"
+    );
+}
+
+// ============================================================================
+// Issue #144: Myers Bit-Parallel Edit Distance Tests
+// ============================================================================
+//
+// These tests verify that Myers' bit-parallel algorithm produces identical
+// edit distance and CIGAR to the scalar WFA reference implementation for
+// sequences up to 500bp (typical short-read regime).
+//
+// Myers (1999) packs DP into bitvectors, advancing ~64 cells/word with
+// bitwise ops. Target: ~10x faster than WFA on short reads, measurably
+// faster than portable-SIMD path on release builds.
+
+/// Issue #144: Myers exact match produces CIGAR "NM" matching scalar WFA
+#[test]
+fn issue_144_myers_exact_match_produces_correct_cigar_and_edit_distance() {
+    let query = b"ACGTACGTACGT";
+    let target = b"ACGTACGTACGT";
+
+    let (edit_dist, cigar) = phraya_align::myers_edit_distance(query, target);
+
+    // Must match scalar WFA exactly: edit distance 0, CIGAR "12M"
+    assert_eq!(edit_dist, 0, "Exact match must have edit_distance 0");
+    assert_eq!(
+        cigar, "12M",
+        "Exact match CIGAR must be '12M', got '{}'",
+        cigar
+    );
+}
+
+/// Issue #144: Myers single SNP produces edit distance 1
+#[test]
+fn issue_144_myers_single_snp_produces_edit_distance_one() {
+    let query = b"ACGTACGTACGT";
+    let target = b"ACGTACATACGT"; // Mismatch at position 6: G vs A
+
+    let (edit_dist, cigar) = phraya_align::myers_edit_distance(query, target);
+
+    assert_eq!(edit_dist, 1, "Single SNP must have edit_distance 1");
+    // CIGAR must contain M and X operations (or all M if implementation doesn't distinguish)
+    assert!(
+        !cigar.is_empty(),
+        "CIGAR must be non-empty for SNP alignment"
+    );
+}
+
+/// Issue #144: Myers single insertion produces edit distance 1
+#[test]
+fn issue_144_myers_single_insertion_produces_edit_distance_one() {
+    let query = b"ACGTACGT";
+    let target = b"ACGTAACGT"; // Extra 'A' inserted in target
+
+    let (edit_dist, cigar) = phraya_align::myers_edit_distance(query, target);
+
+    assert_eq!(edit_dist, 1, "Single insertion must have edit_distance 1");
+    assert!(cigar.contains("I"), "CIGAR for insertion must contain 'I'");
+}
+
+/// Issue #144: Myers single deletion produces edit distance 1
+#[test]
+fn issue_144_myers_single_deletion_produces_edit_distance_one() {
+    let query = b"ACGTAACGT";
+    let target = b"ACGTACGT"; // 'A' deleted from target
+
+    let (edit_dist, cigar) = phraya_align::myers_edit_distance(query, target);
+
+    assert_eq!(edit_dist, 1, "Single deletion must have edit_distance 1");
+    assert!(cigar.contains("D"), "CIGAR for deletion must contain 'D'");
+}
+
+/// Issue #144: Myers matches scalar WFA on high divergence sequences
+#[test]
+fn issue_144_myers_high_divergence_produces_same_edit_distance_as_wfa() {
+    let query = b"ACGTACGTACGTACGT";
+    let target = b"ACACACACACACACAC"; // High divergence
+
+    let (edit_dist, _cigar) = phraya_align::myers_edit_distance(query, target);
+
+    // Get the same sequence through WFA for comparison
+    let seed = SeedAnchor {
+        query_pos: 0,
+        target_pos: 0,
+    };
+    let wfa_result = wfa_extend(query, target, seed).expect("WFA should succeed");
+
+    assert_eq!(
+        edit_dist, wfa_result.edit_distance,
+        "Myers edit distance must match WFA"
+    );
+}
+
+/// Issue #144: Myers produces identical CIGAR to scalar WFA for 50bp sequences
+#[test]
+fn issue_144_myers_cigar_matches_wfa_on_short_reads() {
+    let query = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTAC";
+    let target = b"ACGTACATACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTA";
+
+    let (myers_dist, myers_cigar) = phraya_align::myers_edit_distance(query, target);
+
+    let seed = SeedAnchor {
+        query_pos: 0,
+        target_pos: 0,
+    };
+    let wfa_result = wfa_extend(query, target, seed).expect("WFA should succeed");
+
+    assert_eq!(
+        myers_dist, wfa_result.edit_distance,
+        "Myers edit distance must match WFA"
+    );
+    assert_eq!(
+        myers_cigar, wfa_result.cigar,
+        "Myers CIGAR must match WFA output"
+    );
+}
+
+/// Issue #144: Myers handles empty query
+#[test]
+fn issue_144_myers_empty_query() {
+    let query = b"";
+    let target = b"ACGT";
+
+    let (edit_dist, cigar) = phraya_align::myers_edit_distance(query, target);
+
+    assert_eq!(
+        edit_dist, 4,
+        "Empty query vs 4bp target must have edit_distance 4"
+    );
+    assert_eq!(cigar, "4I", "CIGAR for empty query should be insertions");
+}
+
+/// Issue #144: Myers handles empty target
+#[test]
+fn issue_144_myers_empty_target() {
+    let query = b"ACGT";
+    let target = b"";
+
+    let (edit_dist, cigar) = phraya_align::myers_edit_distance(query, target);
+
+    assert_eq!(
+        edit_dist, 4,
+        "4bp query vs empty target must have edit_distance 4"
+    );
+    assert_eq!(cigar, "4D", "CIGAR for empty target should be deletions");
+}
+
+/// Issue #144: Myers handles single base match
+#[test]
+fn issue_144_myers_single_base_match() {
+    let query = b"A";
+    let target = b"A";
+
+    let (edit_dist, cigar) = phraya_align::myers_edit_distance(query, target);
+
+    assert_eq!(edit_dist, 0, "Single base match must have edit_distance 0");
+    assert_eq!(cigar, "1M", "Single base match CIGAR must be '1M'");
+}
+
+/// Issue #144: Myers handles single base mismatch
+#[test]
+fn issue_144_myers_single_base_mismatch() {
+    let query = b"A";
+    let target = b"C";
+
+    let (edit_dist, cigar) = phraya_align::myers_edit_distance(query, target);
+
+    assert_eq!(
+        edit_dist, 1,
+        "Single base mismatch must have edit_distance 1"
+    );
+    assert!(
+        !cigar.is_empty(),
+        "Single base mismatch CIGAR must not be empty"
+    );
+}
+
+/// Issue #144: Myers matches WFA on tandem repeats (150bp read regime)
+#[test]
+fn issue_144_myers_tandem_repeats_matches_wfa() {
+    let repeat = b"ATATGCGC";
+    let mut query = Vec::new();
+    let mut target = Vec::new();
+
+    for _ in 0..10 {
+        query.extend_from_slice(repeat);
+    }
+    for _ in 0..9 {
+        target.extend_from_slice(repeat);
+    }
+
+    assert!(query.len() <= 500, "Test sequence must be ≤500bp");
+
+    let (myers_dist, myers_cigar) = phraya_align::myers_edit_distance(&query, &target);
+
+    let seed = SeedAnchor {
+        query_pos: 0,
+        target_pos: 0,
+    };
+    let wfa_result = wfa_extend(&query, &target, seed).expect("WFA should succeed");
+
+    assert_eq!(
+        myers_dist, wfa_result.edit_distance,
+        "Myers edit distance must match WFA on tandem repeats"
+    );
+    assert_eq!(
+        myers_cigar, wfa_result.cigar,
+        "Myers CIGAR must match WFA on tandem repeats"
+    );
+}
+
+/// Issue #144: Myers produces identical output to WFA on 150bp read (typical short-read case)
+#[test]
+fn issue_144_myers_150bp_short_read_matches_wfa() {
+    // Typical short-read scenario: 150bp query with low divergence
+    let mut query = vec![b'A'; 150];
+    let mut target = vec![b'A'; 150];
+
+    // Introduce ~2% divergence (3 SNPs)
+    query[30] = b'C';
+    query[90] = b'G';
+    query[140] = b'T';
+    target[30] = b'G';
+    target[90] = b'A';
+    target[140] = b'A';
+
+    let (myers_dist, myers_cigar) = phraya_align::myers_edit_distance(&query, &target);
+
+    let seed = SeedAnchor {
+        query_pos: 0,
+        target_pos: 0,
+    };
+    let wfa_result = wfa_extend(&query, &target, seed).expect("WFA should succeed");
+
+    assert_eq!(
+        myers_dist, wfa_result.edit_distance,
+        "Myers must match WFA on 150bp short read"
+    );
+    assert_eq!(
+        myers_cigar, wfa_result.cigar,
+        "Myers CIGAR must match WFA on 150bp short read"
+    );
+}
+
+/// Issue #144: Myers produces identical output to WFA on 300bp window (realistic alignment window)
+#[test]
+fn issue_144_myers_300bp_window_matches_wfa() {
+    // Realistic: 150bp read aligned vs ~300bp window on reference
+    let query = vec![b'A'; 150];
+    let mut target = vec![b'A'; 300];
+
+    // Introduce sparse divergence (3 mutations in 300bp = 1%)
+    target[75] = b'C';
+    target[150] = b'G';
+    target[275] = b'T';
+
+    let (myers_dist, myers_cigar) = phraya_align::myers_edit_distance(&query, &target);
+
+    let seed = SeedAnchor {
+        query_pos: 0,
+        target_pos: 0,
+    };
+    let wfa_result = wfa_extend(&query, &target, seed).expect("WFA should succeed");
+
+    assert_eq!(
+        myers_dist, wfa_result.edit_distance,
+        "Myers must match WFA on 300bp window alignment"
+    );
+    assert_eq!(
+        myers_cigar, wfa_result.cigar,
+        "Myers CIGAR must match WFA on 300bp window alignment"
     );
 }
