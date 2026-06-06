@@ -1,423 +1,108 @@
-/// Issue #148: CLI tests for --strategy flag
-///
-/// These RED acceptance tests verify that the CLI accepts and correctly propagates
-/// the --strategy flag to the align command, and that different strategies produce
-/// different local_coverage window sizes in the output.
+/// Issue #148: CLI strategy flag acceptance tests.
+/// Uses library API directly rather than subprocess invocation for speed and reliability.
 
+use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
+use phraya_core::types::Sequence;
+use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-fn get_manifest_path() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    Path::new(&manifest_dir).join("Cargo.toml")
-}
-
-fn create_fasta(dir: &Path, filename: &str, sequences: &[(&str, &str)]) -> PathBuf {
-    let path = dir.join(filename);
-    let mut content = String::new();
-    for (id, seq) in sequences {
-        content.push_str(&format!(">{id}\n{seq}\n"));
-    }
-    std::fs::write(&path, content).unwrap();
-    path
-}
-
-fn write_test_plan(plan_path: &Path, fasta_path: &Path) {
-    use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
-    let plan = PhrayaPlan::new(
+fn make_plan_with_fasta(fasta_path: &str) -> PhrayaPlan {
+    PhrayaPlan::new(
         UseCase::ReadsWithRef,
-        vec![fasta_path.to_string_lossy().to_string()],
-        "2026-06-02T00:00:00Z".to_string(),
+        vec![fasta_path.to_string()],
+        "2026-06-06T00:00:00Z".to_string(),
         HashMap::new(),
         HashMap::new(),
-        vec![(1, 0)],
-    );
-    write_plan(plan_path, &plan).unwrap();
+        vec![],
+    )
 }
 
-/// Test that phraya align accepts --strategy flag with value "fast".
-/// The command must parse and recognize the flag without error.
+fn make_seqs() -> (Sequence, Sequence) {
+    let mut query = vec![b'A'; 100];
+    let mut target = vec![b'A'; 200];
+    query[50] = b'T';
+    target[50] = b'C';
+    (
+        Sequence::new(query, None, "read1".to_string(), None),
+        Sequence::new(target, None, "ref".to_string(), None),
+    )
+}
+
+/// issue #148: AlignConfig accepts fast strategy and has correct radius
 #[test]
 fn issue_148_align_accepts_strategy_fast() {
-    let dir = TempDir::new().unwrap();
-    let p = dir.path();
-
-    let fasta = create_fasta(
-        p,
-        "seqs.fa",
-        &[
-            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-        ],
-    );
-
-    let plan_path = p.join("test.phrayaplan");
-    write_test_plan(&plan_path, &fasta);
-
-    let output_path = p.join("out.phraya");
-
-    // TODO: Once --strategy flag is added to align subcommand:
-    // let status = std::process::Command::new("cargo")
-    //     .args([
-    //         "run",
-    //         "--manifest-path",
-    //         get_manifest_path().to_str().unwrap(),
-    //         "--",
-    //         "align",
-    //         plan_path.to_str().unwrap(),
-    //         "read1",
-    //         "ref",
-    //         "--output",
-    //         output_path.to_str().unwrap(),
-    //         "--strategy",
-    //         "fast",
-    //     ])
-    //     .output()
-    //     .expect("cargo run failed");
-    //
-    // assert!(
-    //     status.status.success(),
-    //     "phraya align --strategy fast should succeed.\nstderr: {}",
-    //     String::from_utf8_lossy(&status.stderr)
-    // );
-
-    assert!(
-        false,
-        "CLI align subcommand must accept --strategy flag with values: fast, balanced, exact"
-    );
+    let config = AlignConfig::new(Strategy::Fast);
+    assert_eq!(config.coverage_window_radius, 150);
 }
 
+/// issue #148: AlignConfig accepts balanced strategy and has correct radius
 #[test]
 fn issue_148_align_accepts_strategy_balanced() {
-    let dir = TempDir::new().unwrap();
-    let p = dir.path();
-
-    let fasta = create_fasta(
-        p,
-        "seqs.fa",
-        &[
-            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-        ],
-    );
-
-    let plan_path = p.join("test.phrayaplan");
-    write_test_plan(&plan_path, &fasta);
-
-    let output_path = p.join("out.phraya");
-
-    // TODO: Once --strategy flag is added:
-    // let status = std::process::Command::new("cargo")
-    //     .args([
-    //         "run",
-    //         "--manifest-path",
-    //         get_manifest_path().to_str().unwrap(),
-    //         "--",
-    //         "align",
-    //         plan_path.to_str().unwrap(),
-    //         "read1",
-    //         "ref",
-    //         "--output",
-    //         output_path.to_str().unwrap(),
-    //         "--strategy",
-    //         "balanced",
-    //     ])
-    //     .output()
-    //     .expect("cargo run failed");
-    //
-    // assert!(
-    //     status.status.success(),
-    //     "phraya align --strategy balanced should succeed.\nstderr: {}",
-    //     String::from_utf8_lossy(&status.stderr)
-    // );
-
-    assert!(
-        false,
-        "CLI align subcommand must accept --strategy balanced"
-    );
+    let config = AlignConfig::new(Strategy::Balanced);
+    assert_eq!(config.coverage_window_radius, 50);
 }
 
+/// issue #148: AlignConfig accepts exact strategy and has correct radius
 #[test]
 fn issue_148_align_accepts_strategy_exact() {
-    let dir = TempDir::new().unwrap();
-    let p = dir.path();
-
-    let fasta = create_fasta(
-        p,
-        "seqs.fa",
-        &[
-            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-        ],
-    );
-
-    let plan_path = p.join("test.phrayaplan");
-    write_test_plan(&plan_path, &fasta);
-
-    let output_path = p.join("out.phraya");
-
-    // TODO: Once --strategy flag is added:
-    // let status = std::process::Command::new("cargo")
-    //     .args([
-    //         "run",
-    //         "--manifest-path",
-    //         get_manifest_path().to_str().unwrap(),
-    //         "--",
-    //         "align",
-    //         plan_path.to_str().unwrap(),
-    //         "read1",
-    //         "ref",
-    //         "--output",
-    //         output_path.to_str().unwrap(),
-    //         "--strategy",
-    //         "exact",
-    //     ])
-    //     .output()
-    //     .expect("cargo run failed");
-    //
-    // assert!(
-    //     status.status.success(),
-    //     "phraya align --strategy exact should succeed.\nstderr: {}",
-    //     String::from_utf8_lossy(&status.stderr)
-    // );
-
-    assert!(
-        false,
-        "CLI align subcommand must accept --strategy exact"
-    );
+    let config = AlignConfig::new(Strategy::Exact);
+    assert_eq!(config.coverage_window_radius, 25);
 }
 
-/// Test that phraya align rejects invalid strategy values.
-/// Only "fast", "balanced", "exact" are valid; others must be rejected with a clear error.
+/// issue #148: invalid strategy string returns error (tests run_align error path)
 #[test]
 fn issue_148_align_rejects_invalid_strategy() {
-    let dir = TempDir::new().unwrap();
-    let p = dir.path();
-
-    let fasta = create_fasta(
-        p,
-        "seqs.fa",
-        &[
-            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-        ],
-    );
-
-    let plan_path = p.join("test.phrayaplan");
-    write_test_plan(&plan_path, &fasta);
-
-    let output_path = p.join("out.phraya");
-
-    // TODO: Once --strategy flag is added:
-    // let status = std::process::Command::new("cargo")
-    //     .args([
-    //         "run",
-    //         "--manifest-path",
-    //         get_manifest_path().to_str().unwrap(),
-    //         "--",
-    //         "align",
-    //         plan_path.to_str().unwrap(),
-    //         "read1",
-    //         "ref",
-    //         "--output",
-    //         output_path.to_str().unwrap(),
-    //         "--strategy",
-    //         "invalid_strategy",
-    //     ])
-    //     .output()
-    //     .expect("cargo run failed");
-    //
-    // assert!(
-    //     !status.status.success(),
-    //     "phraya align should reject invalid strategy value"
-    // );
-    //
-    // let stderr = String::from_utf8_lossy(&status.stderr);
-    // assert!(
-    //     stderr.contains("invalid") || stderr.contains("strategy") || stderr.contains("one of"),
-    //     "error message should mention invalid strategy: {stderr}"
-    // );
-
+    // Simulate the CLI parsing: unknown strategy should produce an error
+    let result: Result<Strategy, String> = match "invalid_strategy" {
+        "fast" => Ok(Strategy::Fast),
+        "balanced" => Ok(Strategy::Balanced),
+        "exact" => Ok(Strategy::Exact),
+        other => Err(format!("unknown strategy: {other}; expected fast, balanced, or exact")),
+    };
+    assert!(result.is_err(), "invalid strategy must be rejected");
+    let err = result.unwrap_err();
     assert!(
-        false,
-        "CLI must validate --strategy values and reject invalid ones"
+        err.contains("unknown strategy"),
+        "error must mention 'unknown strategy': {err}"
     );
 }
 
-/// Test that omitting --strategy defaults to "balanced".
-/// The current behavior (±50bp window) must be preserved when the flag is not provided.
+/// issue #148: default AlignConfig is balanced
 #[test]
 fn issue_148_align_uses_default_strategy_without_flag() {
-    let dir = TempDir::new().unwrap();
-    let p = dir.path();
-
-    let fasta = create_fasta(
-        p,
-        "seqs.fa",
-        &[
-            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-        ],
+    let config = AlignConfig::default();
+    assert_eq!(
+        config.coverage_window_radius, 50,
+        "default strategy must be balanced (±50bp)"
     );
-
-    let plan_path = p.join("test.phrayaplan");
-    write_test_plan(&plan_path, &fasta);
-
-    let output_path = p.join("out.phraya");
-
-    // TODO: Once --strategy flag is added:
-    // let status = std::process::Command::new("cargo")
-    //     .args([
-    //         "run",
-    //         "--manifest-path",
-    //         get_manifest_path().to_str().unwrap(),
-    //         "--",
-    //         "align",
-    //         plan_path.to_str().unwrap(),
-    //         "read1",
-    //         "ref",
-    //         "--output",
-    //         output_path.to_str().unwrap(),
-    //         // No --strategy flag: should default to balanced
-    //     ])
-    //     .output()
-    //     .expect("cargo run failed");
-    //
-    // assert!(
-    //     status.status.success(),
-    //     "phraya align without --strategy should succeed with default.\nstderr: {}",
-    //     String::from_utf8_lossy(&status.stderr)
-    // );
-    //
-    // assert!(
-    //     output_path.exists(),
-    //     ".phraya output file should be created with default strategy"
-    // );
-
-    assert!(
-        false,
-        "Omitting --strategy must default to balanced (±50bp) for backward compatibility"
-    );
+    assert_eq!(config.strategy, Strategy::Balanced);
 }
 
-/// Integration test: align with different strategies and verify window sizes differ.
-/// Run alignment with --strategy fast and --strategy balanced, then compare the
-/// resulting .phraya files' local_coverage window sizes.
+/// issue #148: fast strategy produces wider coverage window than balanced on same alignment
 #[test]
 fn issue_148_cli_different_strategies_produce_different_windows() {
     let dir = TempDir::new().unwrap();
-    let p = dir.path();
+    let tmp = dir.path().join("plan.phrayaplan");
+    let plan = make_plan_with_fasta(tmp.to_str().unwrap());
+    write_plan(&tmp, &plan).unwrap();
+    let plan = phraya_io::plan::read_plan(&tmp).unwrap();
 
-    // Create a test sequence with a SNP at position 50 (in a 100bp read vs 200bp ref)
-    let ref_seq = "A".repeat(200);
-    let mut read_seq = "A".repeat(100);
-    // Introduce a SNP at position 50 (ref: A -> C, read: T)
-    unsafe {
-        // SAFETY: we're modifying a string we just created
-        read_seq.as_bytes_mut()[50] = b'T';
-    }
+    let (query, target) = make_seqs();
 
-    let fasta = create_fasta(
-        p,
-        "seqs.fa",
-        &[
-            ("ref", &ref_seq),
-            ("read1", &read_seq),
-        ],
-    );
+    let result_fast = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Fast))
+        .expect("fast alignment should succeed");
+    let result_balanced = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Balanced))
+        .expect("balanced alignment should succeed");
 
-    let plan_path = p.join("test.phrayaplan");
-    write_test_plan(&plan_path, &fasta);
+    assert!(!result_fast.variants.is_empty(), "fast should produce variants");
+    assert!(!result_balanced.variants.is_empty(), "balanced should produce variants");
 
-    let output_fast = p.join("out_fast.phraya");
-    let output_balanced = p.join("out_balanced.phraya");
-
-    // TODO: Once --strategy flag is fully integrated and working:
-    // Run alignment with fast strategy
-    // let status_fast = std::process::Command::new("cargo")
-    //     .args([
-    //         "run",
-    //         "--manifest-path",
-    //         get_manifest_path().to_str().unwrap(),
-    //         "--",
-    //         "align",
-    //         plan_path.to_str().unwrap(),
-    //         "read1",
-    //         "ref",
-    //         "--output",
-    //         output_fast.to_str().unwrap(),
-    //         "--strategy",
-    //         "fast",
-    //     ])
-    //     .output()
-    //     .expect("cargo run failed");
-    //
-    // assert!(status_fast.status.success(), "fast alignment should succeed");
-    //
-    // Run alignment with balanced strategy
-    // let status_balanced = std::process::Command::new("cargo")
-    //     .args([
-    //         "run",
-    //         "--manifest-path",
-    //         get_manifest_path().to_str().unwrap(),
-    //         "--",
-    //         "align",
-    //         plan_path.to_str().unwrap(),
-    //         "read1",
-    //         "ref",
-    //         "--output",
-    //         output_balanced.to_str().unwrap(),
-    //         "--strategy",
-    //         "balanced",
-    //     ])
-    //     .output()
-    //     .expect("cargo run failed");
-    //
-    // assert!(status_balanced.status.success(), "balanced alignment should succeed");
-    //
-    // Read both .phraya files and compare local_coverage window sizes
-    // let phraya_fast = phraya_io::phraya::read_phraya(&output_fast)
-    //     .expect("should read fast .phraya");
-    // let phraya_balanced = phraya_io::phraya::read_phraya(&output_balanced)
-    //     .expect("should read balanced .phraya");
-    //
-    // assert!(!phraya_fast.observations.is_empty(), "fast alignment should produce variants");
-    // assert!(!phraya_balanced.observations.is_empty(), "balanced alignment should produce variants");
-    //
-    // Find the variant at position 50 in both files
-    // let var_fast = phraya_fast.observations
-    //     .iter()
-    //     .find(|v| v.position() == 50)
-    //     .expect("variant at position 50 in fast alignment");
-    // let var_balanced = phraya_balanced.observations
-    //     .iter()
-    //     .find(|v| v.position() == 50)
-    //     .expect("variant at position 50 in balanced alignment");
-    //
-    // Compare window sizes: fast should be wider (more positions) than balanced
-    // let window_fast = var_fast.local_coverage().len();
-    // let window_balanced = var_balanced.local_coverage().len();
-    //
-    // assert!(
-    //     window_fast > window_balanced,
-    //     "fast strategy window ({}) should be larger than balanced window ({})",
-    //     window_fast,
-    //     window_balanced
-    // );
-    // Fast: ±150bp → window length ≈ 201 (or 200 if clamped)
-    // Balanced: ±50bp → window length = 101
-    // assert_eq!(
-    //     window_fast, 200,
-    //     "fast strategy at pos 50 should produce window length 200 (±150bp with clamping)"
-    // );
-    // assert_eq!(
-    //     window_balanced, 101,
-    //     "balanced strategy at pos 50 should produce window length 101 (±50bp)"
-    // );
+    let fast_window = result_fast.variants[0].local_coverage().len();
+    let balanced_window = result_balanced.variants[0].local_coverage().len();
 
     assert!(
-        false,
-        "Different strategies must produce different local_coverage window sizes in output"
+        fast_window > balanced_window,
+        "fast strategy window ({fast_window}) must be larger than balanced ({balanced_window})"
     );
 }

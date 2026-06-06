@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use log::info;
-use phraya_align::executor::align_task;
+use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::{
     compute_kmer_uniqueness, select_centroid, sketch_sequence_default, CoverageTrack,
     MinimizerSketch, Sequence,
@@ -72,6 +72,10 @@ enum Commands {
         /// Output .phraya file
         #[arg(long, value_name = "FILE", required = true)]
         output: PathBuf,
+
+        /// Alignment strategy: fast (±150bp window), balanced (±50bp, default), exact (±25bp)
+        #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
+        strategy: String,
     },
     /// Filter .phraya file by thresholds and output in specified format
     Filter {
@@ -130,8 +134,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             query_id,
             target_id,
             output,
+            strategy,
         } => {
-            run_align(&plan_file, &query_id, &target_id, &output)?;
+            let strat = match strategy.as_str() {
+                "fast" => Strategy::Fast,
+                "balanced" => Strategy::Balanced,
+                "exact" => Strategy::Exact,
+                other => return Err(format!("unknown strategy: {other}; expected fast, balanced, or exact").into()),
+            };
+            run_align(&plan_file, &query_id, &target_id, &output, AlignConfig::new(strat))?;
         }
         Commands::Merge { inputs, output } => {
             run_merge(&inputs, &output)?;
@@ -167,6 +178,7 @@ fn run_align(
     query_id: &str,
     target_id: &str,
     output_path: &std::path::Path,
+    config: AlignConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let plan = plan::read_plan(plan_path)?;
 
@@ -189,7 +201,7 @@ fn run_align(
 
     eprintln!("Aligning {query_id} to {target_id}");
 
-    let result = align_task(query, target, &plan)
+    let result = align_task_with_config(query, target, &plan, &config)
         .ok_or_else(|| format!("alignment failed for {query_id} vs {target_id}"))?;
 
     // Build .phraya file
