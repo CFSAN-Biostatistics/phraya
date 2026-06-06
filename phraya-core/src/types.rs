@@ -5,6 +5,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
+/// Variant type classification for variant observations.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VariantType {
+    /// Single nucleotide polymorphism (SNP)
+    #[serde(rename = "snp")]
+    Snp,
+    /// Insertion (query has bases, reference does not)
+    #[serde(rename = "insertion")]
+    Insertion,
+    /// Deletion (reference has bases, query does not)
+    #[serde(rename = "deletion")]
+    Deletion,
+}
+
+impl Default for VariantType {
+    fn default() -> Self {
+        VariantType::Snp
+    }
+}
+
 /// Sequence type with DNA bytes, optional per-base quality scores (Phred), metadata (id, description).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sequence {
@@ -132,6 +152,9 @@ pub struct VariantObservation {
     /// Whether this variant falls within a tandem repeat region
     #[serde(default)]
     in_tandem_repeat: bool,
+    /// Variant type (SNP, insertion, or deletion)
+    #[serde(default)]
+    variant_type: VariantType,
 }
 
 impl VariantObservation {
@@ -161,6 +184,7 @@ impl VariantObservation {
             avg_base_quality,
             provenance,
             in_tandem_repeat: false,
+            variant_type: VariantType::default(),
         }
     }
 
@@ -173,6 +197,17 @@ impl VariantObservation {
     /// Whether this variant is in a tandem repeat region.
     pub fn in_tandem_repeat(&self) -> bool {
         self.in_tandem_repeat
+    }
+
+    /// Set the variant type.
+    pub fn with_variant_type(mut self, variant_type: VariantType) -> Self {
+        self.variant_type = variant_type;
+        self
+    }
+
+    /// Get the variant type.
+    pub fn variant_type(&self) -> VariantType {
+        self.variant_type
     }
 
     /// Get the position of this variant
