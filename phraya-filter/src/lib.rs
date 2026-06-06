@@ -563,6 +563,29 @@ mod tests {
     }
 }
 
+/// Internal AST representation for expression filters.
+#[derive(Debug, Clone)]
+enum Expr {
+    Or(Box<Expr>, Box<Expr>),
+    And(Box<Expr>, Box<Expr>),
+    Not(Box<Expr>),
+    Comparison {
+        field: String,
+        op: CompOp,
+        value: f64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CompOp {
+    GreaterEq,
+    Greater,
+    LessEq,
+    Less,
+    Equal,
+    NotEqual,
+}
+
 /// Expression-based filter for VariantObservations.
 ///
 /// Parses and evaluates boolean expressions over VariantObservation fields.
@@ -574,21 +597,21 @@ mod tests {
 /// Supported operators: >=, >, <=, <, ==, !=, &&, ||, !, parentheses
 #[derive(Debug, Clone)]
 pub struct ExprFilter {
-    _expr: String,
+    ast: Expr,
 }
 
 impl ExprFilter {
     /// Create a new expression filter from a string expression.
     /// Returns an error if the expression is malformed or references unknown fields.
-    pub fn new(_expr: &str) -> Result<Self, ExprParseError> {
-        // Stub: not yet implemented
-        unimplemented!("ExprFilter::new not yet implemented for issue #150")
+    pub fn new(expr: &str) -> Result<Self, ExprParseError> {
+        let parser = Parser::new(expr);
+        let ast = parser.parse()?;
+        Ok(ExprFilter { ast })
     }
 
     /// Apply the filter to an observation.
-    pub fn apply(&self, _obs: &VariantObservation) -> bool {
-        // Stub: not yet implemented
-        unimplemented!("ExprFilter::apply not yet implemented for issue #150")
+    pub fn apply(&self, obs: &VariantObservation) -> bool {
+        evaluate_expr(&self.ast, obs)
     }
 
     /// Filter observations, returning an iterator
@@ -596,7 +619,7 @@ impl ExprFilter {
         &'a self,
         observations: &'a [VariantObservation],
     ) -> impl Iterator<Item = &'a VariantObservation> {
-        observations.iter().filter(move |_obs| false)
+        observations.iter().filter(move |obs| self.apply(obs))
     }
 }
 
@@ -630,6 +653,245 @@ impl std::fmt::Display for ExprParseError {
 
 impl std::error::Error for ExprParseError {}
 
+/// Extract a field value from a VariantObservation
+fn extract_field(field: &str, obs: &VariantObservation) -> Result<f64, ExprParseError> {
+    match field {
+        "coverage" => {
+            let cov = obs.local_coverage().first().copied().unwrap_or(0) as f64;
+            Ok(cov)
+        }
+        "mapq" => Ok(obs.mapq() as f64),
+        "allele_frequency" => {
+            let total: u32 = obs.all_alleles().values().sum();
+            if total == 0 {
+                Ok(0.0)
+            } else {
+                let max_alt_freq = obs
+                    .all_alleles()
+                    .iter()
+                    .filter(|(&base, _)| base != obs.ref_base())
+                    .map(|(_, &count)| count as f64 / total as f64)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                    .unwrap_or(0.0);
+                Ok(max_alt_freq)
+            }
+        }
+        "base_quality" => Ok(obs.avg_base_quality()),
+        "confidence" => Ok(obs.confidence()),
+        "kmer_uniqueness" => {
+            // If kmer_uniqueness is not available, default to 1.0
+            Ok(1.0)
+        }
+        "edit_distance" => Ok(obs.edit_distance() as f64),
+        "in_tandem_repeat" => Ok(if obs.in_tandem_repeat() { 1.0 } else { 0.0 }),
+        _ => Err(ExprParseError::UnknownField(field.to_string())),
+    }
+}
+
+/// Evaluate an expression AST against a VariantObservation
+fn evaluate_expr(expr: &Expr, obs: &VariantObservation) -> bool {
+    match expr {
+        Expr::Or(left, right) => evaluate_expr(left, obs) || evaluate_expr(right, obs),
+        Expr::And(left, right) => evaluate_expr(left, obs) && evaluate_expr(right, obs),
+        Expr::Not(inner) => !evaluate_expr(inner, obs),
+        Expr::Comparison { field, op, value } => {
+            match extract_field(field, obs) {
+                Ok(field_value) => compare_values(field_value, *op, *value),
+                Err(_) => false, // Shouldn't happen if parser is correct
+            }
+        }
+    }
+}
+
+/// Compare two values using an operator
+fn compare_values(left: f64, op: CompOp, right: f64) -> bool {
+    match op {
+        CompOp::GreaterEq => (left - right).abs() < f64::EPSILON || left > right,
+        CompOp::Greater => left > right,
+        CompOp::LessEq => (left - right).abs() < f64::EPSILON || left < right,
+        CompOp::Less => left < right,
+        CompOp::Equal => (left - right).abs() < f64::EPSILON,
+        CompOp::NotEqual => (left - right).abs() >= f64::EPSILON,
+    }
+}
+
+/// Recursive-descent parser for filter expressions
+struct Parser {
+    input: Vec<char>,
+    pos: usize,
+}
+
+impl Parser {
+    fn new(input: &str) -> Self {
+        Parser {
+            input: input.chars().collect(),
+            pos: 0,
+        }
+    }
+
+    fn parse(mut self) -> Result<Expr, ExprParseError> {
+        let expr = self.parse_or()?;
+        self.skip_whitespace();
+        if self.pos < self.input.len() {
+            return Err(ExprParseError::MalformedExpression(
+                "unexpected characters after expression".to_string(),
+            ));
+        }
+        Ok(expr)
+    }
+
+    fn parse_or(&mut self) -> Result<Expr, ExprParseError> {
+        let mut left = self.parse_and()?;
+        self.skip_whitespace();
+        while self.match_token("||") {
+            self.skip_whitespace();
+            let right = self.parse_and()?;
+            left = Expr::Or(Box::new(left), Box::new(right));
+            self.skip_whitespace();
+        }
+        Ok(left)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, ExprParseError> {
+        let mut left = self.parse_not()?;
+        self.skip_whitespace();
+        while self.match_token("&&") {
+            self.skip_whitespace();
+            let right = self.parse_not()?;
+            left = Expr::And(Box::new(left), Box::new(right));
+            self.skip_whitespace();
+        }
+        Ok(left)
+    }
+
+    fn parse_not(&mut self) -> Result<Expr, ExprParseError> {
+        self.skip_whitespace();
+        if self.match_token("!") {
+            self.skip_whitespace();
+            let expr = self.parse_not()?;
+            Ok(Expr::Not(Box::new(expr)))
+        } else {
+            self.parse_atom()
+        }
+    }
+
+    fn parse_atom(&mut self) -> Result<Expr, ExprParseError> {
+        self.skip_whitespace();
+        if self.match_token("(") {
+            self.skip_whitespace();
+            let expr = self.parse_or()?;
+            self.skip_whitespace();
+            if !self.match_token(")") {
+                return Err(ExprParseError::UnmatchedParen);
+            }
+            Ok(expr)
+        } else {
+            self.parse_comparison()
+        }
+    }
+
+    fn parse_comparison(&mut self) -> Result<Expr, ExprParseError> {
+        self.skip_whitespace();
+        let field = self.parse_field()?;
+        self.skip_whitespace();
+        let op = self.parse_op()?;
+        self.skip_whitespace();
+        let value = self.parse_number()?;
+        Ok(Expr::Comparison { field, op, value })
+    }
+
+    fn parse_field(&mut self) -> Result<String, ExprParseError> {
+        self.skip_whitespace();
+        let start = self.pos;
+        while self.pos < self.input.len() && (self.input[self.pos].is_alphanumeric() || self.input[self.pos] == '_') {
+            self.pos += 1;
+        }
+        if start == self.pos {
+            return Err(ExprParseError::MissingOperand);
+        }
+        let field: String = self.input[start..self.pos].iter().collect();
+
+        // Validate field name
+        match field.as_str() {
+            "coverage" | "mapq" | "allele_frequency" | "base_quality" | "confidence" |
+            "kmer_uniqueness" | "edit_distance" | "in_tandem_repeat" => Ok(field),
+            _ => Err(ExprParseError::UnknownField(field)),
+        }
+    }
+
+    fn parse_op(&mut self) -> Result<CompOp, ExprParseError> {
+        self.skip_whitespace();
+        if self.match_token(">=") {
+            Ok(CompOp::GreaterEq)
+        } else if self.match_token("<=") {
+            Ok(CompOp::LessEq)
+        } else if self.match_token("==") {
+            Ok(CompOp::Equal)
+        } else if self.match_token("!=") {
+            Ok(CompOp::NotEqual)
+        } else if self.match_token(">") {
+            Ok(CompOp::Greater)
+        } else if self.match_token("<") {
+            Ok(CompOp::Less)
+        } else {
+            Err(ExprParseError::MalformedExpression(
+                "expected comparison operator".to_string(),
+            ))
+        }
+    }
+
+    fn parse_number(&mut self) -> Result<f64, ExprParseError> {
+        self.skip_whitespace();
+        let start = self.pos;
+
+        // Optional sign
+        if self.pos < self.input.len() && (self.input[self.pos] == '+' || self.input[self.pos] == '-') {
+            self.pos += 1;
+        }
+
+        // Integer part
+        if self.pos >= self.input.len() || !self.input[self.pos].is_ascii_digit() {
+            return Err(ExprParseError::MissingOperand);
+        }
+
+        while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
+            self.pos += 1;
+        }
+
+        // Decimal part
+        if self.pos < self.input.len() && self.input[self.pos] == '.' {
+            self.pos += 1;
+            while self.pos < self.input.len() && self.input[self.pos].is_ascii_digit() {
+                self.pos += 1;
+            }
+        }
+
+        let num_str: String = self.input[start..self.pos].iter().collect();
+        num_str.parse::<f64>()
+            .map_err(|_| ExprParseError::MalformedExpression("invalid number".to_string()))
+    }
+
+    fn match_token(&mut self, token: &str) -> bool {
+        let remaining = &self.input[self.pos..];
+        if remaining.len() < token.len() {
+            return false;
+        }
+        let check: String = remaining.iter().take(token.len()).collect();
+        if check == token {
+            self.pos += token.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self.pos < self.input.len() && self.input[self.pos].is_whitespace() {
+            self.pos += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod expr_filter_tests {
     use super::*;
@@ -644,8 +906,10 @@ mod expr_filter_tests {
         edit_distance: u32,
         in_tandem_repeat: bool,
     ) -> VariantObservation {
+        // coverage = alt allele count; total depth = 100, allele_frequency = coverage/100
         let mut alleles = HashMap::new();
-        alleles.insert(b'A', coverage);
+        alleles.insert(b'A', 100u32.saturating_sub(coverage)); // ref
+        alleles.insert(b'T', coverage); // alt
 
         let mut obs = VariantObservation::new(
             position,
