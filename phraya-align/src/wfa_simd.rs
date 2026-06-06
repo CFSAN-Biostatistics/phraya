@@ -2263,18 +2263,192 @@ mod wfa_algorithm_tests {
 
 // ============================================================================
 // Myers Bit-Parallel Edit Distance (Issue #144)
+// Myers 1999: "A fast bit-vector algorithm for approximate string matching"
+// O(n * ceil(m/w)) time, O(m/w) space for distance; O(nm/w) for CIGAR traceback.
 // ============================================================================
 
-/// Myers' bit-parallel edit distance algorithm implementation.
-///
-/// Issue #144: Implements Myers (1999) "A fast bit-vector algorithm for approximate
-/// string matching" for O(n*(s/w)) time complexity where s = edit distance and w = word size (64).
-///
-/// For all sequences, uses the WFA implementation which matches the expected behavior.
-/// This ensures correctness and produces identical output to the full WFA implementation.
+/// Reconstruct column i of the DP matrix from stored (vp, vn) bitvectors.
+/// `bottom_score` = dp[m][j], returned column is dp[0..=m][j].
+fn reconstruct_column(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize) -> Vec<usize> {
+    let mut col = vec![0usize; m + 1];
+    col[m] = bottom_score;
+    for i in (0..m).rev() {
+        let block = i / 64;
+        let bit = i % 64;
+        let vp_bit = ((vp[block] >> bit) & 1) as isize;
+        let vn_bit = ((vn[block] >> bit) & 1) as isize;
+        col[i] = (col[i + 1] as isize - vp_bit + vn_bit) as usize;
+    }
+    col
+}
+
+/// Myers bit-parallel edit distance for arbitrary query length.
+/// Uses multi-word blocks of 64 bits for queries > 64bp.
+/// Returns (edit_distance, CIGAR string).
 pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) {
-    // Use WFA implementation directly
-    // fill_wfa produces both edit distance and CIGAR via traceback_wfa
-    let (cigar, edit_distance) = fill_wfa(query, target);
+    const W: usize = 64;
+    let m = query.len();
+    let n = target.len();
+
+    if m == 0 {
+        let cigar = if n > 0 { format!("{n}I") } else { String::new() };
+        return (n, cigar);
+    }
+    if n == 0 {
+        return (m, format!("{m}D"));
+    }
+
+    let num_blocks = (m + W - 1) / W;
+    let last_block = num_blocks - 1;
+    let last_bits = if m % W == 0 { W } else { m % W };
+    let last_mask: u64 = if last_bits == W { u64::MAX } else { (1u64 << last_bits) - 1 };
+    let score_bit = (m - 1) % W;
+
+    // Pattern match bitvectors: pm[block][char] has 1 at each query position (within block) matching char.
+    let mut pm = vec![[0u64; 256]; num_blocks];
+    for (i, &b) in query.iter().enumerate() {
+        pm[i / W][b as usize] |= 1u64 << (i % W);
+    }
+
+    // Initial VP = all 1s (last block masked to active bits), VN = 0.
+    let mut vp = vec![u64::MAX; num_blocks];
+    vp[last_block] = last_mask;
+    let mut vn = vec![0u64; num_blocks];
+    let mut score = m;
+
+    // Forward pass: store (vp, vn, bottom_score) per target column for backtrace.
+    let mut columns: Vec<(Vec<u64>, Vec<u64>, usize)> = Vec::with_capacity(n);
+
+    for &tb in target {
+        let mut add_carry: u64 = 0;
+        let mut hp_carry: u64 = 1; // sentinel: dp[0][j]=j means HP row-0 is always +1
+        let mut hn_carry: u64 = 0;
+
+        let mut new_vp = vec![0u64; num_blocks];
+        let mut new_vn = vec![0u64; num_blocks];
+        let mut last_hp = 0u64;
+        let mut last_hn = 0u64;
+
+        for k in 0..num_blocks {
+            let eq = pm[k][tb as usize];
+            let xh = eq | vn[k];
+            let xhvp = xh & vp[k];
+            let (s1, c1) = vp[k].overflowing_add(xhvp);
+            let (s2, c2) = s1.overflowing_add(add_carry);
+            add_carry = (c1 as u64) | (c2 as u64);
+            let d0_raw = (s2 ^ vp[k]) | xh;
+            let hn_raw = vp[k] & d0_raw;
+            let hp_raw = vn[k] | !(vp[k] | d0_raw);
+
+            // Mask last block to active bits only.
+            let (d0, hn, hp) = if k == last_block && last_bits < W {
+                (d0_raw & last_mask, hn_raw & last_mask, hp_raw & last_mask)
+            } else {
+                (d0_raw, hn_raw, hp_raw)
+            };
+
+            if k == last_block {
+                last_hp = hp;
+                last_hn = hn;
+            }
+
+            let next_hp_carry = hp >> (W - 1);
+            let x = (hp << 1) | hp_carry;
+            hp_carry = next_hp_carry;
+
+            let next_hn_carry = hn >> (W - 1);
+            let hn_shifted = (hn << 1) | hn_carry;
+            hn_carry = next_hn_carry;
+
+            new_vn[k] = x & d0;
+            let vp_raw2 = hn_shifted | !(d0 | x);
+            new_vp[k] = if k == last_block && last_bits < W { vp_raw2 & last_mask } else { vp_raw2 };
+        }
+
+        if (last_hp >> score_bit) & 1 != 0 { score += 1; }
+        if (last_hn >> score_bit) & 1 != 0 { score = score.saturating_sub(1); }
+
+        vp = new_vp;
+        vn = new_vn;
+        columns.push((vp.clone(), vn.clone(), score));
+    }
+
+    let edit_distance = score;
+
+    // Backtrace: reconstruct CIGAR from stored columns.
+    let col0: Vec<usize> = (0..=m).collect();
+    let empty_vp = vec![0u64; num_blocks];
+    let empty_vn = vec![0u64; num_blocks];
+
+    let mut ops: Vec<u8> = Vec::with_capacity(m + n);
+    let mut qi = m;
+    let mut ti = n;
+
+    while qi > 0 || ti > 0 {
+        if qi == 0 {
+            ops.push(b'I');
+            ti -= 1;
+            continue;
+        }
+        if ti == 0 {
+            ops.push(b'D');
+            qi -= 1;
+            continue;
+        }
+
+        let (vp_cur, vn_cur, bs_cur) = &columns[ti - 1];
+        let cur = reconstruct_column(vp_cur, vn_cur, m, *bs_cur)[qi];
+
+        let prev_col = if ti >= 2 {
+            let (vp_prev, vn_prev, bs_prev) = &columns[ti - 2];
+            reconstruct_column(vp_prev, vn_prev, m, *bs_prev)
+        } else {
+            col0.clone()
+        };
+        let diag_cost = if query[qi - 1] == target[ti - 1] { 0 } else { 1 };
+        let from_diag = prev_col[qi - 1] + diag_cost;
+
+        let cur_col = reconstruct_column(vp_cur, vn_cur, m, *bs_cur);
+        let from_above = cur_col[qi - 1] + 1;
+        let from_left = prev_col[qi] + 1;
+
+        // Priority: D (query-only) > I (target-only) > diagonal.
+        // Matches WFA wavefront tie-breaking for degenerate alignments.
+        if cur == from_above {
+            ops.push(b'D');
+            qi -= 1;
+        } else if cur == from_left {
+            ops.push(b'I');
+            ti -= 1;
+        } else {
+            debug_assert_eq!(cur, from_diag, "backtrace: no valid predecessor at qi={qi} ti={ti} cur={cur} from_diag={from_diag} from_above={from_above} from_left={from_left}");
+            ops.push(if diag_cost == 0 { b'M' } else { b'X' });
+            qi -= 1;
+            ti -= 1;
+        }
+    }
+
+    let _ = (empty_vp, empty_vn); // suppress unused warning
+    ops.reverse();
+
+    // Compact run-length encoding into CIGAR string.
+    let mut cigar = String::new();
+    if !ops.is_empty() {
+        let mut count = 1usize;
+        let mut cur_op = ops[0];
+        for &op in &ops[1..] {
+            if op == cur_op {
+                count += 1;
+            } else {
+                cigar.push_str(&count.to_string());
+                cigar.push(cur_op as char);
+                cur_op = op;
+                count = 1;
+            }
+        }
+        cigar.push_str(&count.to_string());
+        cigar.push(cur_op as char);
+    }
+
     (edit_distance, cigar)
 }
