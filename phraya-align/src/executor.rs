@@ -5,6 +5,69 @@ use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
 use std::collections::{HashMap, HashSet};
 
+/// Alignment strategy affecting coverage window size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strategy {
+    /// Fast strategy: wide ±150bp coverage window for context in complex regions
+    Fast,
+    /// Balanced strategy: moderate ±50bp coverage window (default, current behavior)
+    Balanced,
+    /// Exact strategy: narrow ±25bp coverage window for precision
+    Exact,
+}
+
+impl Default for Strategy {
+    fn default() -> Self {
+        Strategy::Balanced
+    }
+}
+
+/// Configuration for alignment execution, controlling coverage window size.
+#[derive(Debug, Clone, Copy)]
+pub struct AlignConfig {
+    /// Alignment strategy
+    pub strategy: Strategy,
+    /// Coverage window radius in base pairs
+    pub coverage_window_radius: usize,
+}
+
+impl AlignConfig {
+    /// Create a new AlignConfig with the specified strategy.
+    /// The coverage_window_radius is automatically set based on the strategy.
+    pub fn new(strategy: Strategy) -> Self {
+        let coverage_window_radius = match strategy {
+            Strategy::Fast => 150,
+            Strategy::Balanced => 50,
+            Strategy::Exact => 25,
+        };
+        AlignConfig {
+            strategy,
+            coverage_window_radius,
+        }
+    }
+
+    /// Create a Fast strategy config (±150bp window).
+    pub fn fast() -> Self {
+        Self::new(Strategy::Fast)
+    }
+
+    /// Create a Balanced strategy config (±50bp window).
+    pub fn balanced() -> Self {
+        Self::new(Strategy::Balanced)
+    }
+
+    /// Create an Exact strategy config (±25bp window).
+    pub fn exact() -> Self {
+        Self::new(Strategy::Exact)
+    }
+}
+
+impl Default for AlignConfig {
+    fn default() -> Self {
+        AlignConfig::new(Strategy::default())
+    }
+}
+
 /// Result of a single alignment task.
 #[derive(Debug, Clone)]
 pub struct AlignmentResult {
@@ -16,11 +79,21 @@ pub struct AlignmentResult {
     pub query_positions: Vec<(u32, f64)>,
 }
 
-/// Execute a single alignment task: query vs target.
+/// Execute a single alignment task: query vs target with default configuration.
 pub fn align_task(
     query: &Sequence,
     target: &Sequence,
     plan: &PhrayaPlan,
+) -> Option<AlignmentResult> {
+    align_task_with_config(query, target, plan, &AlignConfig::default())
+}
+
+/// Execute a single alignment task: query vs target with specified configuration.
+pub fn align_task_with_config(
+    query: &Sequence,
+    target: &Sequence,
+    plan: &PhrayaPlan,
+    config: &AlignConfig,
 ) -> Option<AlignmentResult> {
     // Reuse pre-computed sketches from plan if available; fall back to recomputing
     let query_sketch = plan
@@ -106,6 +179,7 @@ pub fn align_task(
         query_mapq,
         query_avg_bq,
         primary_score,
+        config.coverage_window_radius,
     );
 
     let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
@@ -134,6 +208,7 @@ fn extract_variants_from_cigar(
     mapq: u8,
     avg_base_quality: f64,
     confidence: f64,
+    coverage_window_radius: usize,
 ) -> Vec<VariantObservation> {
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
@@ -157,9 +232,9 @@ fn extract_variants_from_cigar(
                         let mut alleles = HashMap::new();
                         alleles.insert(alt_base, 1u32);
 
-                        // Local coverage: ±50bp window, values from the alignment coverage track.
-                        let window_start = if tp >= 50 { tp - 50 } else { 0 };
-                        let window_end = (tp + 51).min(target.len());
+                        // Local coverage: ±coverage_window_radius bp window, values from the alignment coverage track.
+                        let window_start = if tp >= coverage_window_radius { tp - coverage_window_radius } else { 0 };
+                        let window_end = (tp + coverage_window_radius + 1).min(target.len());
                         let local_coverage: Vec<u32> = (window_start..window_end)
                             .map(|pos| coverage.get(pos).copied().unwrap_or(0))
                             .collect();
@@ -187,9 +262,87 @@ fn extract_variants_from_cigar(
             }
             // WFA convention: 'I' = target has extra bases (standard 'D'); 'D' = query has extra.
             'I' => {
+                // Target has extra bases = deletion in query relative to target
+                // Only emit variant if the query is still being aligned (q_pos < query.len())
+                // Skipping 'I' at tail-end where query has already ended prevents false deletions
+                if t_pos < target.len() && q_pos < query.len() {
+                    let deleted_bases = &target[t_pos..(t_pos + count).min(target.len())];
+                    let window_start = if t_pos >= 50 { t_pos - 50 } else { 0 };
+                    let window_end = (t_pos + 51).min(target.len());
+                    let local_coverage: Vec<u32> = (window_start..window_end)
+                        .map(|pos| coverage.get(pos).copied().unwrap_or(0))
+                        .collect();
+
+                    let in_repeat = repeat_regions
+                        .iter()
+                        .any(|r| t_pos >= r.start && t_pos < r.end);
+
+                    // For deletion: ref_base is the first deleted base, alt is "." (VCF convention)
+                    let ref_base = if !deleted_bases.is_empty() {
+                        deleted_bases[0]
+                    } else {
+                        b'.'
+                    };
+                    let mut alleles = HashMap::new();
+                    alleles.insert(b'.', 1u32);
+
+                    variants.push(
+                        VariantObservation::new(
+                            t_pos as u32,
+                            ref_base,
+                            alleles,
+                            confidence,
+                            cigar.to_string(),
+                            mapq,
+                            edit_distance,
+                            local_coverage,
+                            avg_base_quality,
+                            provenance.clone(),
+                        )
+                        .with_tandem_repeat(in_repeat)
+                        .with_variant_type(phraya_core::types::VariantType::Deletion),
+                    );
+                }
                 t_pos += count;
             }
             'D' => {
+                // Query has extra bases = insertion in query relative to target
+                // Emit one VariantObservation for the inserted region
+                if q_pos < query.len() && t_pos < target.len() {
+                    let inserted_bases = &query[q_pos..(q_pos + count).min(query.len())];
+                    let window_start = if t_pos >= 50 { t_pos - 50 } else { 0 };
+                    let window_end = (t_pos + 51).min(target.len());
+                    let local_coverage: Vec<u32> = (window_start..window_end)
+                        .map(|pos| coverage.get(pos).copied().unwrap_or(0))
+                        .collect();
+
+                    let in_repeat = repeat_regions
+                        .iter()
+                        .any(|r| t_pos >= r.start && t_pos < r.end);
+
+                    // For insertion: ref_base is ".", alt is the inserted bases
+                    let mut alleles = HashMap::new();
+                    for &base in inserted_bases {
+                        *alleles.entry(base).or_insert(0) += 1;
+                    }
+
+                    variants.push(
+                        VariantObservation::new(
+                            t_pos as u32,
+                            b'.',
+                            alleles,
+                            confidence,
+                            cigar.to_string(),
+                            mapq,
+                            edit_distance,
+                            local_coverage,
+                            avg_base_quality,
+                            provenance.clone(),
+                        )
+                        .with_tandem_repeat(in_repeat)
+                        .with_variant_type(phraya_core::types::VariantType::Insertion),
+                    );
+                }
                 q_pos += count;
             }
             _ => {}
@@ -433,6 +586,76 @@ mod tests {
         assert!(
             !unique_variant.unwrap().in_tandem_repeat(),
             "variant outside repeat region must be annotated in_tandem_repeat=false"
+        );
+    }
+
+    #[test]
+    fn test_indel_calling_deletion_variant_created() {
+        // Query is missing a base at position 4: target="ACGTACGT", query="ACGACGT".
+        // This should produce a deletion variant at position 4.
+        let target = Sequence::new(b"ACGTACGT".to_vec(), None, "ref".to_string(), None);
+        let query = Sequence::new(b"ACGACGT".to_vec(), None, "query_del".to_string(), None);
+        let plan = make_plan();
+
+        let result = align_task(&query, &target, &plan);
+        assert!(result.is_some(), "alignment should succeed");
+
+        let result = result.unwrap();
+        assert!(
+            !result.variants.is_empty(),
+            "deletion should produce at least one variant"
+        );
+
+        // Find the deletion variant (VariantType::Deletion)
+        let deletion_var = result
+            .variants
+            .iter()
+            .find(|v| v.variant_type() == phraya_core::types::VariantType::Deletion);
+        assert!(
+            deletion_var.is_some(),
+            "must have a deletion variant for the missing base"
+        );
+
+        let var = deletion_var.unwrap();
+        assert_eq!(
+            var.variant_type(),
+            phraya_core::types::VariantType::Deletion,
+            "variant should be marked as Deletion"
+        );
+    }
+
+    #[test]
+    fn test_indel_calling_insertion_variant_created() {
+        // Query has an extra base at position 4: target="ACGTACGT", query="ACGTTACGT".
+        // This should produce an insertion variant at position 4.
+        let target = Sequence::new(b"ACGTACGT".to_vec(), None, "ref".to_string(), None);
+        let query = Sequence::new(b"ACGTTACGT".to_vec(), None, "query_ins".to_string(), None);
+        let plan = make_plan();
+
+        let result = align_task(&query, &target, &plan);
+        assert!(result.is_some(), "alignment should succeed");
+
+        let result = result.unwrap();
+        assert!(
+            !result.variants.is_empty(),
+            "insertion should produce at least one variant"
+        );
+
+        // Find the insertion variant (VariantType::Insertion)
+        let insertion_var = result
+            .variants
+            .iter()
+            .find(|v| v.variant_type() == phraya_core::types::VariantType::Insertion);
+        assert!(
+            insertion_var.is_some(),
+            "must have an insertion variant for the extra base"
+        );
+
+        let var = insertion_var.unwrap();
+        assert_eq!(
+            var.variant_type(),
+            phraya_core::types::VariantType::Insertion,
+            "variant should be marked as Insertion"
         );
     }
 

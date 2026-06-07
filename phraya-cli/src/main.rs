@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use log::info;
-use phraya_align::executor::align_task;
+use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::{
-    compute_kmer_uniqueness, select_centroid, sketch_sequence_default, CoverageTrack,
-    MinimizerSketch, Sequence,
+    compute_kmer_uniqueness, detect_hotspot_intervals, select_centroid, sketch_sequence_default,
+    CoverageTrack, MinimizerSketch, Sequence,
 };
 use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
@@ -72,6 +72,10 @@ enum Commands {
         /// Output .phraya file
         #[arg(long, value_name = "FILE", required = true)]
         output: PathBuf,
+
+        /// Alignment strategy: fast (±150bp window), balanced (±50bp, default), exact (±25bp)
+        #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
+        strategy: String,
     },
     /// Filter .phraya file by thresholds and output in specified format
     Filter {
@@ -130,8 +134,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             query_id,
             target_id,
             output,
+            strategy,
         } => {
-            run_align(&plan_file, &query_id, &target_id, &output)?;
+            let strat = match strategy.as_str() {
+                "fast" => Strategy::Fast,
+                "balanced" => Strategy::Balanced,
+                "exact" => Strategy::Exact,
+                other => return Err(format!("unknown strategy: {other}; expected fast, balanced, or exact").into()),
+            };
+            run_align(&plan_file, &query_id, &target_id, &output, AlignConfig::new(strat))?;
         }
         Commands::Merge { inputs, output } => {
             run_merge(&inputs, &output)?;
@@ -167,6 +178,7 @@ fn run_align(
     query_id: &str,
     target_id: &str,
     output_path: &std::path::Path,
+    config: AlignConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let plan = plan::read_plan(plan_path)?;
 
@@ -189,7 +201,7 @@ fn run_align(
 
     eprintln!("Aligning {query_id} to {target_id}");
 
-    let result = align_task(query, target, &plan)
+    let result = align_task_with_config(query, target, &plan, &config)
         .ok_or_else(|| format!("alignment failed for {query_id} vs {target_id}"))?;
 
     // Build .phraya file
@@ -284,6 +296,9 @@ fn run_plan(
     // Compute k-mer uniqueness
     let kmer_uniqueness = compute_kmer_uniqueness(&sketches);
 
+    // Detect hotspot intervals from k-mer uniqueness (threshold 0.5)
+    let hotspot_intervals = detect_hotspot_intervals(&kmer_uniqueness, 0.5);
+
     // Generate task list based on use case
     let task_list = generate_task_list(
         &use_case,
@@ -302,7 +317,7 @@ fn run_plan(
         .collect();
 
     // Create and write plan
-    let plan = PhrayaPlan::new(
+    let mut plan = PhrayaPlan::new(
         use_case,
         input_file_list,
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -310,6 +325,7 @@ fn run_plan(
         kmer_uniqueness,
         task_list,
     );
+    plan.hotspot_intervals = hotspot_intervals;
 
     write_plan(output_path, &plan)?;
 

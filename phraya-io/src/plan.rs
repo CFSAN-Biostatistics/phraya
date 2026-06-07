@@ -52,6 +52,9 @@ pub struct PhrayaPlan {
     pub kmer_uniqueness: HashMap<u32, f64>,
     /// Task list: (query_id, target_id) pairs
     pub task_list: Vec<(u32, u32)>,
+    /// Variation hotspot intervals detected at plan time: (start, end) pairs
+    #[serde(default)]
+    pub hotspot_intervals: Vec<(u32, u32)>,
 }
 
 impl PhrayaPlan {
@@ -72,6 +75,7 @@ impl PhrayaPlan {
             kmer_index,
             kmer_uniqueness,
             task_list,
+            hotspot_intervals: Vec::new(),
         }
     }
 

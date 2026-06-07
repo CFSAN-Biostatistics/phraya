@@ -5,6 +5,26 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
+/// Variant type classification for variant observations.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VariantType {
+    /// Single nucleotide polymorphism (SNP)
+    #[serde(rename = "snp")]
+    Snp,
+    /// Insertion (query has bases, reference does not)
+    #[serde(rename = "insertion")]
+    Insertion,
+    /// Deletion (reference has bases, query does not)
+    #[serde(rename = "deletion")]
+    Deletion,
+}
+
+impl Default for VariantType {
+    fn default() -> Self {
+        VariantType::Snp
+    }
+}
+
 /// Sequence type with DNA bytes, optional per-base quality scores (Phred), metadata (id, description).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sequence {
@@ -132,6 +152,9 @@ pub struct VariantObservation {
     /// Whether this variant falls within a tandem repeat region
     #[serde(default)]
     in_tandem_repeat: bool,
+    /// Variant type (SNP, insertion, or deletion)
+    #[serde(default)]
+    variant_type: VariantType,
 }
 
 impl VariantObservation {
@@ -161,6 +184,7 @@ impl VariantObservation {
             avg_base_quality,
             provenance,
             in_tandem_repeat: false,
+            variant_type: VariantType::default(),
         }
     }
 
@@ -173,6 +197,17 @@ impl VariantObservation {
     /// Whether this variant is in a tandem repeat region.
     pub fn in_tandem_repeat(&self) -> bool {
         self.in_tandem_repeat
+    }
+
+    /// Set the variant type.
+    pub fn with_variant_type(mut self, variant_type: VariantType) -> Self {
+        self.variant_type = variant_type;
+        self
+    }
+
+    /// Get the variant type.
+    pub fn variant_type(&self) -> VariantType {
+        self.variant_type
     }
 
     /// Get the position of this variant
@@ -1203,4 +1238,60 @@ pub fn compute_kmer_uniqueness(sketches: &[MinimizerSketch]) -> HashMap<u32, f64
             .or_insert(score);
     }
     uniqueness
+}
+
+/// Detect variation hotspot intervals from k-mer uniqueness scores.
+///
+/// Scans the uniqueness map for positions where the score is below the threshold,
+/// merging contiguous/adjacent positions into intervals (start, end).
+/// Returns sorted intervals by start position.
+///
+/// # Arguments
+///
+/// * `uniqueness` - HashMap mapping position (u32) to uniqueness score (f64)
+/// * `threshold` - Uniqueness threshold; positions with score < threshold are considered hotspots
+///
+/// # Returns
+///
+/// Vec of (start, end) intervals, sorted by start position. Returns empty vec if map is empty
+/// or no positions fall below threshold.
+pub fn detect_hotspot_intervals(uniqueness: &HashMap<u32, f64>, threshold: f64) -> Vec<(u32, u32)> {
+    if uniqueness.is_empty() {
+        return Vec::new();
+    }
+
+    // Collect positions below threshold and sort them
+    let mut positions: Vec<u32> = uniqueness
+        .iter()
+        .filter(|(_, score)| **score < threshold)
+        .map(|(&pos, _)| pos)
+        .collect();
+
+    if positions.is_empty() {
+        return Vec::new();
+    }
+
+    positions.sort_unstable();
+
+    // Merge contiguous/adjacent positions into intervals
+    let mut intervals = Vec::new();
+    let mut start = positions[0];
+    let mut end = positions[0];
+
+    for &pos in &positions[1..] {
+        if pos == end + 1 {
+            // Adjacent position, extend current interval
+            end = pos;
+        } else {
+            // Gap detected, save current interval and start new one
+            intervals.push((start, end));
+            start = pos;
+            end = pos;
+        }
+    }
+
+    // Don't forget the last interval
+    intervals.push((start, end));
+
+    intervals
 }

@@ -2450,5 +2450,4 @@ pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) 
         cigar.push(cur_op as char);
     }
 
-    (edit_distance, cigar)
-}
+    (edit_distance, cigar)}

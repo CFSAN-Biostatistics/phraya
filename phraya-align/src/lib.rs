@@ -3,6 +3,7 @@ pub mod seeding;
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
 
+pub use executor::{align_task_with_config, AlignConfig, Strategy};
 pub use seeding::{find_seeds, Seed};
 
 #[cfg(test)]
