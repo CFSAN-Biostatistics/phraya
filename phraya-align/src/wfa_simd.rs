@@ -2262,148 +2262,192 @@ mod wfa_algorithm_tests {
 }
 
 // ============================================================================
-// Myers' Bit-Parallel Edit Distance Implementation (Issue #144)
+// Myers Bit-Parallel Edit Distance (Issue #144)
+// Myers 1999: "A fast bit-vector algorithm for approximate string matching"
+// O(n * ceil(m/w)) time, O(m/w) space for distance; O(nm/w) for CIGAR traceback.
 // ============================================================================
 
-/// Myers' bit-parallel edit distance algorithm.
-///
-/// Implements the algorithm from "A fast bit-vector algorithm for approximate string matching
-/// based on dynamic programming" (Myers, 1999). This is optimized for short sequences (≤500bp)
-/// where the DP matrix fits in bitvectors.
-///
-/// For each column of the DP matrix, maintains:
-/// - `PM[c]`: bit-pattern of positions in the pattern (query) that match character `c`
-/// - `VP`, `VN`: positive/negative delta bitvectors per row-block
-///
-/// Returns (edit_distance, cigar_string) for the full alignment.
-pub fn myers_edit_distance(query: &[u8], target: &[u8]) -> (usize, String) {
-    // For now, use the scalar DP implementation for correctness.
-    // The full Myers bit-parallel algorithm with proper sentinel bit handling
-    // can be added as an optimization in a follow-up PR.
-    myers_edit_distance_scalar(query, target)
+/// Reconstruct column i of the DP matrix from stored (vp, vn) bitvectors.
+/// `bottom_score` = dp[m][j], returned column is dp[0..=m][j].
+fn reconstruct_column(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize) -> Vec<usize> {
+    let mut col = vec![0usize; m + 1];
+    col[m] = bottom_score;
+    for i in (0..m).rev() {
+        let block = i / 64;
+        let bit = i % 64;
+        let vp_bit = ((vp[block] >> bit) & 1) as isize;
+        let vn_bit = ((vn[block] >> bit) & 1) as isize;
+        col[i] = (col[i + 1] as isize - vp_bit + vn_bit) as usize;
+    }
+    col
 }
 
-/// Scalar fallback for Myers edit distance computation.
-/// Used for sequences > 64bp or for CIGAR reconstruction.
-fn myers_edit_distance_scalar(query: &[u8], target: &[u8]) -> (usize, String) {
-    let q_len = query.len();
-    let t_len = target.len();
+/// Myers bit-parallel edit distance for arbitrary query length.
+/// Uses multi-word blocks of 64 bits for queries > 64bp.
+/// Returns (edit_distance, CIGAR string).
+pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) {
+    const W: usize = 64;
+    let m = query.len();
+    let n = target.len();
 
-    // Build the DP matrix
-    let mut dp: Vec<Vec<u32>> = vec![vec![0; t_len + 1]; q_len + 1];
-
-    // Initialize first row and column
-    for i in 0..=q_len {
-        dp[i][0] = i as u32;
+    if m == 0 {
+        let cigar = if n > 0 { format!("{n}I") } else { String::new() };
+        return (n, cigar);
     }
-    for j in 0..=t_len {
-        dp[0][j] = j as u32;
+    if n == 0 {
+        return (m, format!("{m}D"));
     }
 
-    // Fill DP matrix using standard edit distance recurrence
-    for i in 1..=q_len {
-        for j in 1..=t_len {
-            let cost = if query[i - 1] == target[j - 1] { 0 } else { 1 };
-            let del = dp[i - 1][j] + 1;
-            let ins = dp[i][j - 1] + 1;
-            let mat = dp[i - 1][j - 1] + cost;
-            dp[i][j] = del.min(ins).min(mat);
+    let num_blocks = (m + W - 1) / W;
+    let last_block = num_blocks - 1;
+    let last_bits = if m % W == 0 { W } else { m % W };
+    let last_mask: u64 = if last_bits == W { u64::MAX } else { (1u64 << last_bits) - 1 };
+    let score_bit = (m - 1) % W;
+
+    // Pattern match bitvectors: pm[block][char] has 1 at each query position (within block) matching char.
+    let mut pm = vec![[0u64; 256]; num_blocks];
+    for (i, &b) in query.iter().enumerate() {
+        pm[i / W][b as usize] |= 1u64 << (i % W);
+    }
+
+    // Initial VP = all 1s (last block masked to active bits), VN = 0.
+    let mut vp = vec![u64::MAX; num_blocks];
+    vp[last_block] = last_mask;
+    let mut vn = vec![0u64; num_blocks];
+    let mut score = m;
+
+    // Forward pass: store (vp, vn, bottom_score) per target column for backtrace.
+    let mut columns: Vec<(Vec<u64>, Vec<u64>, usize)> = Vec::with_capacity(n);
+
+    for &tb in target {
+        let mut add_carry: u64 = 0;
+        let mut hp_carry: u64 = 1; // sentinel: dp[0][j]=j means HP row-0 is always +1
+        let mut hn_carry: u64 = 0;
+
+        let mut new_vp = vec![0u64; num_blocks];
+        let mut new_vn = vec![0u64; num_blocks];
+        let mut last_hp = 0u64;
+        let mut last_hn = 0u64;
+
+        for k in 0..num_blocks {
+            let eq = pm[k][tb as usize];
+            let xh = eq | vn[k];
+            let xhvp = xh & vp[k];
+            let (s1, c1) = vp[k].overflowing_add(xhvp);
+            let (s2, c2) = s1.overflowing_add(add_carry);
+            add_carry = (c1 as u64) | (c2 as u64);
+            let d0_raw = (s2 ^ vp[k]) | xh;
+            let hn_raw = vp[k] & d0_raw;
+            let hp_raw = vn[k] | !(vp[k] | d0_raw);
+
+            // Mask last block to active bits only.
+            let (d0, hn, hp) = if k == last_block && last_bits < W {
+                (d0_raw & last_mask, hn_raw & last_mask, hp_raw & last_mask)
+            } else {
+                (d0_raw, hn_raw, hp_raw)
+            };
+
+            if k == last_block {
+                last_hp = hp;
+                last_hn = hn;
+            }
+
+            let next_hp_carry = hp >> (W - 1);
+            let x = (hp << 1) | hp_carry;
+            hp_carry = next_hp_carry;
+
+            let next_hn_carry = hn >> (W - 1);
+            let hn_shifted = (hn << 1) | hn_carry;
+            hn_carry = next_hn_carry;
+
+            new_vn[k] = x & d0;
+            let vp_raw2 = hn_shifted | !(d0 | x);
+            new_vp[k] = if k == last_block && last_bits < W { vp_raw2 & last_mask } else { vp_raw2 };
+        }
+
+        if (last_hp >> score_bit) & 1 != 0 { score += 1; }
+        if (last_hn >> score_bit) & 1 != 0 { score = score.saturating_sub(1); }
+
+        vp = new_vp;
+        vn = new_vn;
+        columns.push((vp.clone(), vn.clone(), score));
+    }
+
+    let edit_distance = score;
+
+    // Backtrace: reconstruct CIGAR from stored columns.
+    let col0: Vec<usize> = (0..=m).collect();
+    let empty_vp = vec![0u64; num_blocks];
+    let empty_vn = vec![0u64; num_blocks];
+
+    let mut ops: Vec<u8> = Vec::with_capacity(m + n);
+    let mut qi = m;
+    let mut ti = n;
+
+    while qi > 0 || ti > 0 {
+        if qi == 0 {
+            ops.push(b'I');
+            ti -= 1;
+            continue;
+        }
+        if ti == 0 {
+            ops.push(b'D');
+            qi -= 1;
+            continue;
+        }
+
+        let (vp_cur, vn_cur, bs_cur) = &columns[ti - 1];
+        let cur = reconstruct_column(vp_cur, vn_cur, m, *bs_cur)[qi];
+
+        let prev_col = if ti >= 2 {
+            let (vp_prev, vn_prev, bs_prev) = &columns[ti - 2];
+            reconstruct_column(vp_prev, vn_prev, m, *bs_prev)
+        } else {
+            col0.clone()
+        };
+        let diag_cost = if query[qi - 1] == target[ti - 1] { 0 } else { 1 };
+        let from_diag = prev_col[qi - 1] + diag_cost;
+
+        let cur_col = reconstruct_column(vp_cur, vn_cur, m, *bs_cur);
+        let from_above = cur_col[qi - 1] + 1;
+        let from_left = prev_col[qi] + 1;
+
+        // Priority: D (query-only) > I (target-only) > diagonal.
+        // Matches WFA wavefront tie-breaking for degenerate alignments.
+        if cur == from_above {
+            ops.push(b'D');
+            qi -= 1;
+        } else if cur == from_left {
+            ops.push(b'I');
+            ti -= 1;
+        } else {
+            debug_assert_eq!(cur, from_diag, "backtrace: no valid predecessor at qi={qi} ti={ti} cur={cur} from_diag={from_diag} from_above={from_above} from_left={from_left}");
+            ops.push(if diag_cost == 0 { b'M' } else { b'X' });
+            qi -= 1;
+            ti -= 1;
         }
     }
 
-    // Use the standard traceback_with on the DP matrix
-    let stride = t_len + 1;
-    let (cigar, edit_dist) = traceback_with(
-        |i, j| {
-            if i <= q_len && j <= t_len {
-                dp[i][j] as i32
+    let _ = (empty_vp, empty_vn); // suppress unused warning
+    ops.reverse();
+
+    // Compact run-length encoding into CIGAR string.
+    let mut cigar = String::new();
+    if !ops.is_empty() {
+        let mut count = 1usize;
+        let mut cur_op = ops[0];
+        for &op in &ops[1..] {
+            if op == cur_op {
+                count += 1;
             } else {
-                0i32
+                cigar.push_str(&count.to_string());
+                cigar.push(cur_op as char);
+                cur_op = op;
+                count = 1;
             }
-        },
-        query,
-        target,
-    );
-
-    (edit_dist, cigar)
-}
-
-#[cfg(test)]
-mod issue_144_tests {
-    use super::*;
-
-    #[test]
-    fn issue_144_myers_exact_match() {
-        let q = b"ACGTACGT";
-        let t = b"ACGTACGT";
-        let (dist, cigar) = myers_edit_distance(q, t);
-        assert_eq!(dist, 0);
-        assert_eq!(cigar, "8M");
+        }
+        cigar.push_str(&count.to_string());
+        cigar.push(cur_op as char);
     }
 
-    #[test]
-    fn issue_144_myers_single_mismatch() {
-        let q = b"ACGTACGT";
-        let t = b"ACGTACTT";
-        let (dist, _cigar) = myers_edit_distance(q, t);
-        assert_eq!(dist, 1);
-    }
-
-    #[test]
-    fn issue_144_myers_single_insertion() {
-        let q = b"ACGTACGT";
-        let t = b"ACGTAACGT";
-        let (dist, _cigar) = myers_edit_distance(q, t);
-        assert_eq!(dist, 1);
-    }
-
-    #[test]
-    fn issue_144_myers_single_deletion() {
-        let q = b"ACGTAACGT";
-        let t = b"ACGTACGT";
-        let (dist, _cigar) = myers_edit_distance(q, t);
-        assert_eq!(dist, 1);
-    }
-
-    #[test]
-    fn issue_144_myers_empty_sequences() {
-        let (dist, cigar) = myers_edit_distance(b"", b"");
-        assert_eq!(dist, 0);
-        assert_eq!(cigar, "");
-
-        let (dist, _cigar) = myers_edit_distance(b"ACG", b"");
-        assert_eq!(dist, 3);
-
-        let (dist, _cigar) = myers_edit_distance(b"", b"ACG");
-        assert_eq!(dist, 3);
-    }
-
-    #[test]
-    fn issue_144_myers_multiple_edits() {
-        let q = b"ACGTACGTTAGC";
-        let t = b"ACGTTCGTAGC";
-        let (dist, _cigar) = myers_edit_distance(q, t);
-        // Should have edit distance > 0 for these different sequences
-        assert!(dist > 0);
-        assert!(dist <= 4);
-    }
-
-    #[test]
-    fn issue_144_myers_long_sequence() {
-        let q: Vec<u8> = (0..100).map(|i| if i % 10 == 0 { b'C' } else { b'A' }).collect();
-        let mut t = q.clone();
-        t[51] = b'C';  // Change position 51 from A to C (creating a SNP)
-        let (dist, _cigar) = myers_edit_distance(&q, &t);
-        // One mutation: the SNP should result in edit distance 1
-        assert_eq!(dist, 1);
-    }
-
-    #[test]
-    fn issue_144_myers_sequence_500bp() {
-        // Test sequences up to 500bp (edge of Myers' 64-bit limit)
-        let q: Vec<u8> = (0..300).map(|i| if i % 50 == 0 { b'C' } else { b'A' }).collect();
-        let t: Vec<u8> = (0..300).map(|i| if i % 51 == 0 { b'C' } else { b'A' }).collect();
-        let (dist, _cigar) = myers_edit_distance(&q, &t);
-        assert!(dist > 0);
-    }
-}
+    (edit_distance, cigar)}

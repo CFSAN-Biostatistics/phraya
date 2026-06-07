@@ -5,7 +5,6 @@ pub mod wfa_simd_dispatch;
 
 pub use executor::{align_task_with_config, AlignConfig, Strategy};
 pub use seeding::{find_seeds, Seed};
-pub use wfa_simd::myers_edit_distance;
 
 #[cfg(test)]
 mod local_coverage_tests;
@@ -111,6 +110,26 @@ pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
 pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
     // No SIMD path for other architectures.
     wfa_simd::wfa_extend_naive_impl(query, target, seed)
+}
+
+/// Myers' bit-parallel edit distance for short-read throughput optimization.
+///
+/// Issue #144: Implements Myers (1999) bit-parallel algorithm for edit distance computation.
+/// Packs DP into bitvectors, advancing ~64 cells per machine word with bitwise operations.
+/// Produces identical edit distance and CIGAR output to scalar WFA implementation.
+///
+/// # Arguments
+/// - `query`: The query sequence
+/// - `target`: The target sequence
+///
+/// # Returns
+/// A tuple of (edit_distance, cigar_string) matching scalar WFA semantics.
+///
+/// # Performance
+/// Target: ~10x faster than WFA on short reads (≤500bp), measurably faster than
+/// portable-SIMD path in release builds.
+pub fn myers_edit_distance(query: &[u8], target: &[u8]) -> (usize, String) {
+    wfa_simd::myers_edit_distance_impl(query, target)
 }
 
 /// Score alignments by normalized edit distance and filter alternatives.
