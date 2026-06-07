@@ -99,6 +99,10 @@ enum Commands {
         #[arg(long, value_name = "N")]
         max_mapq: Option<u8>,
 
+        /// Minimum k-mer uniqueness threshold (0.0-1.0)
+        #[arg(long, value_name = "F")]
+        min_kmer_uniqueness: Option<f64>,
+
         /// Output format (vcf, tsv, phraya)
         #[arg(long, value_name = "FORMAT", default_value = "vcf")]
         format: String,
@@ -153,6 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_coverage,
             min_mapq,
             max_mapq,
+            min_kmer_uniqueness,
             format,
             output,
             preset,
@@ -163,6 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_coverage,
                 min_mapq,
                 max_mapq,
+                min_kmer_uniqueness,
                 &format,
                 output.as_deref(),
                 preset.as_deref(),
@@ -512,6 +518,7 @@ fn run_filter(
     max_coverage: Option<u32>,
     min_mapq: Option<u8>,
     max_mapq: Option<u8>,
+    min_kmer_uniqueness: Option<f64>,
     format: &str,
     output_path: Option<&std::path::Path>,
     preset: Option<&str>,
@@ -554,6 +561,9 @@ fn run_filter(
     }
     if let Some(max_mq) = max_mapq {
         filter_builder = filter_builder.max_mapq(max_mq);
+    }
+    if let Some(min_km) = min_kmer_uniqueness {
+        filter_builder = filter_builder.min_kmer_uniqueness(min_km);
     }
 
     let filter = filter_builder.build();

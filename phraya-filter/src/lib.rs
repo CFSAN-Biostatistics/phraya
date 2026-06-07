@@ -46,6 +46,7 @@ pub struct FilterBuilder {
     max_mapq: Option<u8>,
     min_base_quality: Option<f64>,
     min_allele_frequency: Option<f64>,
+    min_kmer_uniqueness: Option<f64>,
     exclude_tandem_repeats: bool,
 }
 
@@ -59,6 +60,7 @@ impl FilterBuilder {
             max_mapq: None,
             min_base_quality: None,
             min_allele_frequency: None,
+            min_kmer_uniqueness: None,
             exclude_tandem_repeats: false,
         }
     }
@@ -99,6 +101,12 @@ impl FilterBuilder {
         self
     }
 
+    /// Set minimum k-mer uniqueness threshold
+    pub fn min_kmer_uniqueness(mut self, threshold: f64) -> Self {
+        self.min_kmer_uniqueness = Some(threshold);
+        self
+    }
+
     /// Exclude variants in tandem repeat regions.
     pub fn exclude_tandem_repeats(mut self, value: bool) -> Self {
         self.exclude_tandem_repeats = value;
@@ -114,6 +122,7 @@ impl FilterBuilder {
             max_mapq: self.max_mapq,
             min_base_quality: self.min_base_quality,
             min_allele_frequency: self.min_allele_frequency,
+            min_kmer_uniqueness: self.min_kmer_uniqueness,
             exclude_tandem_repeats: self.exclude_tandem_repeats,
         }
     }
@@ -134,6 +143,7 @@ pub struct ThresholdFilter {
     max_mapq: Option<u8>,
     min_base_quality: Option<f64>,
     min_allele_frequency: Option<f64>,
+    min_kmer_uniqueness: Option<f64>,
     exclude_tandem_repeats: bool,
 }
 
@@ -192,6 +202,13 @@ impl ThresholdFilter {
                 .unwrap_or(0.0);
 
             if max_alt_freq < min_freq {
+                return false;
+            }
+        }
+
+        // Check k-mer uniqueness
+        if let Some(min) = self.min_kmer_uniqueness {
+            if obs.kmer_uniqueness() < min {
                 return false;
             }
         }

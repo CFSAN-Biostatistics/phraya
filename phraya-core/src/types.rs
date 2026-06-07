@@ -126,6 +126,11 @@ impl Sequence {
     }
 }
 
+/// K-mer uniqueness default value for VariantObservation
+fn default_kmer_uniqueness() -> f64 {
+    1.0
+}
+
 /// Variant observation at a genomic position with full alignment metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VariantObservation {
@@ -155,6 +160,9 @@ pub struct VariantObservation {
     /// Variant type (SNP, insertion, or deletion)
     #[serde(default)]
     variant_type: VariantType,
+    /// K-mer uniqueness score at this position (0.0-1.0)
+    #[serde(default = "default_kmer_uniqueness")]
+    kmer_uniqueness: f64,
 }
 
 impl VariantObservation {
@@ -185,6 +193,7 @@ impl VariantObservation {
             provenance,
             in_tandem_repeat: false,
             variant_type: VariantType::default(),
+            kmer_uniqueness: default_kmer_uniqueness(),
         }
     }
 
@@ -208,6 +217,17 @@ impl VariantObservation {
     /// Get the variant type.
     pub fn variant_type(&self) -> VariantType {
         self.variant_type
+    }
+
+    /// Set the k-mer uniqueness score.
+    pub fn with_kmer_uniqueness(mut self, value: f64) -> Self {
+        self.kmer_uniqueness = value;
+        self
+    }
+
+    /// Get the k-mer uniqueness score.
+    pub fn kmer_uniqueness(&self) -> f64 {
+        self.kmer_uniqueness
     }
 
     /// Get the position of this variant
