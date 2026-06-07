@@ -5,6 +5,69 @@ use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
 use std::collections::{HashMap, HashSet};
 
+/// Alignment strategy affecting coverage window size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strategy {
+    /// Fast strategy: wide ±150bp coverage window for context in complex regions
+    Fast,
+    /// Balanced strategy: moderate ±50bp coverage window (default, current behavior)
+    Balanced,
+    /// Exact strategy: narrow ±25bp coverage window for precision
+    Exact,
+}
+
+impl Default for Strategy {
+    fn default() -> Self {
+        Strategy::Balanced
+    }
+}
+
+/// Configuration for alignment execution, controlling coverage window size.
+#[derive(Debug, Clone, Copy)]
+pub struct AlignConfig {
+    /// Alignment strategy
+    pub strategy: Strategy,
+    /// Coverage window radius in base pairs
+    pub coverage_window_radius: usize,
+}
+
+impl AlignConfig {
+    /// Create a new AlignConfig with the specified strategy.
+    /// The coverage_window_radius is automatically set based on the strategy.
+    pub fn new(strategy: Strategy) -> Self {
+        let coverage_window_radius = match strategy {
+            Strategy::Fast => 150,
+            Strategy::Balanced => 50,
+            Strategy::Exact => 25,
+        };
+        AlignConfig {
+            strategy,
+            coverage_window_radius,
+        }
+    }
+
+    /// Create a Fast strategy config (±150bp window).
+    pub fn fast() -> Self {
+        Self::new(Strategy::Fast)
+    }
+
+    /// Create a Balanced strategy config (±50bp window).
+    pub fn balanced() -> Self {
+        Self::new(Strategy::Balanced)
+    }
+
+    /// Create an Exact strategy config (±25bp window).
+    pub fn exact() -> Self {
+        Self::new(Strategy::Exact)
+    }
+}
+
+impl Default for AlignConfig {
+    fn default() -> Self {
+        AlignConfig::new(Strategy::default())
+    }
+}
+
 /// Result of a single alignment task.
 #[derive(Debug, Clone)]
 pub struct AlignmentResult {
@@ -16,11 +79,21 @@ pub struct AlignmentResult {
     pub query_positions: Vec<(u32, f64)>,
 }
 
-/// Execute a single alignment task: query vs target.
+/// Execute a single alignment task: query vs target with default configuration.
 pub fn align_task(
     query: &Sequence,
     target: &Sequence,
     plan: &PhrayaPlan,
+) -> Option<AlignmentResult> {
+    align_task_with_config(query, target, plan, &AlignConfig::default())
+}
+
+/// Execute a single alignment task: query vs target with specified configuration.
+pub fn align_task_with_config(
+    query: &Sequence,
+    target: &Sequence,
+    plan: &PhrayaPlan,
+    config: &AlignConfig,
 ) -> Option<AlignmentResult> {
     // Reuse pre-computed sketches from plan if available; fall back to recomputing
     let query_sketch = plan
@@ -106,6 +179,7 @@ pub fn align_task(
         query_mapq,
         query_avg_bq,
         primary_score,
+        config.coverage_window_radius,
     );
 
     let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
@@ -134,6 +208,7 @@ fn extract_variants_from_cigar(
     mapq: u8,
     avg_base_quality: f64,
     confidence: f64,
+    coverage_window_radius: usize,
 ) -> Vec<VariantObservation> {
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
@@ -157,9 +232,9 @@ fn extract_variants_from_cigar(
                         let mut alleles = HashMap::new();
                         alleles.insert(alt_base, 1u32);
 
-                        // Local coverage: ±50bp window, values from the alignment coverage track.
-                        let window_start = if tp >= 50 { tp - 50 } else { 0 };
-                        let window_end = (tp + 51).min(target.len());
+                        // Local coverage: ±coverage_window_radius bp window, values from the alignment coverage track.
+                        let window_start = if tp >= coverage_window_radius { tp - coverage_window_radius } else { 0 };
+                        let window_end = (tp + coverage_window_radius + 1).min(target.len());
                         let local_coverage: Vec<u32> = (window_start..window_end)
                             .map(|pos| coverage.get(pos).copied().unwrap_or(0))
                             .collect();
