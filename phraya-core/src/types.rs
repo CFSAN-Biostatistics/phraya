@@ -1204,3 +1204,59 @@ pub fn compute_kmer_uniqueness(sketches: &[MinimizerSketch]) -> HashMap<u32, f64
     }
     uniqueness
 }
+
+/// Detect variation hotspot intervals from k-mer uniqueness scores.
+///
+/// Scans the uniqueness map for positions where the score is below the threshold,
+/// merging contiguous/adjacent positions into intervals (start, end).
+/// Returns sorted intervals by start position.
+///
+/// # Arguments
+///
+/// * `uniqueness` - HashMap mapping position (u32) to uniqueness score (f64)
+/// * `threshold` - Uniqueness threshold; positions with score < threshold are considered hotspots
+///
+/// # Returns
+///
+/// Vec of (start, end) intervals, sorted by start position. Returns empty vec if map is empty
+/// or no positions fall below threshold.
+pub fn detect_hotspot_intervals(uniqueness: &HashMap<u32, f64>, threshold: f64) -> Vec<(u32, u32)> {
+    if uniqueness.is_empty() {
+        return Vec::new();
+    }
+
+    // Collect positions below threshold and sort them
+    let mut positions: Vec<u32> = uniqueness
+        .iter()
+        .filter(|(_, score)| **score < threshold)
+        .map(|(&pos, _)| pos)
+        .collect();
+
+    if positions.is_empty() {
+        return Vec::new();
+    }
+
+    positions.sort_unstable();
+
+    // Merge contiguous/adjacent positions into intervals
+    let mut intervals = Vec::new();
+    let mut start = positions[0];
+    let mut end = positions[0];
+
+    for &pos in &positions[1..] {
+        if pos == end + 1 {
+            // Adjacent position, extend current interval
+            end = pos;
+        } else {
+            // Gap detected, save current interval and start new one
+            intervals.push((start, end));
+            start = pos;
+            end = pos;
+        }
+    }
+
+    // Don't forget the last interval
+    intervals.push((start, end));
+
+    intervals
+}

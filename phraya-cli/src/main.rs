@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use log::info;
 use phraya_align::executor::align_task;
 use phraya_core::types::{
-    compute_kmer_uniqueness, select_centroid, sketch_sequence_default, CoverageTrack,
-    MinimizerSketch, Sequence,
+    compute_kmer_uniqueness, detect_hotspot_intervals, select_centroid, sketch_sequence_default,
+    CoverageTrack, MinimizerSketch, Sequence,
 };
 use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
@@ -284,6 +284,9 @@ fn run_plan(
     // Compute k-mer uniqueness
     let kmer_uniqueness = compute_kmer_uniqueness(&sketches);
 
+    // Detect hotspot intervals from k-mer uniqueness (threshold 0.5)
+    let hotspot_intervals = detect_hotspot_intervals(&kmer_uniqueness, 0.5);
+
     // Generate task list based on use case
     let task_list = generate_task_list(
         &use_case,
@@ -302,7 +305,7 @@ fn run_plan(
         .collect();
 
     // Create and write plan
-    let plan = PhrayaPlan::new(
+    let mut plan = PhrayaPlan::new(
         use_case,
         input_file_list,
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -310,6 +313,7 @@ fn run_plan(
         kmer_uniqueness,
         task_list,
     );
+    plan.hotspot_intervals = hotspot_intervals;
 
     write_plan(output_path, &plan)?;
 
