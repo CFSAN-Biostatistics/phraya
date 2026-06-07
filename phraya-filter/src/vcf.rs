@@ -1,4 +1,5 @@
 use crate::VariantObservation;
+use phraya_core::types::VariantType;
 use std::collections::BTreeMap;
 
 /// Generate VCF 4.2 header
@@ -44,28 +45,68 @@ pub fn format_vcf(
 
         let primary = &obs_list[0];
         let chrom = reference_name;
-        let pos = position + 1; // VCF is 1-indexed
-        let id = ".";
-        let ref_base = (primary.ref_base() as char).to_string();
+        let variant_type = primary.variant_type();
 
-        // Collect all unique ALT alleles
-        let mut alt_bases = std::collections::HashSet::new();
-        for obs in &obs_list {
-            for (&allele, _) in obs.all_alleles().iter() {
-                if allele != obs.ref_base() {
-                    alt_bases.insert(allele as char);
+        // Handle indel-specific positioning and REF/ALT encoding
+        let (vcf_pos, ref_seq, alt_seq) = match variant_type {
+            VariantType::Snp => {
+                // SNPs use the position directly
+                let pos = position + 1; // VCF is 1-indexed
+                let ref_base = (primary.ref_base() as char).to_string();
+
+                // Collect all unique ALT alleles
+                let mut alt_bases = std::collections::HashSet::new();
+                for obs in &obs_list {
+                    for (&allele, _) in obs.all_alleles().iter() {
+                        if allele != obs.ref_base() {
+                            alt_bases.insert(allele as char);
+                        }
+                    }
                 }
-            }
-        }
 
-        let alt = if alt_bases.is_empty() {
-            ".".to_string()
-        } else {
-            let mut alts: Vec<char> = alt_bases.into_iter().collect();
-            alts.sort();
-            alts.iter().collect::<String>()
+                let alt = if alt_bases.is_empty() {
+                    ".".to_string()
+                } else {
+                    let mut alts: Vec<char> = alt_bases.into_iter().collect();
+                    alts.sort();
+                    alts.iter().collect::<String>()
+                };
+
+                (pos, ref_base, alt)
+            }
+            VariantType::Deletion => {
+                // For deletion: ref_base contains the deleted bases, alt is "."
+                // In VCF format, we encode as ref=deleted_bases, alt="."
+                let pos = position + 1; // VCF is 1-indexed
+                let ref_base = (primary.ref_base() as char).to_string();
+                let alt = ".".to_string();
+                (pos, ref_base, alt)
+            }
+            VariantType::Insertion => {
+                // For insertion: ref_base is ".", alt contains inserted bases
+                // In VCF format, we encode as ref=".", alt=inserted_bases
+                let pos = position + 1; // VCF is 1-indexed
+                let ref_base = ".".to_string();
+
+                // Collect inserted bases from alleles
+                let mut inserted = String::new();
+                for (&allele, _) in primary.all_alleles().iter() {
+                    if allele != b'.' {
+                        inserted.push(allele as char);
+                    }
+                }
+
+                let alt = if inserted.is_empty() {
+                    ".".to_string()
+                } else {
+                    inserted
+                };
+
+                (pos, ref_base, alt)
+            }
         };
 
+        let id = ".";
         let qual = format!("{:.0}", primary.confidence() * 100.0);
         let filter = "PASS";
 
@@ -89,7 +130,7 @@ pub fn format_vcf(
 
         output.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            chrom, pos, id, ref_base, alt, qual, filter, info, format, sample
+            chrom, vcf_pos, id, ref_seq, alt_seq, qual, filter, info, format, sample
         ));
     }
 

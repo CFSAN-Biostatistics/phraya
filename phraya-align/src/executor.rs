@@ -187,9 +187,87 @@ fn extract_variants_from_cigar(
             }
             // WFA convention: 'I' = target has extra bases (standard 'D'); 'D' = query has extra.
             'I' => {
+                // Target has extra bases = deletion in query relative to target
+                // Only emit variant if the query is still being aligned (q_pos < query.len())
+                // Skipping 'I' at tail-end where query has already ended prevents false deletions
+                if t_pos < target.len() && q_pos < query.len() {
+                    let deleted_bases = &target[t_pos..(t_pos + count).min(target.len())];
+                    let window_start = if t_pos >= 50 { t_pos - 50 } else { 0 };
+                    let window_end = (t_pos + 51).min(target.len());
+                    let local_coverage: Vec<u32> = (window_start..window_end)
+                        .map(|pos| coverage.get(pos).copied().unwrap_or(0))
+                        .collect();
+
+                    let in_repeat = repeat_regions
+                        .iter()
+                        .any(|r| t_pos >= r.start && t_pos < r.end);
+
+                    // For deletion: ref_base is the first deleted base, alt is "." (VCF convention)
+                    let ref_base = if !deleted_bases.is_empty() {
+                        deleted_bases[0]
+                    } else {
+                        b'.'
+                    };
+                    let mut alleles = HashMap::new();
+                    alleles.insert(b'.', 1u32);
+
+                    variants.push(
+                        VariantObservation::new(
+                            t_pos as u32,
+                            ref_base,
+                            alleles,
+                            confidence,
+                            cigar.to_string(),
+                            mapq,
+                            edit_distance,
+                            local_coverage,
+                            avg_base_quality,
+                            provenance.clone(),
+                        )
+                        .with_tandem_repeat(in_repeat)
+                        .with_variant_type(phraya_core::types::VariantType::Deletion),
+                    );
+                }
                 t_pos += count;
             }
             'D' => {
+                // Query has extra bases = insertion in query relative to target
+                // Emit one VariantObservation for the inserted region
+                if q_pos < query.len() && t_pos < target.len() {
+                    let inserted_bases = &query[q_pos..(q_pos + count).min(query.len())];
+                    let window_start = if t_pos >= 50 { t_pos - 50 } else { 0 };
+                    let window_end = (t_pos + 51).min(target.len());
+                    let local_coverage: Vec<u32> = (window_start..window_end)
+                        .map(|pos| coverage.get(pos).copied().unwrap_or(0))
+                        .collect();
+
+                    let in_repeat = repeat_regions
+                        .iter()
+                        .any(|r| t_pos >= r.start && t_pos < r.end);
+
+                    // For insertion: ref_base is ".", alt is the inserted bases
+                    let mut alleles = HashMap::new();
+                    for &base in inserted_bases {
+                        *alleles.entry(base).or_insert(0) += 1;
+                    }
+
+                    variants.push(
+                        VariantObservation::new(
+                            t_pos as u32,
+                            b'.',
+                            alleles,
+                            confidence,
+                            cigar.to_string(),
+                            mapq,
+                            edit_distance,
+                            local_coverage,
+                            avg_base_quality,
+                            provenance.clone(),
+                        )
+                        .with_tandem_repeat(in_repeat)
+                        .with_variant_type(phraya_core::types::VariantType::Insertion),
+                    );
+                }
                 q_pos += count;
             }
             _ => {}
@@ -433,6 +511,76 @@ mod tests {
         assert!(
             !unique_variant.unwrap().in_tandem_repeat(),
             "variant outside repeat region must be annotated in_tandem_repeat=false"
+        );
+    }
+
+    #[test]
+    fn test_indel_calling_deletion_variant_created() {
+        // Query is missing a base at position 4: target="ACGTACGT", query="ACGACGT".
+        // This should produce a deletion variant at position 4.
+        let target = Sequence::new(b"ACGTACGT".to_vec(), None, "ref".to_string(), None);
+        let query = Sequence::new(b"ACGACGT".to_vec(), None, "query_del".to_string(), None);
+        let plan = make_plan();
+
+        let result = align_task(&query, &target, &plan);
+        assert!(result.is_some(), "alignment should succeed");
+
+        let result = result.unwrap();
+        assert!(
+            !result.variants.is_empty(),
+            "deletion should produce at least one variant"
+        );
+
+        // Find the deletion variant (VariantType::Deletion)
+        let deletion_var = result
+            .variants
+            .iter()
+            .find(|v| v.variant_type() == phraya_core::types::VariantType::Deletion);
+        assert!(
+            deletion_var.is_some(),
+            "must have a deletion variant for the missing base"
+        );
+
+        let var = deletion_var.unwrap();
+        assert_eq!(
+            var.variant_type(),
+            phraya_core::types::VariantType::Deletion,
+            "variant should be marked as Deletion"
+        );
+    }
+
+    #[test]
+    fn test_indel_calling_insertion_variant_created() {
+        // Query has an extra base at position 4: target="ACGTACGT", query="ACGTTACGT".
+        // This should produce an insertion variant at position 4.
+        let target = Sequence::new(b"ACGTACGT".to_vec(), None, "ref".to_string(), None);
+        let query = Sequence::new(b"ACGTTACGT".to_vec(), None, "query_ins".to_string(), None);
+        let plan = make_plan();
+
+        let result = align_task(&query, &target, &plan);
+        assert!(result.is_some(), "alignment should succeed");
+
+        let result = result.unwrap();
+        assert!(
+            !result.variants.is_empty(),
+            "insertion should produce at least one variant"
+        );
+
+        // Find the insertion variant (VariantType::Insertion)
+        let insertion_var = result
+            .variants
+            .iter()
+            .find(|v| v.variant_type() == phraya_core::types::VariantType::Insertion);
+        assert!(
+            insertion_var.is_some(),
+            "must have an insertion variant for the extra base"
+        );
+
+        let var = insertion_var.unwrap();
+        assert_eq!(
+            var.variant_type(),
+            phraya_core::types::VariantType::Insertion,
+            "variant should be marked as Insertion"
         );
     }
 
