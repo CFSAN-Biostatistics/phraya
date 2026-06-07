@@ -124,12 +124,12 @@ fn issue_148_balanced_strategy_produces_default_coverage_window() {
     let var = &result.variants[0];
     let lc = var.local_coverage();
 
-    // Balanced strategy is the current default: ±50bp window.
-    // Alignment places the SNP at target pos 49 (0-based), so window is [0, 100) = 100.
+    // Balanced strategy: ±50bp window. SNP at target pos 50.
+    // window_start = max(0, 50-50) = 0, window_end = min(200, 50+51) = 101 → len=101.
     assert_eq!(
         lc.len(),
-        100,
-        "balanced strategy window should be ±50bp (length ~100), got {}",
+        101,
+        "balanced strategy window should be ±50bp (length 101), got {}",
         lc.len()
     );
 }
@@ -227,11 +227,11 @@ fn issue_148_balanced_is_default_and_backward_compatible() {
     let var = &result.variants[0];
     let lc = var.local_coverage();
 
-    // Verify the window matches the original ±50bp behavior (~100).
+    // Verify the window matches the ±50bp behavior. SNP at pos 50 → [0, 101) = 101.
     assert_eq!(
         lc.len(),
-        100,
-        "default strategy should maintain ±50bp window (length ~100), got {}",
+        101,
+        "default strategy should maintain ±50bp window (length 101), got {}",
         lc.len()
     );
 }

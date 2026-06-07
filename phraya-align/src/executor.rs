@@ -111,14 +111,17 @@ pub fn align_task_with_config(
     // ensures the full query is aligned. Deduplicate by target_start to avoid redundant calls.
     let mut alignments = Vec::new();
 
-    let anchors: Vec<SeedAnchor> = if seeds.is_empty() {
-        vec![SeedAnchor {
+    // Always start with anchor (0,0) so it wins ties in score_alignments.
+    // Seed-derived anchors for the correct mapping position have lower edit distance
+    // in real data; for degenerate repetitive sequences, (0,0) wins ties and
+    // places variants at reference-relative rather than window-relative positions.
+    let anchors: Vec<SeedAnchor> = {
+        let mut seen = HashSet::new();
+        let mut result = vec![SeedAnchor {
             query_pos: 0,
             target_pos: 0,
-        }]
-    } else {
-        let mut seen = HashSet::new();
-        let mut result = Vec::new();
+        }];
+        seen.insert(0usize);
         for s in &seeds {
             let target_start = (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
             if seen.insert(target_start) {
@@ -180,6 +183,7 @@ pub fn align_task_with_config(
         query_avg_bq,
         primary_score,
         config.coverage_window_radius,
+        &plan.hotspot_intervals,
     );
 
     let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
@@ -193,6 +197,11 @@ pub fn align_task_with_config(
         coverage_track,
         query_positions,
     })
+}
+
+/// Check if a position falls within any hotspot interval.
+fn is_in_hotspot(pos: u32, hotspot_intervals: &[(u32, u32)]) -> bool {
+    hotspot_intervals.iter().any(|&(start, end)| pos >= start && pos < end)
 }
 
 /// Parse CIGAR and extract VariantObservations at mismatch positions.
@@ -209,6 +218,7 @@ fn extract_variants_from_cigar(
     avg_base_quality: f64,
     confidence: f64,
     coverage_window_radius: usize,
+    hotspot_intervals: &[(u32, u32)],
 ) -> Vec<VariantObservation> {
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
@@ -243,6 +253,12 @@ fn extract_variants_from_cigar(
                             .iter()
                             .any(|r| tp >= r.start && tp < r.end);
 
+                        let kmer_uniqueness = if is_in_hotspot(tp as u32, hotspot_intervals) {
+                            0.0
+                        } else {
+                            1.0
+                        };
+
                         variants.push(VariantObservation::new(
                             tp as u32,
                             ref_base,
@@ -254,7 +270,8 @@ fn extract_variants_from_cigar(
                             local_coverage,
                             avg_base_quality,
                             provenance.clone(),
-                        ).with_tandem_repeat(in_repeat));
+                        ).with_tandem_repeat(in_repeat)
+                         .with_kmer_uniqueness(kmer_uniqueness));
                     }
                 }
                 q_pos += count;
@@ -276,6 +293,12 @@ fn extract_variants_from_cigar(
                     let in_repeat = repeat_regions
                         .iter()
                         .any(|r| t_pos >= r.start && t_pos < r.end);
+
+                    let kmer_uniqueness = if is_in_hotspot(t_pos as u32, hotspot_intervals) {
+                        0.0
+                    } else {
+                        1.0
+                    };
 
                     // For deletion: ref_base is the first deleted base, alt is "." (VCF convention)
                     let ref_base = if !deleted_bases.is_empty() {
@@ -300,7 +323,8 @@ fn extract_variants_from_cigar(
                             provenance.clone(),
                         )
                         .with_tandem_repeat(in_repeat)
-                        .with_variant_type(phraya_core::types::VariantType::Deletion),
+                        .with_variant_type(phraya_core::types::VariantType::Deletion)
+                        .with_kmer_uniqueness(kmer_uniqueness),
                     );
                 }
                 t_pos += count;
@@ -319,6 +343,12 @@ fn extract_variants_from_cigar(
                     let in_repeat = repeat_regions
                         .iter()
                         .any(|r| t_pos >= r.start && t_pos < r.end);
+
+                    let kmer_uniqueness = if is_in_hotspot(t_pos as u32, hotspot_intervals) {
+                        0.0
+                    } else {
+                        1.0
+                    };
 
                     // For insertion: ref_base is ".", alt is the inserted bases
                     let mut alleles = HashMap::new();
@@ -340,7 +370,8 @@ fn extract_variants_from_cigar(
                             provenance.clone(),
                         )
                         .with_tandem_repeat(in_repeat)
-                        .with_variant_type(phraya_core::types::VariantType::Insertion),
+                        .with_variant_type(phraya_core::types::VariantType::Insertion)
+                        .with_kmer_uniqueness(kmer_uniqueness),
                     );
                 }
                 q_pos += count;

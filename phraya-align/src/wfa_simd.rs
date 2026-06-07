@@ -78,9 +78,10 @@ pub fn wfa_extend_naive_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
         });
     }
 
-    // WFA: O(s·n) where s = edit distance. fill_scalar stays as internal
-    // reference for fill_simd differential tests; it is not called on the hot path.
-    let (cigar, edit_distance) = fill_wfa(query_suffix, target_suffix);
+    // Fitting alignment: query must be fully consumed, target end is free.
+    // This is the correct mode for aligning reads against a longer reference window.
+    // Global alignment inflates edit distance by the length gap (target extras become deletions).
+    let (cigar, edit_distance, target_consumed) = fill_wfa_fitting(query_suffix, target_suffix);
 
     Ok(Alignment {
         cigar,
@@ -88,7 +89,7 @@ pub fn wfa_extend_naive_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
         query_start: seed.query_pos,
         query_end: seed.query_pos + query_len,
         target_start: seed.target_pos,
-        target_end: seed.target_pos + target_len,
+        target_end: seed.target_pos + target_consumed,
     })
 }
 
@@ -211,6 +212,225 @@ fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
 
     // Fallback: should not reach here for valid inputs
     (String::new(), 0)
+}
+
+/// Fitting alignment variant of [`fill_wfa`].
+///
+/// Fitting (semi-global) alignment: query must be fully consumed, target end is free.
+/// This is the correct mode for reads vs a longer reference window — global alignment
+/// inflates edit distance by the length gap (excess target bases become forced deletions).
+///
+/// When target is not substantially longer than query (tn ≤ qn + qn/2 + 10), delegates
+/// to global [`fill_wfa`] to preserve correctness for short-indel and equal-length cases.
+///
+/// Returns `(cigar, edit_distance, target_consumed)` where `target_consumed` is the number
+/// of target bases actually aligned (≤ `t.len()`).
+fn fill_wfa_fitting(q: &[u8], t: &[u8]) -> (String, usize, usize) {
+    if q.is_empty() {
+        return (String::new(), 0, 0);
+    }
+
+    let qn = q.len() as i32;
+    let tn = t.len() as i32;
+    // Use fitting only when target is substantially longer: at least 1.5× + 10 bp.
+    // For similar-length sequences (small indels, equal lengths) global is correct
+    // and avoids spurious early termination that under-counts edits.
+    if tn <= qn + qn / 2 + 10 {
+        let (cigar, edit_dist) = fill_wfa(q, t);
+        return (cigar, edit_dist, t.len());
+    }
+
+    let size = (qn + tn + 1) as usize;
+    const UNSET: i32 = i32::MIN;
+
+    let mut wf_cur = vec![UNSET; size];
+    let mut wf_hist: Vec<(Vec<i32>, Vec<u8>)> = Vec::new();
+
+    let extend = |q_pos: i32, k: i32| -> i32 {
+        let mut i = q_pos;
+        loop {
+            let j = i - k;
+            if i >= qn || j >= tn || j < 0 { break; }
+            if q[i as usize] != t[j as usize] { break; }
+            i += 1;
+        }
+        i
+    };
+
+    let k0_idx = tn as usize;
+    wf_cur[k0_idx] = extend(0, 0);
+    let mut ops_cur = vec![0u8; size];
+
+    if let Some((t_end, k_win)) = fitting_end_k(&wf_cur, qn, tn) {
+        wf_hist.push((wf_cur, ops_cur));
+        let (cigar, _) = traceback_wfa_with_tend(&wf_hist, q, t, 0, t_end, k_win);
+        return (cigar, 0, t_end);
+    }
+
+    wf_hist.push((wf_cur.clone(), ops_cur.clone()));
+
+    let max_s = qn + tn;
+    for s in 1..=max_s {
+        let prev = &wf_hist[s as usize - 1].0;
+        let mut wf_next = vec![UNSET; size];
+        let mut ops_next = vec![0u8; size];
+
+        let lo = (-(s.min(tn))) as i32;
+        let hi = s.min(qn) as i32;
+
+        for k in lo..=hi {
+            let ki = (k + tn) as usize;
+            let from_mm = if ki < prev.len() && prev[ki] != UNSET {
+                (prev[ki] + 1, 1u8)
+            } else { (UNSET, 0) };
+            let from_ins = if k > -tn {
+                let ki_prev = (k - 1 + tn) as usize;
+                if ki_prev < prev.len() && prev[ki_prev] != UNSET {
+                    (prev[ki_prev] + 1, 2u8)
+                } else { (UNSET, 0) }
+            } else { (UNSET, 0) };
+            let from_del = if k < qn {
+                let ki_prev = (k + 1 + tn) as usize;
+                if ki_prev < prev.len() && prev[ki_prev] != UNSET {
+                    (prev[ki_prev], 3u8)
+                } else { (UNSET, 0) }
+            } else { (UNSET, 0) };
+
+            let (best_pos, best_op) = [from_mm, from_ins, from_del]
+                .into_iter()
+                .filter(|&(p, _)| p != UNSET)
+                .max_by_key(|&(p, _)| p)
+                .unwrap_or((UNSET, 0));
+
+            if best_pos == UNSET { continue; }
+            let j = best_pos - k;
+            if best_pos < 0 || best_pos > qn || j < 0 || j > tn { continue; }
+
+            wf_next[ki] = extend(best_pos, k);
+            ops_next[ki] = best_op;
+        }
+
+        if let Some((t_end, k_win)) = fitting_end_k(&wf_next, qn, tn) {
+            wf_hist.push((wf_next, ops_next));
+            let (cigar, _) = traceback_wfa_with_tend(&wf_hist, q, t, s as usize, t_end, k_win);
+            return (cigar, s as usize, t_end);
+        }
+
+        wf_hist.push((wf_next, ops_next));
+    }
+
+    // Fallback
+    (String::new(), 0, t.len())
+}
+
+/// Find a valid fitting-end diagonal: any k where `wf[k] >= qn` and `0 <= qn - k <= tn`.
+/// Returns `(t_end, k)` for the diagonal that consumes the most target (maximum t_end = qn - k).
+/// Preferring maximum t_end ensures we don't truncate natural deletions at the alignment end.
+fn fitting_end_k(wf: &[i32], qn: i32, tn: i32) -> Option<(usize, i32)> {
+    let mut best: Option<(usize, i32)> = None;
+    for k in (qn - tn)..=qn {
+        let t_end = qn - k;
+        if t_end < 0 || t_end > tn { continue; }
+        let ki = (k + tn) as usize;
+        if ki >= wf.len() { continue; }
+        if wf[ki] >= qn {
+            let te = t_end as usize;
+            if best.is_none() || te > best.unwrap().0 {
+                best = Some((te, k));
+            }
+        }
+    }
+    best
+}
+
+/// Backtrace starting from `(qn, t_end)` — the fitting-alignment endpoint.
+/// Identical to [`traceback_wfa`] except `ti` starts at `t_end` instead of `t.len()`.
+fn traceback_wfa_with_tend(
+    hist: &[(Vec<i32>, Vec<u8>)],
+    q: &[u8],
+    t: &[u8],
+    edit_dist: usize,
+    t_end: usize,
+    _k_win: i32,
+) -> (String, usize) {
+    let qn = q.len() as i32;
+    let tn = t.len() as i32;
+
+    let mut ops: Vec<char> = Vec::new();
+    let mut qi = qn;
+    let mut ti = t_end as i32; // start at actual end, not tn
+
+    let mut k = qi - ti;
+    let mut s = edit_dist as i32;
+
+    while qi > 0 || ti > 0 {
+        if s < 0 { break; }
+
+        let ki = (k + tn) as usize;
+
+        if s == 0 {
+            while qi > 0 && ti > 0 {
+                ops.push('M');
+                qi -= 1;
+                ti -= 1;
+            }
+            break;
+        }
+
+        let (wf, wf_ops) = &hist[s as usize];
+        let op = if ki < wf_ops.len() { wf_ops[ki] } else { 0 };
+        let cur_pos = if ki < wf.len() { wf[ki] } else { 0 };
+
+        let prev_wf = &hist[s as usize - 1].0;
+        let prev_op = &hist[s as usize - 1].1;
+        let (pred_pos, pred_k) = match op {
+            1 => {
+                let pk = ki;
+                (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k)
+            }
+            2 => {
+                let pk = (k - 1 + tn) as usize;
+                (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k - 1)
+            }
+            3 => {
+                let pk = (k + 1 + tn) as usize;
+                (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k + 1)
+            }
+            _ => {
+                let pk = ki;
+                (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k)
+            }
+        };
+        let _ = prev_op;
+        let _ = cur_pos;
+
+        let edit_start = match op {
+            1 | 2 => pred_pos + 1,
+            3 => pred_pos,
+            _ => pred_pos,
+        };
+
+        let match_count = qi - edit_start;
+        for _ in 0..match_count.max(0) {
+            ops.push('M');
+            qi -= 1;
+            ti -= 1;
+        }
+
+        match op {
+            1 => { ops.push('X'); qi -= 1; ti -= 1; }
+            2 => { ops.push('D'); qi -= 1; }
+            3 => { ops.push('I'); ti -= 1; }
+            _ => {}
+        }
+
+        k = pred_k;
+        s -= 1;
+    }
+
+    ops.reverse();
+    let cigar = compact_cigar(&ops);
+    (cigar, edit_dist)
 }
 
 /// Backtrace through WFA wavefront history to produce a CIGAR string.
