@@ -53,29 +53,24 @@ pub fn wfa_extend_naive(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaRes
     wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
 
-/// SSE4.2-accelerated WFA extension.
+/// WFA extension (explicit entry point, same as wfa_extend).
 ///
-/// Uses SSE4.2 intrinsics for diagonal fill operations.
-/// Falls back to naive implementation if SSE4.2 is not available.
+/// Historical name preserved for API compatibility. Now uses O(s·n) WFA on all
+/// platforms. The "simd" name is misleading (originally referred to O(n×m)
+/// diagonal DP with portable SIMD, which was 28× slower than WFA).
 pub fn wfa_extend_simd(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    #[cfg(target_arch = "x86_64")]
-    {
-        wfa_simd::wfa_extend_simd_impl(query, target, seed)
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        // On non-x86 platforms, fall back to naive
-        wfa_simd::wfa_extend_naive_impl(query, target, seed)
-    }
+    // Always use WFA, not diagonal DP
+    wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
 
-/// NEON-accelerated WFA extension for ARM64.
+/// WFA extension (explicit entry point, same as wfa_extend).
 ///
-/// Uses NEON intrinsics for diagonal fill operations on aarch64.
-/// NEON is mandatory on ARM64, so no runtime detection is needed.
-/// Falls back to naive implementation on non-aarch64 platforms.
+/// Historical name preserved for API compatibility. Now uses O(s·n) WFA on all
+/// platforms. The "neon" name is misleading (originally referred to O(n×m)
+/// diagonal DP with portable SIMD, which was 28× slower than WFA).
 pub fn wfa_extend_neon(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    wfa_simd::wfa_extend_neon_impl(query, target, seed)
+    // Always use WFA, not diagonal DP
+    wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
 
 /// Runtime-dispatched WFA extension using multiversion.
