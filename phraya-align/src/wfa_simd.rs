@@ -1,16 +1,14 @@
-/// SSE4.2-accelerated WFA diagonal fill implementation.
+/// Portable SIMD-accelerated WFA diagonal fill implementation.
 ///
-/// This module provides SIMD-accelerated wavefront alignment using x86_64 SSE4.2 intrinsics.
-/// Runtime dispatch selects SSE4.2 or naive implementation based on CPUID detection via
-/// the `multiversion` crate.
+/// This module provides SIMD-accelerated wavefront alignment using the `wide` crate for
+/// portable SIMD operations. When compiled with `-C target-cpu=native`, the `wide` crate
+/// lowers to SSE4.2 on x86_64 or NEON on aarch64. Otherwise, it emulates with scalar ops.
 ///
-/// # Safety invariants for SIMD code
+/// # Portable SIMD notes
 ///
-/// When using unsafe SIMD intrinsics:
-/// - Input slices must be valid for the lifetime of the operation
-/// - Alignment requirements for SIMD loads must be verified or use unaligned load intrinsics
-/// - Vector operations must not access memory beyond slice bounds
-/// - All SIMD feature flags (SSE4.2) must be verified at runtime before calling intrinsics
+/// The `wide::i32x8` type abstracts SIMD ops. On x86_64 with `target-cpu=native`, operations
+/// like `min()` lower to `pminsd` (SSE4.2). On aarch64, they lower to NEON `smin`. Without
+/// CPU-specific flags, `wide` emulates with scalar loops. No `unsafe` intrinsics in this module.
 ///
 /// # Examples
 ///
@@ -529,7 +527,8 @@ fn traceback_wfa(
 }
 
 /// Flat row-major edit-distance DP matrix, `(q.len()+1) * (t.len()+1)`,
-/// indexed `dp[i * (t.len()+1) + j]`. Scalar reference fill.
+/// indexed `dp[i * (t.len()+1) + j]`. Scalar reference fill (test-only).
+#[cfg(test)]
 fn fill_scalar(q: &[u8], t: &[u8]) -> Vec<i32> {
     let qn = q.len();
     let tn = t.len();
@@ -594,7 +593,8 @@ fn traceback_with<F: Fn(usize, usize) -> i32>(get: F, q: &[u8], t: &[u8]) -> (St
     (compact_cigar(&ops), edit_distance)
 }
 
-/// Row-major convenience wrapper over [`traceback_with`] for [`fill_scalar`].
+/// Row-major convenience wrapper over [`traceback_with`] for [`fill_scalar`] (test-only).
+#[cfg(test)]
 fn traceback(dp: &[i32], q: &[u8], t: &[u8]) -> (String, usize) {
     let stride = t.len() + 1;
     traceback_with(|i, j| dp[i * stride + j], q, t)
@@ -798,11 +798,11 @@ fn wfa_extend_diag_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
 // SSE4.2 SIMD Implementation (x86_64)
 // ============================================================================
 
-/// SSE/AVX-accelerated WFA extension on x86_64.
+/// Portable SIMD WFA extension for x86_64.
 ///
 /// Thin wrapper that records dispatch selection and delegates to the portable
-/// SIMD diagonal fill ([`wfa_extend_diag_simd_impl`]), which lowers to SSE4.2
-/// (`pminsd`/`pcmpeqd`) or AVX2 depending on the build target.
+/// SIMD diagonal fill ([`wfa_extend_diag_simd_impl`]). With `-C target-cpu=native`,
+/// the `wide` crate lowers `min()` ops to SSE4.2 `pminsd` or AVX2 equivalents.
 #[cfg(target_arch = "x86_64")]
 pub fn wfa_extend_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
     LAST_IMPL.with(|last| {
@@ -821,12 +821,12 @@ pub fn wfa_extend_simd_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> Wf
 // NEON SIMD Implementation (ARM64)
 // ============================================================================
 
-/// NEON-accelerated WFA diagonal fill for ARM64.
+/// Portable SIMD WFA extension for ARM64.
 ///
 /// Thin wrapper that records dispatch selection and delegates to the portable
-/// SIMD diagonal fill ([`wfa_extend_diag_simd_impl`]). On aarch64 the kernel
-/// lowers to NEON instructions (`smin`/`cmeq` over `*.4s`); NEON is mandatory
-/// on aarch64 so no runtime detection is needed.
+/// SIMD diagonal fill ([`wfa_extend_diag_simd_impl`]). With `-C target-cpu=native`,
+/// the `wide` crate lowers to NEON instructions (`smin` over `*.4s`). NEON is
+/// mandatory on aarch64, so no runtime detection needed.
 #[cfg(target_arch = "aarch64")]
 pub fn wfa_extend_neon_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
     LAST_IMPL.with(|last| {

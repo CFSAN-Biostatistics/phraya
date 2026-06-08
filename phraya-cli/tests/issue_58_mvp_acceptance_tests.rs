@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 /// Acceptance tests for Issue #58: Phase 1 MVP - Evidence-Informed Alignment with Deferred Filtering
 /// Tests validate end-to-end MVP functionality for use cases 2, 3, 4 (case 1 deferred to Phase 2).
-///
-/// RED phase: All tests fail initially (feature not yet implemented).
-/// Tests verify external contracts only: CLI interfaces, file formats, error codes.
+/// Tests verify external contracts: CLI interfaces, file formats, error codes.
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;

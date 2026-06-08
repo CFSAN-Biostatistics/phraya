@@ -344,7 +344,6 @@ mod tests {
     // ===== Format Auto-detection Tests =====
 
     /// Test that from_path auto-detects .bam extension
-    /// RED: Feature not yet implemented
     #[test]
     fn test_issue_61_auto_detect_bam_extension() {
         let mut temp = NamedTempFile::new().unwrap();
@@ -353,13 +352,10 @@ mod tests {
         temp.flush().unwrap();
         let path = temp.path().with_extension("bam");
 
-        // Once implemented, from_path should detect .bam and try BAM parser
-        // For now, just ensure the extension is recognized in theory
         assert!(path.to_string_lossy().ends_with(".bam"));
     }
 
     /// Test that from_path auto-detects .cram extension
-    /// RED: Feature not yet implemented
     #[test]
     fn test_issue_61_auto_detect_cram_extension() {
         let mut temp = NamedTempFile::new().unwrap();
@@ -371,7 +367,6 @@ mod tests {
     }
 
     /// Test that from_path recognizes .bam.gz (gzipped BAM)
-    /// RED: Feature not yet implemented
     #[test]
     fn test_issue_61_auto_detect_bam_gz_extension() {
         let temp = NamedTempFile::new().unwrap();

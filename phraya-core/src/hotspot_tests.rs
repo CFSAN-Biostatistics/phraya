@@ -1,5 +1,5 @@
-/// RED acceptance tests for issue #145 — variation hotspot estimation at plan time.
-/// All tests call `detect_hotspot_intervals` which is `unimplemented!()` in production code.
+/// Acceptance tests for issue #145 — variation hotspot estimation at plan time.
+/// Tests verify `detect_hotspot_intervals` merges contiguous low-uniqueness positions into intervals.
 
 #[cfg(test)]
 mod tests {
