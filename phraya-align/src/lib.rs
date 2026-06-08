@@ -82,28 +82,20 @@ pub fn wfa_extend_neon(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResu
 ///
 /// Automatically selects SSE4.2 (if available) or naive implementation
 /// based on runtime CPU feature detection via the multiversion crate.
-// The SIMD diagonal fill is a *release-time* win: unoptimised `wide` lowers to
-// out-of-line calls and is slower than the scalar fill, so debug builds (dev /
-// `cargo test`) use scalar and only optimised builds — the only ones used for
-// real workloads — pay for SIMD. Correctness of the SIMD kernel is covered in
-// debug by the direct `fill_simd` vs `fill_scalar` differential test.
+// Production uses WFA O(s·n) wavefront alignment for all architectures.
+// The `wfa_extend_simd_impl` / `wfa_extend_neon_impl` functions were originally
+// designed for portable SIMD diagonal DP, but that's O(n×m) and 28× slower than
+// WFA. Real SIMD acceleration (if added) will target WFA operations, not DP.
 #[cfg(target_arch = "x86_64")]
 pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    if !cfg!(debug_assertions) && is_x86_feature_detected!("sse4.2") {
-        wfa_simd::wfa_extend_simd_impl(query, target, seed)
-    } else {
-        wfa_simd::wfa_extend_naive_impl(query, target, seed)
-    }
+    // Always use WFA (O(s·n)), not diagonal DP (O(n×m))
+    wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
 
 #[cfg(target_arch = "aarch64")]
 pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    // NEON is mandatory on aarch64; use it in release, scalar in debug.
-    if cfg!(debug_assertions) {
-        wfa_simd::wfa_extend_naive_impl(query, target, seed)
-    } else {
-        wfa_simd::wfa_extend_neon_impl(query, target, seed)
-    }
+    // Always use WFA (O(s·n)), not diagonal DP (O(n×m))
+    wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]

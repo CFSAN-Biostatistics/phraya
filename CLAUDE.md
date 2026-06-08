@@ -6,7 +6,7 @@ General-purpose pairwise sequence aligner for bacterial genomics. Reads/assembli
 
 ## Status
 
-Phase 1 MVP shipped (2026-06-06). Cases 2, 3, 4 working end-to-end. Real WFA, portable SIMD diagonal fill, named filter presets, tandem repeat wiring, real mapq/base-quality/confidence all complete.
+Phase 1 MVP shipped (2026-06-06). Cases 2, 3, 4 working end-to-end. Real WFA O(s·n) alignment, named filter presets, tandem repeat wiring, real mapq/base-quality/confidence all complete.
 
 ## Workspace Structure
 
@@ -28,7 +28,7 @@ phraya-cli/      # Binary CLI: plan/plan-tasks/align/merge/filter subcommands
 - **Deferred filtering**: Alignment produces rich `.phraya` files (multi-mapping, CIGAR, coverage tracks, k-mer uniqueness). Filter parameters applied post-hoc, not during alignment.
 - **Library-first**: `phraya-filter` crate exposes filtering API. CLI is thin wrapper. Enables Python bindings, R integration, custom pipelines.
 - **Evidence-informed alignment**: `.phrayaplan` files contain k-mer landscape + variation hotspots estimated from input sequences before alignment begins.
-- **Platform-native SIMD**: simd-minimizers handles AVX2/NEON dispatch for sketching. WFA diagonal fill uses portable SIMD (`wide` crate) that lowers to SSE4.2/NEON when compiled with `-C target-cpu=native`.
+- **Platform-native SIMD**: simd-minimizers handles AVX2/NEON dispatch for sketching. WFA alignment is currently scalar; SIMD acceleration (if added) will target wavefront operations, not diagonal DP.
 - **Sketch reuse**: `phraya plan` computes `MinimizerSketch` per sequence and stores them in `.phrayaplan` (v2) keyed by sequence ID. `phraya align` reuses them instead of recomputing; falls back to recomputing if sketch not in plan.
 
 ## Pipeline
@@ -133,7 +133,7 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 - Automatic centroid selection (Case 3): providing `--reference` overrides; omitting it triggers centroid selection. No separate flag needed.
 - BAM/CRAM input via `noodles` (pure Rust, no htslib)
 - `.phrayaplan` v2 with sketch reuse
-- Real WFA O(s·n) alignment with portable SIMD diagonal fill (`wide` crate, lowers to SSE4.2/NEON when compiled with `-C target-cpu=native`)
+- Real WFA O(s·n) alignment (wavefront-based, not diagonal DP)
 - Real local coverage (±50bp window from alignment, not stubbed)
 - mapq, avg_base_quality, confidence derived from input data (BAM records / alignment score)
 - Tandem repeat detection wired end-to-end: annotation on variants, `exclude_tandem_repeats` filter option
@@ -160,7 +160,7 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 ## Coding Conventions
 
 - Stable Rust (not nightly for library crates)
-- No unsafe unless SIMD intrinsics (WFA diagonal fill), then document SAFETY invariants
+- No unsafe unless necessary (none currently in WFA code)
 - Tests alongside code (`#[cfg(test)] mod tests`)
 - Benchmarks in `benches/` (criterion)
 - Library-first: `phraya-filter` crate exposes public API, CLI is thin wrapper

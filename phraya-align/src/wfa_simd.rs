@@ -668,6 +668,13 @@ impl DiagMatrix {
 /// preceding diagonals as contiguous slices, so they load straight into vectors
 /// and the result stores straight into diagonal `d`'s block (see [`DiagMatrix`]).
 ///
+/// **NOTE:** This is O(n×m) complexity. Production uses `fill_wfa_fitting` which
+/// is O(s·n) where s = edit distance. This function exists for:
+/// - Differential correctness testing vs `fill_scalar`
+/// - Validating portable SIMD lowering on different architectures
+///
+/// NOT used in production alignment (too slow for genomics workloads).
+///
 /// `#[inline(never)]` keeps this a distinct symbol so `scripts/assert_simd.sh`
 /// can disassemble it and confirm the loop lowered to real vector instructions.
 #[inline(never)]
