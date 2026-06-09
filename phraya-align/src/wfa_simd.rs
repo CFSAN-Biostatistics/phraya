@@ -133,7 +133,7 @@ fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
     let k0_idx = tn as usize; // diagonal 0 offset
     wf_cur[k0_idx] = extend(0, 0);
 
-    let mut ops_cur = vec![0u8; size];
+    let ops_cur = vec![0u8; size];
 
     // Check termination at s=0
     let target_diag = qn - tn; // diagonal of end cell
@@ -257,7 +257,7 @@ fn fill_wfa_fitting(q: &[u8], t: &[u8]) -> (String, usize, usize) {
 
     let k0_idx = tn as usize;
     wf_cur[k0_idx] = extend(0, 0);
-    let mut ops_cur = vec![0u8; size];
+    let ops_cur = vec![0u8; size];
 
     if let Some((t_end, k_win)) = fitting_end_k(&wf_cur, qn, tn) {
         wf_hist.push((wf_cur, ops_cur));
@@ -377,6 +377,7 @@ fn traceback_wfa_with_tend(
 
         let (wf, wf_ops) = &hist[s as usize];
         let op = if ki < wf_ops.len() { wf_ops[ki] } else { 0 };
+        #[allow(unused_variables)]
         let cur_pos = if ki < wf.len() { wf[ki] } else { 0 };
 
         let prev_wf = &hist[s as usize - 1].0;
@@ -466,6 +467,7 @@ fn traceback_wfa(
 
         let (wf, wf_ops) = &hist[s as usize];
         let op = if ki < wf_ops.len() { wf_ops[ki] } else { 0 };
+        #[allow(unused_variables)]
         let cur_pos = if ki < wf.len() { wf[ki] } else { 0 };
 
         // How many match steps were taken in extend for this diagonal at this s?
