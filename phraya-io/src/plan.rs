@@ -5,7 +5,7 @@ use std::path::Path;
 use thiserror::Error;
 
 /// PhrayaPlan format version for forward compatibility
-pub const PHRAYAPLAN_VERSION: u32 = 2;
+pub const PHRAYAPLAN_VERSION: u32 = 3;
 
 /// Plan file format errors
 #[derive(Debug, Error, Serialize, Deserialize)]
@@ -35,6 +35,19 @@ pub enum UseCase {
     ContigsOnly = 4,
 }
 
+/// K-mer sketching parameters used during planning
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KmerParams {
+    pub k: usize,
+    pub w: usize,
+}
+
+impl Default for KmerParams {
+    fn default() -> Self {
+        Self { k: 21, w: 11 }
+    }
+}
+
 /// PhrayaPlan: read-only reference for alignment workers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhrayaPlan {
@@ -55,6 +68,27 @@ pub struct PhrayaPlan {
     /// Variation hotspot intervals detected at plan time: (start, end) pairs
     #[serde(default)]
     pub hotspot_intervals: Vec<(u32, u32)>,
+    /// Read counts per input file (for batch-mode indexing)
+    #[serde(default)]
+    pub reads_per_file: Vec<usize>,
+    /// Total read count across all inputs
+    #[serde(default)]
+    pub total_read_count: usize,
+    /// K-mer sketching parameters used during planning
+    #[serde(default)]
+    pub kmer_params: KmerParams,
+    /// Batch mode: divide into N chunks
+    #[serde(default)]
+    pub batch_num_chunks: Option<usize>,
+    /// Batch mode: X reads per chunk
+    #[serde(default)]
+    pub batch_reads_per_chunk: Option<usize>,
+    /// Byte offsets for start of each read, per input file
+    #[serde(default)]
+    pub read_byte_offsets: Vec<Vec<u64>>,
+    /// Output paths for each batch chunk (empty if no batching)
+    #[serde(default)]
+    pub batch_output_paths: Vec<String>,
 }
 
 impl PhrayaPlan {
@@ -76,6 +110,13 @@ impl PhrayaPlan {
             kmer_uniqueness,
             task_list,
             hotspot_intervals: Vec::new(),
+            reads_per_file: Vec::new(),
+            total_read_count: 0,
+            kmer_params: KmerParams::default(),
+            batch_num_chunks: None,
+            batch_reads_per_chunk: None,
+            read_byte_offsets: Vec::new(),
+            batch_output_paths: Vec::new(),
         }
     }
 
@@ -307,5 +348,46 @@ mod tests {
 
         let result = read_plan(temp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn round_trip_v3_batch_fields() {
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["reads_1.fq".to_string(), "reads_2.fq".to_string()],
+            "2026-06-09T12:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        plan.reads_per_file = vec![1000, 1000];
+        plan.total_read_count = 2000;
+        plan.kmer_params = KmerParams { k: 21, w: 11 };
+        plan.batch_num_chunks = Some(16);
+        plan.batch_reads_per_chunk = Some(125);
+        plan.read_byte_offsets = vec![
+            vec![0, 100, 200, 300],
+            vec![0, 110, 220, 330],
+        ];
+        plan.batch_output_paths = vec![
+            "out_0.phraya".to_string(),
+            "out_1.phraya".to_string(),
+        ];
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+        let read_plan = read_plan(temp.path()).unwrap();
+
+        assert_eq!(read_plan.version, 3);
+        assert_eq!(read_plan.reads_per_file, vec![1000, 1000]);
+        assert_eq!(read_plan.total_read_count, 2000);
+        assert_eq!(read_plan.kmer_params.k, 21);
+        assert_eq!(read_plan.kmer_params.w, 11);
+        assert_eq!(read_plan.batch_num_chunks, Some(16));
+        assert_eq!(read_plan.batch_reads_per_chunk, Some(125));
+        assert_eq!(read_plan.read_byte_offsets.len(), 2);
+        assert_eq!(read_plan.read_byte_offsets[0], vec![0, 100, 200, 300]);
+        assert_eq!(read_plan.batch_output_paths.len(), 2);
     }
 }

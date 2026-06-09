@@ -38,6 +38,18 @@ enum Commands {
         /// Output plan file
         #[arg(long, value_name = "FILE", required = true)]
         output: PathBuf,
+
+        /// Batch mode: divide reads into N chunks
+        #[arg(long, value_name = "N", conflicts_with = "batch_by")]
+        batch_to: Option<usize>,
+
+        /// Batch mode: X reads per chunk
+        #[arg(long, value_name = "N", conflicts_with = "batch_to")]
+        batch_by: Option<usize>,
+
+        /// Batch output pattern with {worker} placeholder (required if batch_to or batch_by specified)
+        #[arg(long, value_name = "PATTERN")]
+        batch_output_pattern: Option<String>,
     },
     /// Extract task list from a .phrayaplan file and output as TSV
     PlanTasks {
@@ -61,21 +73,29 @@ enum Commands {
         #[arg(value_name = "PLAN_FILE")]
         plan_file: PathBuf,
 
-        /// Query sequence ID
+        /// Query sequence ID (not used in batch mode)
         #[arg(value_name = "QUERY_ID")]
-        query_id: String,
+        query_id: Option<String>,
 
-        /// Target sequence ID
+        /// Target sequence ID (not used in batch mode)
         #[arg(value_name = "TARGET_ID")]
-        target_id: String,
+        target_id: Option<String>,
 
-        /// Output .phraya file
-        #[arg(long, value_name = "FILE", required = true)]
-        output: PathBuf,
+        /// Output .phraya file (not used in batch --worker mode, taken from plan)
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
 
         /// Alignment strategy: fast (±150bp window), balanced (±50bp, default), exact (±25bp)
         #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
         strategy: String,
+
+        /// Batch mode: worker ID (0-indexed)
+        #[arg(long, value_name = "N")]
+        worker: Option<usize>,
+
+        /// Batch mode: process all missing chunks sequentially
+        #[arg(long)]
+        ensure: bool,
     },
     /// Filter .phraya file by thresholds and output in specified format
     Filter {
@@ -127,8 +147,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             inputs,
             reference,
             output,
+            batch_to,
+            batch_by,
+            batch_output_pattern,
         } => {
-            run_plan(&inputs, reference.as_deref(), &output)?;
+            // Validate batch flags
+            if (batch_to.is_some() || batch_by.is_some()) && batch_output_pattern.is_none() {
+                return Err("--batch-output-pattern required when --batch-to or --batch-by specified".into());
+            }
+            run_plan(&inputs, reference.as_deref(), &output, batch_to, batch_by, batch_output_pattern.as_deref())?;
         }
         Commands::PlanTasks { plan_file } => {
             plan_tasks(&plan_file)?;
@@ -139,6 +166,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             target_id,
             output,
             strategy,
+            worker,
+            ensure,
         } => {
             let strat = match strategy.as_str() {
                 "fast" => Strategy::Fast,
@@ -146,7 +175,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "exact" => Strategy::Exact,
                 other => return Err(format!("unknown strategy: {other}; expected fast, balanced, or exact").into()),
             };
-            run_align(&plan_file, &query_id, &target_id, &output, AlignConfig::new(strat))?;
+
+            if ensure {
+                run_align_ensure(&plan_file, AlignConfig::new(strat))?;
+            } else if let Some(worker_id) = worker {
+                if output.is_some() {
+                    return Err("--output not allowed with --worker (output path from plan)".into());
+                }
+                run_align_worker(&plan_file, worker_id, AlignConfig::new(strat))?;
+            } else {
+                // Traditional mode
+                let query = query_id.ok_or("QUERY_ID required in traditional mode")?;
+                let target = target_id.ok_or("TARGET_ID required in traditional mode")?;
+                let out = output.ok_or("--output required in traditional mode")?;
+                run_align(&plan_file, &query, &target, &out, AlignConfig::new(strat))?;
+            }
         }
         Commands::Merge { inputs, output } => {
             run_merge(&inputs, &output)?;
@@ -234,10 +277,203 @@ fn run_align(
     Ok(())
 }
 
+/// Align specific worker chunk in batch mode
+fn run_align_worker(
+    plan_path: &std::path::Path,
+    worker_id: usize,
+    config: AlignConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let plan = plan::read_plan(plan_path)?;
+
+    // Validate worker ID
+    let num_chunks = plan.batch_num_chunks.ok_or("Plan has no batch configuration")?;
+    if worker_id >= num_chunks {
+        return Err(format!("Worker {} out of range for {} chunks", worker_id, num_chunks).into());
+    }
+
+    // Get output path from plan
+    let output_path = plan.batch_output_paths.get(worker_id)
+        .ok_or(format!("No output path for worker {}", worker_id))?;
+
+    // Calculate chunk boundaries (exclude reference from read pool if present)
+    // Batch mode only processes query reads, not the reference
+    let ref_count = if !plan.input_files.is_empty() && plan.reads_per_file.len() > 1 {
+        plan.reads_per_file[0] // Assume first file is reference
+    } else {
+        0
+    };
+    let query_read_count = plan.total_read_count.saturating_sub(ref_count);
+
+    let chunk_size = if let Some(reads_per) = plan.batch_reads_per_chunk {
+        reads_per
+    } else {
+        (query_read_count + num_chunks - 1) / num_chunks
+    };
+    let start_idx = worker_id * chunk_size;
+    let end_idx = std::cmp::min(start_idx + chunk_size, query_read_count);
+
+    eprintln!("Worker {} processing reads [{}, {})", worker_id, start_idx, end_idx);
+
+    // Read target sequence (reference or centroid)
+    // For now, assume target is first sequence in first file
+    let mut target_seq: Option<Sequence> = None;
+    let mut parser = SequenceParser::from_path(&plan.input_files[0])?;
+    if let Some(result) = parser.next() {
+        target_seq = Some(result?);
+    }
+    let target = target_seq.ok_or("No target sequence found")?;
+
+    // Extract and align reads in this chunk
+    let mut all_variants = Vec::new();
+    let mut all_query_positions = HashMap::new();
+    let mut coverage_track = vec![0u32; target.len()];
+
+    for global_idx in start_idx..end_idx {
+        // Map global_idx to (file_idx, local_idx)
+        let (file_idx, local_idx) = map_global_to_local(&plan, global_idx)?;
+
+        // Extract sequence at byte offset
+        let seq = extract_sequence_at_offset(&plan, file_idx, local_idx)?;
+        let query_id = seq.id().to_string();
+
+        // Align
+        if let Some(result) = align_task_with_config(&seq, &target, &plan, &config) {
+            all_variants.extend(result.variants);
+            all_query_positions.insert(query_id, result.query_positions);
+            for (i, &cov) in result.coverage_track.iter().enumerate() {
+                coverage_track[i] += cov;
+            }
+        }
+    }
+
+    // Write output
+    let coverage = CoverageTrack::new(coverage_track.iter().map(|&v| v as usize).collect());
+    let phraya_file = phraya::PhrayaFile::new(
+        target.len() as u32,
+        format!("worker_{}", worker_id),
+        chrono::Utc::now().to_rfc3339(),
+        all_variants,
+        coverage,
+    );
+    phraya::write_phraya(std::path::Path::new(output_path), &phraya_file)?;
+
+    // Write queries sidecar
+    let mut index = queries::QueryIndex::new();
+    for (qid, positions) in all_query_positions {
+        index.insert(qid, positions);
+    }
+    let queries_path = format!("{}.queries", output_path);
+    queries::write_queries(std::path::Path::new(&queries_path), &index)?;
+
+    eprintln!("Worker {} complete: {} observations written to {}", worker_id, phraya_file.observations.len(), output_path);
+    Ok(())
+}
+
+/// Map global read index to (file_idx, local_idx), skipping reference (file 0)
+fn map_global_to_local(plan: &PhrayaPlan, global_idx: usize) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let mut cumulative = 0;
+    // Start from file 1 (skip reference at file 0)
+    for (file_idx, &count) in plan.reads_per_file.iter().enumerate().skip(1) {
+        if global_idx < cumulative + count {
+            return Ok((file_idx, global_idx - cumulative));
+        }
+        cumulative += count;
+    }
+    Err(format!("Global index {} out of bounds", global_idx).into())
+}
+
+/// Process all missing chunks in batch mode
+fn run_align_ensure(
+    plan_path: &std::path::Path,
+    config: AlignConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let plan = plan::read_plan(plan_path)?;
+
+    let _num_chunks = plan.batch_num_chunks.ok_or("Plan has no batch configuration")?;
+    let mut missing_chunks = Vec::new();
+
+    // Find missing outputs
+    for (worker_id, output_path) in plan.batch_output_paths.iter().enumerate() {
+        if !std::path::Path::new(output_path).exists() {
+            missing_chunks.push(worker_id);
+        }
+    }
+
+    if missing_chunks.is_empty() {
+        eprintln!("All chunks already complete");
+        return Ok(());
+    }
+
+    eprintln!("Processing {} missing chunks", missing_chunks.len());
+
+    for (i, worker_id) in missing_chunks.iter().enumerate() {
+        eprintln!("Processing chunk {}/{}: worker {}", i + 1, missing_chunks.len(), worker_id);
+        run_align_worker(plan_path, *worker_id, config.clone())?;
+    }
+
+    eprintln!("Ensure mode complete");
+    Ok(())
+}
+
+/// Extract sequence at specific byte offset
+fn extract_sequence_at_offset(
+    plan: &PhrayaPlan,
+    file_idx: usize,
+    local_idx: usize,
+) -> Result<Sequence, Box<dyn std::error::Error>> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let file_path = &plan.input_files[file_idx];
+    let offset = plan.read_byte_offsets[file_idx][local_idx];
+
+    let file = File::open(file_path)?;
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(offset))?;
+
+    // Parse one record manually (FASTA or FASTQ)
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+
+    if line.starts_with('>') {
+        // FASTA format
+        let id = line[1..].trim().to_string();
+        let mut sequence = String::new();
+        line.clear();
+        while reader.read_line(&mut line)? > 0 {
+            if line.starts_with('>') {
+                break;
+            }
+            sequence.push_str(line.trim());
+            line.clear();
+        }
+        Ok(Sequence::new(sequence.into_bytes(), None, id, None))
+    } else if line.starts_with('@') {
+        // FASTQ format
+        let id = line[1..].trim().to_string();
+        line.clear();
+        reader.read_line(&mut line)?;
+        let sequence = line.trim().to_string();
+        // Skip + and quality lines
+        line.clear();
+        reader.read_line(&mut line)?; // +
+        line.clear();
+        let mut quality_line = String::new();
+        reader.read_line(&mut quality_line)?;
+        let quality = quality_line.trim().as_bytes().to_vec();
+        Ok(Sequence::new(sequence.into_bytes(), Some(quality), id, None))
+    } else {
+        Err(format!("Unknown format at offset {} in {}", offset, file_path).into())
+    }
+}
+
 fn run_plan(
     input_paths: &[PathBuf],
     reference_path: Option<&std::path::Path>,
     output_path: &PathBuf,
+    batch_to: Option<usize>,
+    batch_by: Option<usize>,
+    batch_output_pattern: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Read all input sequences and track which file they came from
     let mut all_sequences: Vec<(Sequence, String)> = Vec::new();
@@ -322,6 +558,10 @@ fn run_plan(
         .map(|((seq, _), sketch)| (seq.id().to_string(), sketch.clone()))
         .collect();
 
+    // Build byte offset index and read counts for batch mode
+    let (read_byte_offsets, reads_per_file, total_read_count) =
+        build_byte_offset_index(reference_path, input_paths)?;
+
     // Create and write plan
     let mut plan = PhrayaPlan::new(
         use_case,
@@ -332,11 +572,172 @@ fn run_plan(
         task_list,
     );
     plan.hotspot_intervals = hotspot_intervals;
+    plan.read_byte_offsets = read_byte_offsets;
+    plan.reads_per_file = reads_per_file;
+    plan.total_read_count = total_read_count;
+    plan.kmer_params = phraya_io::plan::KmerParams { k: 21, w: 11 };
+
+    // Handle batch mode configuration
+    if let Some(batch_pattern) = batch_output_pattern {
+        configure_batch_mode(&mut plan, batch_to, batch_by, batch_pattern)?;
+    }
 
     write_plan(output_path, &plan)?;
 
     info!("Plan written to {:?}", output_path);
     Ok(())
+}
+
+/// Build byte offset index for all input files
+fn build_byte_offset_index(
+    reference_path: Option<&std::path::Path>,
+    input_paths: &[PathBuf],
+) -> Result<(Vec<Vec<u64>>, Vec<usize>, usize), Box<dyn std::error::Error>> {
+    let mut all_offsets = Vec::new();
+    let mut all_counts = Vec::new();
+    let mut total = 0;
+
+    // Process reference first if present
+    if let Some(ref_path) = reference_path {
+        let (offsets, count) = index_file_offsets(ref_path)?;
+        all_offsets.push(offsets);
+        all_counts.push(count);
+        total += count;
+    }
+
+    // Process input files
+    for input_path in input_paths {
+        let (offsets, count) = index_file_offsets(input_path)?;
+        all_offsets.push(offsets);
+        all_counts.push(count);
+        total += count;
+    }
+
+    Ok((all_offsets, all_counts, total))
+}
+
+/// Configure batch mode for the plan
+fn configure_batch_mode(
+    plan: &mut PhrayaPlan,
+    batch_to: Option<usize>,
+    batch_by: Option<usize>,
+    batch_pattern: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+
+    // Determine num_chunks based on flags
+    let num_chunks = if let Some(n) = batch_to {
+        plan.batch_num_chunks = Some(n);
+        if let Some(reads_per) = batch_by {
+            plan.batch_reads_per_chunk = Some(reads_per);
+            // Validate coverage
+            let expected_total = n * reads_per;
+            if expected_total < plan.total_read_count {
+                eprintln!(
+                    "Warning: under-provisioned batch config. {} chunks × {} reads/chunk = {} < {} total reads",
+                    n, reads_per, expected_total, plan.total_read_count
+                );
+            } else if expected_total > plan.total_read_count {
+                eprintln!(
+                    "Warning: over-provisioned batch config. {} chunks × {} reads/chunk = {} > {} total reads",
+                    n, reads_per, expected_total, plan.total_read_count
+                );
+            }
+        }
+        n
+    } else if let Some(reads_per) = batch_by {
+        plan.batch_reads_per_chunk = Some(reads_per);
+        let n = (plan.total_read_count + reads_per - 1) / reads_per; // Ceiling division
+        plan.batch_num_chunks = Some(n);
+        n
+    } else {
+        return Err("Either --batch-to or --batch-by must be specified".into());
+    };
+
+    // Expand output pattern
+    let mut expanded_paths = Vec::new();
+    for worker_id in 0..num_chunks {
+        let path = batch_pattern.replace("{worker}", &worker_id.to_string());
+        expanded_paths.push(path);
+    }
+
+    // Check for collisions
+    let unique_paths: HashSet<_> = expanded_paths.iter().collect();
+    if unique_paths.len() != expanded_paths.len() {
+        return Err("Batch output paths contain collisions (non-unique paths)".into());
+    }
+
+    plan.batch_output_paths = expanded_paths;
+    Ok(())
+}
+
+/// Index byte offsets for a single file
+fn index_file_offsets(path: &std::path::Path) -> Result<(Vec<u64>, usize), Box<dyn std::error::Error>> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut offsets = Vec::new();
+    let mut position: u64 = 0;
+    let mut line = String::new();
+
+    // Detect format
+    reader.read_line(&mut line)?;
+    let is_fasta = line.starts_with('>');
+    let is_fastq = line.starts_with('@');
+
+    reader.seek(SeekFrom::Start(0))?;
+    position = 0;
+    line.clear();
+
+    if is_fasta {
+        // FASTA: record starts with '>'
+        loop {
+            let start_pos = position;
+            let bytes_read = reader.read_line(&mut line)?;
+            if bytes_read == 0 {
+                break;
+            }
+            if line.starts_with('>') {
+                offsets.push(start_pos);
+            }
+            position += bytes_read as u64;
+            line.clear();
+        }
+    } else if is_fastq {
+        // FASTQ: 4-line records, starts with '@'
+        loop {
+            let start_pos = position;
+            // Read header
+            let bytes_read = reader.read_line(&mut line)?;
+            if bytes_read == 0 {
+                break;
+            }
+            if line.starts_with('@') {
+                offsets.push(start_pos);
+                position += bytes_read as u64;
+                line.clear();
+                // Skip sequence, +, quality lines
+                for _ in 0..3 {
+                    let n = reader.read_line(&mut line)?;
+                    position += n as u64;
+                    line.clear();
+                }
+            } else {
+                position += bytes_read as u64;
+                line.clear();
+            }
+        }
+    } else {
+        // BAM/CRAM: not text-based, can't build simple byte offset index
+        // For now, return empty offsets (batch mode won't work for BAM/CRAM inputs)
+        eprintln!("Warning: byte offset indexing not supported for BAM/CRAM files");
+        return Ok((Vec::new(), 0));
+    }
+
+    let count = offsets.len();
+    Ok((offsets, count))
 }
 
 fn plan_tasks(plan_file: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -496,17 +897,41 @@ fn run_merge(
         return Err("No input files specified".into());
     }
 
+    // Auto-detect plan file
+    if input_paths.len() == 1 && input_paths[0].extension().and_then(|s| s.to_str()) == Some("phrayaplan") {
+        eprintln!("Detected plan file, merging batch outputs...");
+        let plan = plan::read_plan(&input_paths[0])?;
+
+        if plan.batch_output_paths.is_empty() {
+            return Err("Plan has no batch outputs to merge".into());
+        }
+
+        // Verify all outputs exist
+        for (idx, output_path_str) in plan.batch_output_paths.iter().enumerate() {
+            let path = std::path::Path::new(output_path_str);
+            if !path.exists() {
+                return Err(format!(
+                    "Missing batch output {} (worker {}). Run with --ensure to complete.",
+                    output_path_str, idx
+                ).into());
+            }
+        }
+
+        eprintln!("Merging {} batch outputs...", plan.batch_output_paths.len());
+        let paths: Vec<&std::path::Path> = plan.batch_output_paths.iter()
+            .map(|s| std::path::Path::new(s.as_str()))
+            .collect();
+        let merged = phraya::merge_phraya_files(&paths)?;
+        phraya::write_phraya(output_path, &merged)?;
+        eprintln!("Merged file written to {:?}", output_path);
+        return Ok(());
+    }
+
+    // Traditional mode
     eprintln!("Merging {} samples...", input_paths.len());
-
-    // Convert PathBuf references to &Path for the merge function
     let paths: Vec<&std::path::Path> = input_paths.iter().map(|p| p.as_path()).collect();
-
-    // Merge the files
     let merged = phraya::merge_phraya_files(&paths)?;
-
-    // Write the merged file
     phraya::write_phraya(output_path, &merged)?;
-
     eprintln!("Merged file written to {:?}", output_path);
 
     Ok(())
