@@ -96,7 +96,7 @@ if [[ $TARGET_COUNT -eq 0 ]]; then
 fi
 
 # Array dimensions: targets × aligners × replicates
-ALIGNERS=("bwa-mem2" "minimap2")
+ALIGNERS=("bwa-mem2" "minimap2" "phraya")
 NUM_ALIGNERS=${#ALIGNERS[@]}
 ARRAY_SIZE=$((TARGET_COUNT * NUM_ALIGNERS * REPLICATES))
 

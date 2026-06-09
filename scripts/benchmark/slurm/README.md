@@ -7,7 +7,11 @@ Production-grade SLURM benchmarking suite for comparing BWA-MEM2 and minimap2 ac
 ```bash
 cd ~/phraya/scripts/benchmark/slurm
 
+# Build phraya first (required)
+cd ~/phraya && cargo build --release
+
 # Dry run (preview tasks without submitting)
+cd ~/phraya/scripts/benchmark/slurm
 ./run_benchmark.sh --dry-run
 
 # Run on default targets (small + medium: T1-T7b, 9 targets)
@@ -31,9 +35,9 @@ cd ~/phraya/scripts/benchmark/slurm
 - Module system with `bwa-mem2`, `minimap2`, `samtools`
 - Adjust module names in `config/global.env` if needed
 
-### Phraya (Phase 2)
-- Phraya integration **blocked on issue #160** (batch-mode feature)
-- Phase 1 benchmarks BWA-MEM2 vs minimap2 only
+### Phraya
+- Build phraya: `cd ~/phraya && cargo build --release`
+- Binary location: `~/phraya/target/release/phraya` (configurable via `PHRAYA_ROOT` in global.env)
 
 ## Directory Structure
 
@@ -47,7 +51,8 @@ phraya/scripts/benchmark/slurm/
 │   └── global.env            # Environment variables
 ├── wrappers/
 │   ├── bwa-mem2.sh           # BWA-MEM2 invocation + timing
-│   └── minimap2.sh           # minimap2 invocation + timing
+│   ├── minimap2.sh           # minimap2 invocation + timing
+│   └── phraya.sh             # phraya invocation + timing (batch-mode)
 └── utils/
     ├── nodelist.sh           # Query sinfo for node rotation
     ├── parse_time.py         # Parse /usr/bin/time -v → JSON
@@ -68,8 +73,8 @@ results/
 
 ### SLURM Array Jobs
 - Single array job with 3D indexing: `task_id → (target_idx, aligner_idx, replicate_idx)`
-- Array size: `N_targets × 2_aligners × 3_replicates`
-- Example: 9 targets × 2 aligners × 3 reps = 54 tasks
+- Array size: `N_targets × 3_aligners × 3_replicates`
+- Example: 9 targets × 3 aligners × 3 reps = 81 tasks
 
 ### Node Rotation
 - Each replicate runs on different node → averages hardware quirks
@@ -131,6 +136,7 @@ MODULE_SAMTOOLS="samtools"
 ### 2. Index Building (once per target)
 - BWA-MEM2: `bwa-mem2 index reference.fasta`
 - minimap2: `minimap2 -d reference.mmi reference.fasta`
+- phraya: sketches computed during `phraya plan` (no separate index)
 - flock-protected (one index build per target across all replicates)
 
 ### 3. Alignment (array job)
@@ -233,7 +239,7 @@ WARNING: bwa-mem2 T3 has CV=8.2% (>5%)
 ### Small-Scale Test
 ```bash
 # Edit targets.conf → only T3 (MTB, 4.4 Mb)
-./run_benchmark.sh --dry-run  # Array size: 2 aligners × 3 reps = 6
+./run_benchmark.sh --dry-run  # Array size: 3 aligners × 3 reps = 9
 ./run_benchmark.sh
 
 # Monitor
@@ -247,11 +253,11 @@ cat results/run_*/results.json | jq .
 
 ### Full Benchmark
 - Default targets: 9 targets (T1-T7b, exclude T8b/T8c)
-- Array size: 9 × 2 × 3 = 54 tasks
+- Array size: 9 × 3 × 3 = 81 tasks
 - Expected runtime: ~4-6 hours (dominated by T1 chr1 249Mb, T2 chicken 1Gb)
 
 ### Success Criteria
-- [ ] All 54 tasks complete without error
+- [ ] All 81 tasks complete without error (9 targets × 3 aligners × 3 replicates)
 - [ ] CV < 5% for each (target, aligner) across 3 replicates
 - [ ] `results.json` validates against score.py schema
 - [ ] score.py produces BNT, CAS, CBS table
@@ -286,17 +292,16 @@ Index "bloat factor" (lower is better).
 
 ## Known Limitations
 
-### Phase 1 (Current)
-- ✅ BWA-MEM2 and minimap2 working end-to-end
-- ✅ PA computation automated (paftools.js mapeval)
+### Phase 1 (Complete)
+- ✅ BWA-MEM2, minimap2, and **phraya** working end-to-end
+- ✅ Phraya batch-mode integration (issue #160 resolved, commit 7551134)
+- ✅ PA computation automated (paftools.js mapeval for BWA/minimap2)
 - ✅ Read counting automated (FASTQ wc -l)
 - ✅ Genome sizes from targets.conf (hard-coded)
-- ⚠️ Phraya integration **blocked on issue #160** (batch-mode CLI)
-- ⚠️ MCS (MAPQ calibration) still placeholder (requires MAPQ stratification)
 
 ### Phase 2 (Future)
-- Add phraya wrapper once batch-mode ships (#160)
-- Implement MCS computation (MAPQ-stratified PA analysis)
+- ⚠️ Phraya PA computation: requires SAM export or .phraya → SAM conversion
+- ⚠️ MCS (MAPQ calibration) still placeholder (requires MAPQ stratification)
 - Capture aligner versions from `module show` or `--version`
 - Auto-populate genome sizes in targets.conf (agent to read manifests)
 

@@ -2,6 +2,24 @@
 
 ## Before First Run
 
+### 0. Build Phraya Binary
+
+**Status:** REQUIRED — phraya wrapper expects release binary
+
+**Task:** Build phraya release binary:
+```bash
+cd ~/phraya
+cargo build --release
+# Binary: target/release/phraya
+```
+
+**Verification:**
+```bash
+~/phraya/target/release/phraya --version
+```
+
+## Before First Run
+
 ### 1. Populate Genome Sizes in targets.conf
 
 **Status:** REQUIRED — all entries currently have `0.0` placeholder
@@ -84,6 +102,21 @@ cd ~/phraya/scripts/benchmark/slurm
 PARTITION="${SLURM_PARTITION:-batch}"  # Change "batch" to your partition
 ```
 
+### 4a. Verify Phraya Thread Control
+
+**Status:** IMPORTANT — phraya doesn't have -t flag yet
+
+**Current approach:** phraya wrapper sets `RAYON_NUM_THREADS=$THREADS` env var
+
+**Verification:**
+```bash
+cd ~/phraya
+RAYON_NUM_THREADS=8 target/release/phraya --help
+# Should run without error
+```
+
+**Known limitation:** If phraya spawns processes that don't respect RAYON_NUM_THREADS, fair thread comparison with BWA/minimap2 may be invalid.
+
 ## Before Full Run
 
 ### 5. Small-Scale Validation
@@ -102,7 +135,7 @@ EOF
 
 # Dry run
 ./run_benchmark.sh --targets config/test_targets.conf --dry-run
-# Expected: 2 aligners × 3 reps = 6 tasks
+# Expected: 3 aligners × 3 reps = 9 tasks
 
 # Real run
 ./run_benchmark.sh --targets config/test_targets.conf
@@ -117,7 +150,7 @@ cat results/run_*/results.json | jq .
 ```
 
 **Success criteria:**
-- All 6 tasks complete without error
+- All 9 tasks complete without error
 - `timing.json` files present for all replicates
 - `results.json` contains valid PA and read counts (not 0.0 or "unknown")
 - CV < 5% for both aligners
@@ -206,11 +239,11 @@ Aggregate in `aggregate_results.py`.
 
 **Small-scale validation:**
 - [ ] Dry run with T3 only
-- [ ] Real run with T3 only (6 tasks)
+- [ ] Real run with T3 only (9 tasks)
 - [ ] Verify results.json has valid PA and read counts
 
 **Full benchmark:**
-- [ ] Run on 9 default targets (54 tasks)
+- [ ] Run on 9 default targets (81 tasks)
 - [ ] Check aggregation logs for timeouts
 - [ ] Feed results.json to score.py
 - [ ] Validate BNT/CAS/CBS output

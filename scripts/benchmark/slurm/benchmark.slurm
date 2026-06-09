@@ -27,7 +27,7 @@ fi
 
 # Decode array task ID → (target_idx, aligner_idx, replicate_idx)
 TASK_ID=${SLURM_ARRAY_TASK_ID}
-NUM_ALIGNERS=2  # bwa-mem2, minimap2
+NUM_ALIGNERS=3  # bwa-mem2, minimap2, phraya
 NUM_REPLICATES=$REPLICATES
 
 TARGET_IDX=$((TASK_ID / (NUM_ALIGNERS * NUM_REPLICATES)))
@@ -35,7 +35,7 @@ ALIGNER_IDX=$(((TASK_ID / NUM_REPLICATES) % NUM_ALIGNERS))
 REPLICATE_IDX=$((TASK_ID % NUM_REPLICATES))
 
 # Map aligner index to name
-ALIGNERS=("bwa-mem2" "minimap2")
+ALIGNERS=("bwa-mem2" "minimap2" "phraya")
 ALIGNER="${ALIGNERS[$ALIGNER_IDX]}"
 
 # Read target from targets.conf (skip comments, filter large if needed)
@@ -103,6 +103,16 @@ case $ALIGNER in
                     minimap2 -d "$INDEX_DIR/reference.mmi" "$REF_FASTA"
                 fi
             ) 200>"$INDEX_DIR/.minimap_index.lock"
+        fi
+        ;;
+    phraya)
+        # phraya computes sketches during plan, no separate index build
+        # Ensure binary exists
+        PHRAYA="${PHRAYA_ROOT}/target/release/phraya"
+        if [[ ! -f "$PHRAYA" ]]; then
+            echo "ERROR: phraya binary not found at $PHRAYA" >&2
+            echo "Build phraya: cd $PHRAYA_ROOT && cargo build --release" >&2
+            exit 1
         fi
         ;;
 esac
