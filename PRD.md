@@ -224,15 +224,23 @@ Key flags:
 
 ## Roadmap
 
-**Phase 1** (8 weeks): Core + assembly alignment (`ContigAligner`, SSE/NEON baseline, `balanced` strategy only, assembly-only manifest)
+**Phase 1** (8 weeks): Core + assembly alignment (`ContigAligner`, SSE/NEON baseline, `balanced` strategy only, assembly-only manifest) ✅ **COMPLETE** (2026-06-06)
 
-**Phase 2** (10 weeks): Reads + SIMD hardening (`ShortReadAligner`, AVX2/AVX-512 dispatch, `exact`/`fast` strategies, `phraya filter`)
+**Phase 2** (7 weeks): Packaging & Distribution — Multi-channel distribution infrastructure addressing the PRD's deployment problem
 
-**Phase 3** (12 weeks): Hybrid + GPU (`HybridAligner`, CUDA batch kernel, mixed manifest, `sketch` strategy, long read scaffold)
+- **Tier 1** (Weeks 1-2): Binary rename (`phraya` not `phraya-cli`), crates.io metadata polish, GitHub Releases workflow (prebuilt binaries for x86_64-linux portable/native, aarch64-linux, x86_64-darwin, aarch64-darwin)
+- **Tier 2** (Weeks 3-5): Docker (multi-arch, push to ghcr.io), Bioconda recipe (PR to bioconda-recipes), Homebrew formula (test locally, PR to homebrew-core)
+- **Tier 3** (Weeks 6-7): Deferred packaging (pixi, .deb, .rpm, Windows native) revisited based on demand
 
-**Phase 4** (14 weeks): Long reads + polish (`LongReadAligner` complete, docs, benchmarks, publication, v1.0)
+**Rationale**: Phase 1 proves the technical foundation. Packaging now means Phase 3+ features ship to users immediately via `conda upgrade phraya` or `docker pull`, not blocked waiting for "eventual packaging." Early packaging surfaces cross-platform issues (Windows, M1 SIMD) before they compound. Addresses PRD deployment problem: "Installing BWA + MUMmer + samtools + their dependencies across platforms is fragile"—Phraya's zero-dependency design only helps if users can *get* the binary easily.
 
-**Total to v1.0**: ~44 weeks
+**Phase 3** (10 weeks): Reads + SIMD hardening (`ShortReadAligner`, AVX2/AVX-512 dispatch, `exact`/`fast` strategies, `phraya filter`)
+
+**Phase 4** (12 weeks): Hybrid + GPU (`HybridAligner`, CUDA batch kernel, mixed manifest, `sketch` strategy, long read scaffold)
+
+**Phase 5** (14 weeks): Long reads + polish (`LongReadAligner` complete, docs, benchmarks, publication, v1.0)
+
+**Total to v1.0**: ~51 weeks
 
 ---
 
