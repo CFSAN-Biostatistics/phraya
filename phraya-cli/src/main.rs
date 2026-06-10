@@ -7,8 +7,9 @@ use phraya_core::types::{
 };
 use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
+    bam_cram::{BamCramParser, ParsedReads},
     phraya,
-    plan::{self, write_plan, PhrayaPlan, UseCase},
+    plan::{self, write_plan, InsertSizeDistribution, PhrayaPlan, UseCase},
     queries,
     SequenceParser,
 };
@@ -96,6 +97,10 @@ enum Commands {
         /// Batch mode: process all missing chunks sequentially
         #[arg(long)]
         ensure: bool,
+
+        /// Number of parallel threads for --ensure mode (default: auto-detect)
+        #[arg(long, value_name = "N")]
+        threads: Option<usize>,
     },
     /// Filter .phraya file by thresholds and output in specified format
     Filter {
@@ -134,6 +139,30 @@ enum Commands {
         /// Named filter preset (conservative or sensitive). Individual threshold flags override preset values.
         #[arg(long, value_name = "PRESET")]
         preset: Option<String>,
+
+        /// Exclude discordant pairs (insert size beyond mean ± 3σ)
+        #[arg(long)]
+        exclude_discordant_pairs: bool,
+
+        /// Sigma threshold for discordant pair detection (default: 3.0)
+        #[arg(long, value_name = "F", default_value = "3.0")]
+        discordant_sigma: f64,
+
+        /// Require proper pairs (SAM flag 0x2)
+        #[arg(long)]
+        require_proper_pairs: bool,
+
+        /// Minimum insert size (absolute value)
+        #[arg(long, value_name = "N")]
+        min_insert_size: Option<i32>,
+
+        /// Maximum insert size (absolute value)
+        #[arg(long, value_name = "N")]
+        max_insert_size: Option<i32>,
+
+        /// Require both mates mapped
+        #[arg(long)]
+        require_both_mates_mapped: bool,
     },
 }
 
@@ -168,6 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             strategy,
             worker,
             ensure,
+            threads,
         } => {
             let strat = match strategy.as_str() {
                 "fast" => Strategy::Fast,
@@ -177,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             if ensure {
-                run_align_ensure(&plan_file, AlignConfig::new(strat))?;
+                run_align_ensure(&plan_file, AlignConfig::new(strat), threads)?;
             } else if let Some(worker_id) = worker {
                 if output.is_some() {
                     return Err("--output not allowed with --worker (output path from plan)".into());
@@ -204,6 +234,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format,
             output,
             preset,
+            exclude_discordant_pairs,
+            discordant_sigma,
+            require_proper_pairs,
+            min_insert_size,
+            max_insert_size,
+            require_both_mates_mapped,
         } => {
             run_filter(
                 &input,
@@ -215,6 +251,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &format,
                 output.as_deref(),
                 preset.as_deref(),
+                exclude_discordant_pairs,
+                discordant_sigma,
+                require_proper_pairs,
+                min_insert_size,
+                max_insert_size,
+                require_both_mates_mapped,
             )?;
         }
     }
@@ -284,6 +326,15 @@ fn run_align_worker(
     config: AlignConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let plan = plan::read_plan(plan_path)?;
+    run_align_worker_with_plan(worker_id, &plan, config)
+}
+
+/// Align worker chunk with borrowed plan (for parallel execution)
+fn run_align_worker_with_plan(
+    worker_id: usize,
+    plan: &PhrayaPlan,
+    config: AlignConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
 
     // Validate worker ID
     let num_chunks = plan.batch_num_chunks.ok_or("Plan has no batch configuration")?;
@@ -386,8 +437,21 @@ fn map_global_to_local(plan: &PhrayaPlan, global_idx: usize) -> Result<(usize, u
 fn run_align_ensure(
     plan_path: &std::path::Path,
     config: AlignConfig,
+    threads: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let plan = plan::read_plan(plan_path)?;
+    use rayon::prelude::*;
+    use std::sync::Arc;
+
+    // Configure thread pool if requested
+    if let Some(n) = threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build_global()
+            .map_err(|e| format!("Failed to configure thread pool: {}", e))?;
+    }
+
+    // Load plan once, share via Arc
+    let plan = Arc::new(plan::read_plan(plan_path)?);
 
     let _num_chunks = plan.batch_num_chunks.ok_or("Plan has no batch configuration")?;
     let mut missing_chunks = Vec::new();
@@ -404,11 +468,29 @@ fn run_align_ensure(
         return Ok(());
     }
 
-    eprintln!("Processing {} missing chunks", missing_chunks.len());
+    eprintln!("Processing {} missing chunks in parallel (threads: {})",
+        missing_chunks.len(), rayon::current_num_threads());
 
-    for (i, worker_id) in missing_chunks.iter().enumerate() {
-        eprintln!("Processing chunk {}/{}: worker {}", i + 1, missing_chunks.len(), worker_id);
-        run_align_worker(plan_path, *worker_id, config.clone())?;
+    // Parallel execution with error collection
+    let results: Vec<_> = missing_chunks
+        .par_iter()
+        .map(|&worker_id| {
+            let result = run_align_worker_with_plan(worker_id, &*plan, config);
+            (worker_id, result.map_err(|e| e.to_string()))
+        })
+        .collect();
+
+    // Report failures
+    let failures: Vec<_> = results.iter()
+        .filter_map(|(id, r)| r.as_ref().err().map(|e| (*id, e.clone())))
+        .collect();
+
+    if !failures.is_empty() {
+        for (id, err) in &failures {
+            eprintln!("Worker {} failed: {}", id, err);
+        }
+        return Err(format!("{} of {} workers failed",
+            failures.len(), missing_chunks.len()).into());
     }
 
     eprintln!("Ensure mode complete");
@@ -467,6 +549,80 @@ fn extract_sequence_at_offset(
     }
 }
 
+/// Infer insert size distribution from BAM files in inputs
+fn infer_insert_size_from_inputs(
+    input_paths: &[PathBuf],
+) -> Result<Option<InsertSizeDistribution>, Box<dyn std::error::Error>> {
+    // Find first BAM file
+    let bam_path = input_paths.iter()
+        .find(|p| p.to_string_lossy().ends_with(".bam"));
+
+    if let Some(bam_path) = bam_path {
+        infer_insert_size_from_bam(bam_path)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Infer insert size distribution from BAM proper pairs
+fn infer_insert_size_from_bam(
+    bam_path: &std::path::Path
+) -> Result<Option<InsertSizeDistribution>, Box<dyn std::error::Error>> {
+    use noodles_bam::io::Reader;
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let file = File::open(bam_path)?;
+    let reader = BufReader::new(file);
+    let mut bam_reader = Reader::new(reader);
+    let _header = bam_reader.read_header()?;
+
+    let mut tlens = Vec::new();
+    const MAX_SAMPLES: usize = 10000; // Sample first 10k proper pairs
+
+    for result in bam_reader.records() {
+        if tlens.len() >= MAX_SAMPLES {
+            break;
+        }
+
+        let record = result?;
+        let flags = record.flags();
+
+        // Only sample proper pairs for insert size estimation
+        if flags.is_properly_segmented() {
+            let tlen = record.template_length();
+            if tlen != 0 {
+                tlens.push(tlen);
+            }
+        }
+    }
+
+    Ok(InsertSizeDistribution::from_bam_proper_pairs(&tlens))
+}
+
+/// Helper to parse sequences from any format (FASTA/FASTQ/BAM/CRAM)
+fn parse_sequences_from_file(
+    path: &std::path::Path,
+) -> Result<(Vec<Sequence>, HashMap<String, phraya_core::types::MateInfo>), Box<dyn std::error::Error>> {
+    let path_str = path.to_string_lossy();
+
+    if path_str.ends_with(".bam") {
+        let parsed = BamCramParser::from_bam_path(path)?;
+        Ok((parsed.sequences, parsed.mate_info))
+    } else if path_str.ends_with(".cram") {
+        let parsed = BamCramParser::from_cram_path(path)?;
+        Ok((parsed.sequences, parsed.mate_info))
+    } else {
+        // FASTA/FASTQ - no mate info
+        let mut sequences = Vec::new();
+        let mut parser = SequenceParser::from_path(path)?;
+        while let Some(seq_result) = parser.next() {
+            sequences.push(seq_result?);
+        }
+        Ok((sequences, HashMap::new()))
+    }
+}
+
 fn run_plan(
     input_paths: &[PathBuf],
     reference_path: Option<&std::path::Path>,
@@ -480,20 +636,20 @@ fn run_plan(
     let mut sequence_to_file_index: Vec<usize> = Vec::new(); // Track which input file each sequence came from
     let mut input_file_list = Vec::new();
     let mut ref_seq_index: Option<usize> = None;
+    let mut all_mate_info: HashMap<String, phraya_core::types::MateInfo> = HashMap::new();
 
     // First, read reference if provided
     if let Some(ref_path) = reference_path {
         let ref_path_str = ref_path.to_string_lossy().to_string();
         input_file_list.push(ref_path_str.clone());
 
-        let mut parser = SequenceParser::from_path(ref_path)?;
-        while let Some(seq_result) = parser.next() {
-            let seq = seq_result?;
+        let (sequences, mate_info) = parse_sequences_from_file(ref_path)?;
+        if let Some(seq) = sequences.into_iter().next() {
             ref_seq_index = Some(all_sequences.len());
             all_sequences.push((seq, ref_path_str.clone()));
             sequence_to_file_index.push(0); // File index 0 for reference
-            break; // Take only the first sequence as reference
         }
+        all_mate_info.extend(mate_info);
     }
 
     // Read input sequences
@@ -501,14 +657,14 @@ fn run_plan(
         let input_path_str = input_path.to_string_lossy().to_string();
         input_file_list.push(input_path_str.clone());
 
-        let mut parser = SequenceParser::from_path(input_path)?;
-        while let Some(seq_result) = parser.next() {
-            let seq = seq_result?;
+        let (sequences, mate_info) = parse_sequences_from_file(input_path)?;
+        for seq in sequences {
             all_sequences.push((seq, input_path_str.clone()));
             // File indices: 1+ for input files (offset by 1 if there's a reference)
             let file_index = if ref_seq_index.is_some() { file_idx + 1 } else { file_idx };
             sequence_to_file_index.push(file_index);
         }
+        all_mate_info.extend(mate_info);
     }
 
     if all_sequences.is_empty() {
@@ -562,6 +718,13 @@ fn run_plan(
     let (read_byte_offsets, reads_per_file, total_read_count) =
         build_byte_offset_index(reference_path, input_paths)?;
 
+    // Infer insert size distribution from BAM files if present
+    let insert_size_distribution = infer_insert_size_from_inputs(input_paths)?;
+    if let Some(ref dist) = insert_size_distribution {
+        eprintln!("Inferred insert size: mean={}, std_dev={}, n={}",
+            dist.mean, dist.std_dev, dist.sample_size);
+    }
+
     // Create and write plan
     let mut plan = PhrayaPlan::new(
         use_case,
@@ -576,6 +739,8 @@ fn run_plan(
     plan.reads_per_file = reads_per_file;
     plan.total_read_count = total_read_count;
     plan.kmer_params = phraya_io::plan::KmerParams { k: 21, w: 11 };
+    plan.insert_size_distribution = insert_size_distribution;
+    plan.mate_info = all_mate_info;
 
     // Handle batch mode configuration
     if let Some(batch_pattern) = batch_output_pattern {
@@ -947,6 +1112,12 @@ fn run_filter(
     format: &str,
     output_path: Option<&std::path::Path>,
     preset: Option<&str>,
+    exclude_discordant_pairs: bool,
+    discordant_sigma: f64,
+    require_proper_pairs: bool,
+    min_insert_size: Option<i32>,
+    max_insert_size: Option<i32>,
+    require_both_mates_mapped: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate format
     if !["vcf", "tsv", "phraya"].contains(&format) {
@@ -989,6 +1160,25 @@ fn run_filter(
     }
     if let Some(min_km) = min_kmer_uniqueness {
         filter_builder = filter_builder.min_kmer_uniqueness(min_km);
+    }
+
+    // Paired-end filters
+    if exclude_discordant_pairs {
+        filter_builder = filter_builder
+            .exclude_discordant_pairs(true)
+            .discordant_sigma_threshold(discordant_sigma);
+    }
+    if require_proper_pairs {
+        filter_builder = filter_builder.require_proper_pairs(true);
+    }
+    if let Some(min) = min_insert_size {
+        filter_builder = filter_builder.min_insert_size(min);
+    }
+    if let Some(max) = max_insert_size {
+        filter_builder = filter_builder.max_insert_size(max);
+    }
+    if require_both_mates_mapped {
+        filter_builder = filter_builder.require_both_mates_mapped(true);
     }
 
     let filter = filter_builder.build();

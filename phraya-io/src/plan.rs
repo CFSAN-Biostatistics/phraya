@@ -1,11 +1,11 @@
-use phraya_core::types::MinimizerSketch;
+use phraya_core::types::{MateInfo, MinimizerSketch};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
 /// PhrayaPlan format version for forward compatibility
-pub const PHRAYAPLAN_VERSION: u32 = 3;
+pub const PHRAYAPLAN_VERSION: u32 = 4;
 
 /// Plan file format errors
 #[derive(Debug, Error, Serialize, Deserialize)]
@@ -45,6 +45,40 @@ pub struct KmerParams {
 impl Default for KmerParams {
     fn default() -> Self {
         Self { k: 21, w: 11 }
+    }
+}
+
+/// Insert size distribution inferred from BAM during plan phase
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InsertSizeDistribution {
+    pub mean: i32,
+    pub std_dev: i32,
+    pub orientation: String, // FR (Illumina standard)
+    pub sample_size: usize,
+}
+
+impl InsertSizeDistribution {
+    /// Infer from BAM proper pairs (SAM flag 0x2)
+    pub fn from_bam_proper_pairs(tlens: &[i32]) -> Option<Self> {
+        if tlens.len() < 100 {
+            return None; // Insufficient data
+        }
+
+        let mean = tlens.iter().sum::<i32>() / tlens.len() as i32;
+        let variance = tlens.iter()
+            .map(|&t| {
+                let diff = t - mean;
+                (diff as f64).powi(2)
+            })
+            .sum::<f64>() / tlens.len() as f64;
+        let std_dev = variance.sqrt() as i32;
+
+        Some(InsertSizeDistribution {
+            mean,
+            std_dev,
+            orientation: "FR".to_string(),
+            sample_size: tlens.len(),
+        })
     }
 }
 
@@ -89,6 +123,12 @@ pub struct PhrayaPlan {
     /// Output paths for each batch chunk (empty if no batching)
     #[serde(default)]
     pub batch_output_paths: Vec<String>,
+    /// Insert size distribution (None for FASTQ input without alignment)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_size_distribution: Option<InsertSizeDistribution>,
+    /// Mate information keyed by sequence ID (for BAM/CRAM inputs)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub mate_info: HashMap<String, phraya_core::types::MateInfo>,
 }
 
 impl PhrayaPlan {
@@ -117,6 +157,8 @@ impl PhrayaPlan {
             batch_reads_per_chunk: None,
             read_byte_offsets: Vec::new(),
             batch_output_paths: Vec::new(),
+            insert_size_distribution: None,
+            mate_info: HashMap::new(),
         }
     }
 
@@ -379,7 +421,7 @@ mod tests {
         write_plan(temp.path(), &plan).unwrap();
         let read_plan = read_plan(temp.path()).unwrap();
 
-        assert_eq!(read_plan.version, 3);
+        assert_eq!(read_plan.version, 4);
         assert_eq!(read_plan.reads_per_file, vec![1000, 1000]);
         assert_eq!(read_plan.total_read_count, 2000);
         assert_eq!(read_plan.kmer_params.k, 21);

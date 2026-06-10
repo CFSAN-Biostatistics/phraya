@@ -154,7 +154,10 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 - **noodles** (`noodles-bam`, `noodles-cram`, `noodles-sam`): pure-Rust BAM/CRAM I/O
 - **MessagePack** (`rmp-serde`): binary serialization for `.phraya`/`.phrayaplan` formats
 - **Compression** (`zstd`): for plan/alignment file storage
-- **Parallelism** (`rayon`): for embarrassingly parallel tasks within single-node execution
+- **Parallelism** (`rayon`): embarrassingly parallel tasks within single-node execution
+  - `phraya align --ensure` processes missing chunks in parallel
+  - Plan data shared via Arc (read-only after load)
+  - `--threads N` overrides auto-detection
 - Standard: `thiserror` (errors), `serde` (serialization), `clap` (CLI)
 
 ## Coding Conventions

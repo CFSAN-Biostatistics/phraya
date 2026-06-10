@@ -163,6 +163,9 @@ pub struct VariantObservation {
     /// K-mer uniqueness score at this position (0.0-1.0)
     #[serde(default = "default_kmer_uniqueness")]
     kmer_uniqueness: f64,
+    /// Mate relationship metadata for paired-end reads
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mate_info: Option<MateInfo>,
 }
 
 impl VariantObservation {
@@ -194,6 +197,7 @@ impl VariantObservation {
             in_tandem_repeat: false,
             variant_type: VariantType::default(),
             kmer_uniqueness: default_kmer_uniqueness(),
+            mate_info: None,
         }
     }
 
@@ -228,6 +232,17 @@ impl VariantObservation {
     /// Get the k-mer uniqueness score.
     pub fn kmer_uniqueness(&self) -> f64 {
         self.kmer_uniqueness
+    }
+
+    /// Set mate information for paired-end reads.
+    pub fn with_mate_info(mut self, mate_info: MateInfo) -> Self {
+        self.mate_info = Some(mate_info);
+        self
+    }
+
+    /// Get mate information.
+    pub fn mate_info(&self) -> Option<&MateInfo> {
+        self.mate_info.as_ref()
     }
 
     /// Get the position of this variant
@@ -1314,4 +1329,57 @@ pub fn detect_hotspot_intervals(uniqueness: &HashMap<u32, f64>, threshold: f64) 
     intervals.push((start, end));
 
     intervals
+}
+
+/// Mate relationship metadata for paired-end reads
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MateInfo {
+    /// Read mate identifier (e.g., "read123/2" for the mate of "read123/1")
+    pub mate_id: String,
+
+    /// SAM flag 0x2: read mapped in proper pair
+    pub proper_pair: bool,
+
+    /// Template length (TLEN field) - signed, 0 for unpaired/unmapped mates
+    pub insert_size: i32,
+
+    /// SAM flag 0x40: first read in pair
+    pub is_first_in_pair: bool,
+
+    /// SAM flag 0x80: second read in pair
+    pub is_second_in_pair: bool,
+
+    /// Mate is mapped (inverse of SAM flag 0x8)
+    pub mate_mapped: bool,
+}
+
+impl MateInfo {
+    pub fn new(
+        mate_id: String,
+        proper_pair: bool,
+        insert_size: i32,
+        is_first_in_pair: bool,
+        is_second_in_pair: bool,
+        mate_mapped: bool,
+    ) -> Self {
+        Self {
+            mate_id,
+            proper_pair,
+            insert_size,
+            is_first_in_pair,
+            is_second_in_pair,
+            mate_mapped,
+        }
+    }
+
+    /// Check if insert size indicates discordant pair (beyond expected distribution)
+    pub fn is_discordant(&self, mean: i32, std_dev: i32, sigma: f64) -> bool {
+        if self.insert_size == 0 {
+            return false; // Unpaired or unmapped mate
+        }
+        let threshold = (std_dev as f64 * sigma) as i32;
+        // Use absolute value of insert_size (negative = mate upstream)
+        let deviation = (self.insert_size.abs() - mean).abs();
+        deviation > threshold
+    }
 }

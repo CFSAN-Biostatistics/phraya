@@ -48,6 +48,14 @@ pub struct FilterBuilder {
     min_allele_frequency: Option<f64>,
     min_kmer_uniqueness: Option<f64>,
     exclude_tandem_repeats: bool,
+    // Paired-end filters
+    exclude_discordant_pairs: bool,
+    discordant_sigma_threshold: f64,
+    require_proper_pairs: bool,
+    min_insert_size: Option<i32>,
+    max_insert_size: Option<i32>,
+    require_both_mates_mapped: bool,
+    insert_distribution: Option<phraya_io::plan::InsertSizeDistribution>,
 }
 
 impl FilterBuilder {
@@ -62,6 +70,13 @@ impl FilterBuilder {
             min_allele_frequency: None,
             min_kmer_uniqueness: None,
             exclude_tandem_repeats: false,
+            exclude_discordant_pairs: false,
+            discordant_sigma_threshold: 3.0,
+            require_proper_pairs: false,
+            min_insert_size: None,
+            max_insert_size: None,
+            require_both_mates_mapped: false,
+            insert_distribution: None,
         }
     }
 
@@ -113,6 +128,48 @@ impl FilterBuilder {
         self
     }
 
+    /// Exclude discordant pairs (insert size beyond mean ± Nσ)
+    pub fn exclude_discordant_pairs(mut self, value: bool) -> Self {
+        self.exclude_discordant_pairs = value;
+        self
+    }
+
+    /// Set sigma threshold for discordant pair detection (default: 3.0)
+    pub fn discordant_sigma_threshold(mut self, sigma: f64) -> Self {
+        self.discordant_sigma_threshold = sigma;
+        self
+    }
+
+    /// Require proper pairs (SAM flag 0x2)
+    pub fn require_proper_pairs(mut self, value: bool) -> Self {
+        self.require_proper_pairs = value;
+        self
+    }
+
+    /// Set minimum insert size (absolute value)
+    pub fn min_insert_size(mut self, size: i32) -> Self {
+        self.min_insert_size = Some(size);
+        self
+    }
+
+    /// Set maximum insert size (absolute value)
+    pub fn max_insert_size(mut self, size: i32) -> Self {
+        self.max_insert_size = Some(size);
+        self
+    }
+
+    /// Require both mates mapped
+    pub fn require_both_mates_mapped(mut self, value: bool) -> Self {
+        self.require_both_mates_mapped = value;
+        self
+    }
+
+    /// Provide insert size distribution for discordant pair detection
+    pub fn with_insert_distribution(mut self, dist: phraya_io::plan::InsertSizeDistribution) -> Self {
+        self.insert_distribution = Some(dist);
+        self
+    }
+
     /// Build the filter
     pub fn build(self) -> ThresholdFilter {
         ThresholdFilter {
@@ -124,6 +181,13 @@ impl FilterBuilder {
             min_allele_frequency: self.min_allele_frequency,
             min_kmer_uniqueness: self.min_kmer_uniqueness,
             exclude_tandem_repeats: self.exclude_tandem_repeats,
+            exclude_discordant_pairs: self.exclude_discordant_pairs,
+            discordant_sigma_threshold: self.discordant_sigma_threshold,
+            require_proper_pairs: self.require_proper_pairs,
+            min_insert_size: self.min_insert_size,
+            max_insert_size: self.max_insert_size,
+            require_both_mates_mapped: self.require_both_mates_mapped,
+            insert_distribution: self.insert_distribution,
         }
     }
 }
@@ -145,6 +209,13 @@ pub struct ThresholdFilter {
     min_allele_frequency: Option<f64>,
     min_kmer_uniqueness: Option<f64>,
     exclude_tandem_repeats: bool,
+    exclude_discordant_pairs: bool,
+    discordant_sigma_threshold: f64,
+    require_proper_pairs: bool,
+    min_insert_size: Option<i32>,
+    max_insert_size: Option<i32>,
+    require_both_mates_mapped: bool,
+    insert_distribution: Option<phraya_io::plan::InsertSizeDistribution>,
 }
 
 impl ThresholdFilter {
@@ -216,6 +287,50 @@ impl ThresholdFilter {
         // Exclude tandem repeat variants
         if self.exclude_tandem_repeats && obs.in_tandem_repeat() {
             return false;
+        }
+
+        // Paired-end filters (skip if no mate_info)
+        if let Some(mate_info) = obs.mate_info() {
+            // Filter 1: Require proper pairs
+            if self.require_proper_pairs && !mate_info.proper_pair {
+                return false;
+            }
+
+            // Filter 2: Exclude discordant pairs
+            if self.exclude_discordant_pairs {
+                if let Some(ref dist) = self.insert_distribution {
+                    if mate_info.is_discordant(
+                        dist.mean,
+                        dist.std_dev,
+                        self.discordant_sigma_threshold,
+                    ) {
+                        return false;
+                    }
+                }
+            }
+
+            // Filter 3: Insert size range
+            let abs_insert_size = mate_info.insert_size.abs();
+            if let Some(min) = self.min_insert_size {
+                if abs_insert_size < min {
+                    return false;
+                }
+            }
+            if let Some(max) = self.max_insert_size {
+                if abs_insert_size > max {
+                    return false;
+                }
+            }
+
+            // Filter 4: Both mates mapped
+            if self.require_both_mates_mapped && !mate_info.mate_mapped {
+                return false;
+            }
+        } else {
+            // No mate info: reject if paired filters are required
+            if self.require_proper_pairs || self.require_both_mates_mapped {
+                return false;
+            }
         }
 
         true

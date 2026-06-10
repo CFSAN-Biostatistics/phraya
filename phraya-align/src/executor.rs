@@ -170,6 +170,9 @@ pub fn align_task_with_config(
     let query_mapq = query.mapq().unwrap_or(60);
     let query_avg_bq = query.avg_quality().unwrap_or(60.0);
 
+    // Look up mate info from plan (if available from BAM input)
+    let mate_info = plan.mate_info.get(query.id());
+
     let variants = extract_variants_from_cigar(
         &scored.primary.cigar,
         scored.primary.target_start,
@@ -184,6 +187,7 @@ pub fn align_task_with_config(
         primary_score,
         config.coverage_window_radius,
         &plan.hotspot_intervals,
+        mate_info,
     );
 
     let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
@@ -219,6 +223,7 @@ fn extract_variants_from_cigar(
     confidence: f64,
     coverage_window_radius: usize,
     hotspot_intervals: &[(u32, u32)],
+    mate_info: Option<&phraya_core::types::MateInfo>,
 ) -> Vec<VariantObservation> {
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
@@ -259,7 +264,7 @@ fn extract_variants_from_cigar(
                             1.0
                         };
 
-                        variants.push(VariantObservation::new(
+                        let mut obs = VariantObservation::new(
                             tp as u32,
                             ref_base,
                             alleles,
@@ -271,7 +276,13 @@ fn extract_variants_from_cigar(
                             avg_base_quality,
                             provenance.clone(),
                         ).with_tandem_repeat(in_repeat)
-                         .with_kmer_uniqueness(kmer_uniqueness));
+                         .with_kmer_uniqueness(kmer_uniqueness);
+
+                        if let Some(mi) = mate_info {
+                            obs = obs.with_mate_info(mi.clone());
+                        }
+
+                        variants.push(obs);
                     }
                 }
                 q_pos += count;
@@ -309,23 +320,27 @@ fn extract_variants_from_cigar(
                     let mut alleles = HashMap::new();
                     alleles.insert(b'.', 1u32);
 
-                    variants.push(
-                        VariantObservation::new(
-                            t_pos as u32,
-                            ref_base,
-                            alleles,
-                            kmer_uniqueness * confidence,
-                            cigar.to_string(),
-                            mapq,
-                            edit_distance,
-                            local_coverage,
-                            avg_base_quality,
-                            provenance.clone(),
-                        )
-                        .with_tandem_repeat(in_repeat)
-                        .with_variant_type(phraya_core::types::VariantType::Deletion)
-                        .with_kmer_uniqueness(kmer_uniqueness),
-                    );
+                    let mut obs = VariantObservation::new(
+                        t_pos as u32,
+                        ref_base,
+                        alleles,
+                        kmer_uniqueness * confidence,
+                        cigar.to_string(),
+                        mapq,
+                        edit_distance,
+                        local_coverage,
+                        avg_base_quality,
+                        provenance.clone(),
+                    )
+                    .with_tandem_repeat(in_repeat)
+                    .with_variant_type(phraya_core::types::VariantType::Deletion)
+                    .with_kmer_uniqueness(kmer_uniqueness);
+
+                    if let Some(mi) = mate_info {
+                        obs = obs.with_mate_info(mi.clone());
+                    }
+
+                    variants.push(obs);
                 }
                 t_pos += count;
             }
@@ -356,23 +371,27 @@ fn extract_variants_from_cigar(
                         *alleles.entry(base).or_insert(0) += 1;
                     }
 
-                    variants.push(
-                        VariantObservation::new(
-                            t_pos as u32,
-                            b'.',
-                            alleles,
-                            kmer_uniqueness * confidence,
-                            cigar.to_string(),
-                            mapq,
-                            edit_distance,
-                            local_coverage,
-                            avg_base_quality,
-                            provenance.clone(),
-                        )
-                        .with_tandem_repeat(in_repeat)
-                        .with_variant_type(phraya_core::types::VariantType::Insertion)
-                        .with_kmer_uniqueness(kmer_uniqueness),
-                    );
+                    let mut obs = VariantObservation::new(
+                        t_pos as u32,
+                        b'.',
+                        alleles,
+                        kmer_uniqueness * confidence,
+                        cigar.to_string(),
+                        mapq,
+                        edit_distance,
+                        local_coverage,
+                        avg_base_quality,
+                        provenance.clone(),
+                    )
+                    .with_tandem_repeat(in_repeat)
+                    .with_variant_type(phraya_core::types::VariantType::Insertion)
+                    .with_kmer_uniqueness(kmer_uniqueness);
+
+                    if let Some(mi) = mate_info {
+                        obs = obs.with_mate_info(mi.clone());
+                    }
+
+                    variants.push(obs);
                 }
                 q_pos += count;
             }
