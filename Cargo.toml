@@ -15,6 +15,11 @@ rust-version = "1.75"
 authors = ["Phraya Contributors"]
 license = "Unlicense"
 repository = "https://github.com/CFSAN-Biostatistics/phraya"
+homepage = "https://github.com/CFSAN-Biostatistics/phraya"
+documentation = "https://docs.rs/phraya-cli"
+readme = "README.md"
+keywords = ["bioinformatics", "genomics", "alignment", "sequence", "bacterial"]
+categories = ["science", "command-line-utilities"]
 
 [workspace.dependencies]
 # Internal crates
