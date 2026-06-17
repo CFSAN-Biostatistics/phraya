@@ -92,18 +92,31 @@ Workspace with 5 crates:
 
 ## Installation
 
-### Prebuilt binaries
+### Prebuilt binaries (recommended)
 
-Download the latest release for Linux x86_64 from the [Releases page](https://github.com/CFSAN-Biostatistics/phraya/releases):
+Download the tarball for your platform from [GitHub Releases](https://github.com/CFSAN-Biostatistics/phraya/releases):
+
+| Tarball | OS | Arch | SIMD | Use when |
+|---------|----|------|------|----------|
+| `phraya-*-x86_64-linux-gnu-native.tar.gz` | Linux | x86_64 | AVX2 | Modern x86_64 Linux (≥2013 CPUs — Haswell/Excavator or newer) |
+| `phraya-*-x86_64-linux-gnu-portable.tar.gz` | Linux | x86_64 | SSE4.2 | Any x86_64 Linux; broadest compatibility |
+| `phraya-*-aarch64-linux-gnu.tar.gz` | Linux | ARM64 | NEON | AWS Graviton, Ampere Altra, ARM servers |
+| `phraya-*-x86_64-darwin.tar.gz` | macOS | Intel | AVX2 | Intel Mac |
+| `phraya-*-aarch64-darwin.tar.gz` | macOS | Apple Silicon | NEON | M1/M2/M3/M4 Mac |
 
 ```bash
-# Replace v0.1.0 with the desired version
-curl -LO https://github.com/CFSAN-Biostatistics/phraya/releases/download/v0.1.0/phraya-v0.1.0-x86_64-linux-gnu-portable.tar.gz
-tar -xzf phraya-v0.1.0-x86_64-linux-gnu-portable.tar.gz
+tar xzf phraya-*-x86_64-linux-gnu-native.tar.gz
 ./phraya --version
 ```
 
-The portable build uses SSE4.2 (supported on all x86_64 CPUs since ~2008). For best k-mer sketching performance on modern hardware, build from source with `-C target-cpu=native`.
+**Portable vs native (x86_64 Linux):** The native build uses AVX2 via
+`-C target-cpu=x86-64-v3` and is **~2× faster for k-mer sketching** thanks to the
+simd-minimizers AVX2 path. Use it on any CPU from ~2013 onward. If it exits with
+`Illegal instruction`, fall back to the portable build (SSE4.2 baseline, runs on
+every x86_64 CPU since ~2008).
+
+**ARM builds** (Linux ARM64 and Apple Silicon) always use NEON — there is no
+portable/native split because NEON is mandatory on AArch64 and always available.
 
 ## Docker Quick Start
 
@@ -143,7 +156,7 @@ The Docker image is built with the **SSE4.2 baseline** (`-C target-feature=+sse4
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-### Build from source
+### Building from source
 
 ```bash
 cargo build --release
