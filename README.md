@@ -74,7 +74,45 @@ Workspace with 5 crates:
 - **`.phraya`**: Position index (variant observations + coverage track). Mergeable. Binary MessagePack + zstd.
 - **`.phraya.queries`**: Query index (multi-mapping alternatives per read). Sidecar file. Binary MessagePack + zstd.
 
-## Building
+## Docker Quick Start
+
+```bash
+# Pull the latest image (amd64 and arm64 supported)
+docker pull ghcr.io/cfsan-biostatistics/phraya:latest
+
+# Verify installation
+docker run --rm ghcr.io/cfsan-biostatistics/phraya:latest --version
+
+# Run with your data (mount current directory as /data)
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    plan --inputs /data/reads/*.fastq --reference /data/ref.fasta --output /data/cohort.phrayaplan
+
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    align /data/cohort.phrayaplan query_id target_id
+
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    filter /data/cohort.phraya --min-coverage 10 --min-mapq 30 --format vcf > variants.vcf
+```
+
+### Available tags
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Most recent release |
+| `v1.2.3` | Exact version |
+| `v1.2` | Latest patch for minor version |
+
+### SIMD in Docker
+
+The Docker image is built with the **SSE4.2 baseline** (`-C target-feature=+sse4.2`) rather than `-C target-cpu=native`. This ensures the image runs on any modern x86-64 CPU but does not use AVX2 acceleration for k-mer sketching.
+
+**For HPC workloads** where you control the hardware, building from source with `-C target-cpu=native` will enable AVX2 (x86-64) or NEON (ARM64) and improve sketching throughput:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+## Building from Source
 
 ```bash
 cargo build --release
