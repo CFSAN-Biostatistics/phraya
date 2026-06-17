@@ -10,6 +10,22 @@ General-purpose pairwise sequence aligner for bacterial genomics. Short reads, l
 
 **Phase 1 MVP in development.** Architecture revision completed 2026-05-27. See [issue #58](https://github.com/CFSAN-Biostatistics/phraya/issues/58) for PRD.
 
+## Installation
+
+```bash
+cargo install --git https://github.com/CFSAN-Biostatistics/phraya --locked phraya-cli
+```
+
+This installs the `phraya` binary using Rust's portable SIMD path. On ARM64 (Graviton, Apple Silicon), NEON is always active. On x86-64, a scalar fallback is used — portable builds run at approximately 40–60% the speed of a native SIMD build.
+
+For full AVX2 acceleration on x86-64:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/CFSAN-Biostatistics/phraya --locked phraya-cli
+```
+
+Requires Rust 1.75+. No external binary dependencies (BWA, minimap2, samtools, htslib).
+
 ## Philosophy
 
 Most aligners force you to choose filtering parameters (mapping quality, coverage thresholds, multi-mapping behavior) before seeing results. Wrong assumptions mean expensive re-alignment.
