@@ -74,6 +74,21 @@ Workspace with 5 crates:
 - **`.phraya`**: Position index (variant observations + coverage track). Mergeable. Binary MessagePack + zstd.
 - **`.phraya.queries`**: Query index (multi-mapping alternatives per read). Sidecar file. Binary MessagePack + zstd.
 
+## Installation
+
+### Prebuilt binaries
+
+Download the latest release for Linux x86_64 from the [Releases page](https://github.com/CFSAN-Biostatistics/phraya/releases):
+
+```bash
+# Replace v0.1.0 with the desired version
+curl -LO https://github.com/CFSAN-Biostatistics/phraya/releases/download/v0.1.0/phraya-v0.1.0-x86_64-linux-gnu-portable.tar.gz
+tar -xzf phraya-v0.1.0-x86_64-linux-gnu-portable.tar.gz
+./phraya --version
+```
+
+The portable build uses SSE4.2 (supported on all x86_64 CPUs since ~2008). For best k-mer sketching performance on modern hardware, build from source with `-C target-cpu=native`.
+
 ## Docker Quick Start
 
 ```bash
@@ -112,7 +127,7 @@ The Docker image is built with the **SSE4.2 baseline** (`-C target-feature=+sse4
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ```
 
-## Building from Source
+### Build from source
 
 ```bash
 cargo build --release

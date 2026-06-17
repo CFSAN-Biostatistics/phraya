@@ -3,6 +3,10 @@ name = "phraya-cli"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "phraya"
+path = "src/main.rs"
+
 [dependencies]
 phraya-core = { workspace = true }
 phraya-io = { workspace = true }
