@@ -5,44 +5,50 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: cfsan-biostatistics/phraya
 
 jobs:
-  # ── Build binaries for all 5 targets ─────────────────────────────────────
-  build-binaries:
-    name: build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            variant: portable
-            rustflags: ""
-            artifact: phraya-linux-x86_64-portable
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            variant: native
+          - name: x86_64-linux-portable
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            rustflags: "-C target-feature=+sse4.2"
+            tarball_suffix: x86_64-linux-gnu-portable
+
+          - name: x86_64-linux-native
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
             rustflags: "-C target-cpu=x86-64-v3"
-            artifact: phraya-linux-x86_64-native
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            variant: neon
+            tarball_suffix: x86_64-linux-gnu-native
+
+          - name: aarch64-linux
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
             rustflags: ""
-            artifact: phraya-linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-13
-            variant: native
-            rustflags: "-C target-cpu=native"
-            artifact: phraya-macos-x86_64
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            variant: neon
+            tarball_suffix: aarch64-linux-gnu
+
+          - name: x86_64-darwin
+            runner: macos-13
+            target: x86_64-apple-darwin
+            rustflags: "-C target-cpu=x86-64-v3"
+            tarball_suffix: x86_64-darwin
+
+          - name: aarch64-darwin
+            runner: macos-14
+            target: aarch64-apple-darwin
             rustflags: ""
-            artifact: phraya-macos-aarch64
+            tarball_suffix: aarch64-darwin
 
     steps:
       - uses: actions/checkout@v4
@@ -51,44 +57,41 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo registry
-        uses: actions/cache@v3
+      - name: Cache cargo
+        uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ matrix.name }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ runner.arch }}-${{ matrix.variant }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build release binary
+      - name: Build
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo build --release --bin phraya --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} -p phraya-cli
 
-      - name: Package binary
+      - name: Package
+        shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME}
-          ARCHIVE=phraya-${VERSION}-${{ matrix.artifact }}.tar.gz
-          cp target/${{ matrix.target }}/release/phraya phraya
-          tar czf "${ARCHIVE}" phraya
-          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+          BINARY=target/${{ matrix.target }}/release/phraya
+          TARBALL=phraya-${VERSION}-${{ matrix.tarball_suffix }}.tar.gz
+          cp "${BINARY}" phraya
+          tar czf "${TARBALL}" phraya
+          rm phraya
+          echo "TARBALL=${TARBALL}" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ env.ARCHIVE }}
+          name: ${{ matrix.name }}
+          path: ${{ env.TARBALL }}
 
-  # ── Create GitHub Release and upload all binaries ────────────────────────
-  github-release:
+  release:
     name: GitHub Release
-    needs: build-binaries
+    needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -97,46 +100,34 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
+          merge-multiple: true
 
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -name "*.tar.gz" -exec sha256sum {} \; | sed 's|./[^/]*/||' > SHA256SUMS.txt
+          sha256sum *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Extract release notes from CHANGELOG
         id: notes
         run: |
           VERSION=${GITHUB_REF_NAME}
-          # Extract section for this version from CHANGELOG.md
           if grep -q "## \[${VERSION}\]" CHANGELOG.md 2>/dev/null; then
             awk "/## \[${VERSION}\]/,/## \[v/" CHANGELOG.md | head -n -2 > release_notes.md
           else
-            echo "Release ${VERSION}" > release_notes.md
-            echo "" >> release_notes.md
-            echo "See [CHANGELOG.md](CHANGELOG.md) for details." >> release_notes.md
+            printf "Release %s\n\nSee [CHANGELOG.md](CHANGELOG.md) for details.\n" "${VERSION}" > release_notes.md
           fi
-          echo "## Binary notes" >> release_notes.md
-          echo "" >> release_notes.md
-          echo "| File | Platform | SIMD |" >> release_notes.md
-          echo "|------|----------|------|" >> release_notes.md
-          echo "| \`phraya-${VERSION}-phraya-linux-x86_64-portable.tar.gz\` | Linux x86_64 | SSE4.2 (portable) |" >> release_notes.md
-          echo "| \`phraya-${VERSION}-phraya-linux-x86_64-native.tar.gz\` | Linux x86_64 | AVX2 (native, ~2× faster) |" >> release_notes.md
-          echo "| \`phraya-${VERSION}-phraya-linux-aarch64.tar.gz\` | Linux ARM64 | NEON |" >> release_notes.md
-          echo "| \`phraya-${VERSION}-phraya-macos-x86_64.tar.gz\` | macOS Intel | AVX2 |" >> release_notes.md
-          echo "| \`phraya-${VERSION}-phraya-macos-aarch64.tar.gz\` | macOS Apple Silicon | NEON |" >> release_notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           body_path: release_notes.md
           files: |
-            artifacts/**/*.tar.gz
+            artifacts/*.tar.gz
             artifacts/SHA256SUMS.txt
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
 
-  # ── Docker multi-arch build and push ─────────────────────────────────────
   docker:
     name: Docker (multi-arch)
     runs-on: ubuntu-latest
@@ -181,11 +172,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Publish to crates.io ─────────────────────────────────────────────────
   crates-io:
     name: crates.io publish
     runs-on: ubuntu-latest
-    # Only publish stable releases (not pre-releases)
     if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') && !contains(github.ref_name, '-beta') }}
 
     steps:
@@ -194,36 +183,41 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Publish phraya-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p phraya-core
 
-      - name: Wait for phraya-core to be available
+      - name: Wait for phraya-core to propagate
         run: sleep 30
-
-      - name: Publish phraya-io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p phraya-io
 
       - name: Publish phraya-align
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p phraya-align
 
-      - name: Wait for dependencies to be available
+      - name: Publish phraya-io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p phraya-io
+
+      - name: Wait for dependencies to propagate
         run: sleep 30
 
       - name: Publish phraya-filter
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p phraya-filter
+
+      - name: Wait for phraya-filter to propagate
+        run: sleep 30
 
       - name: Publish phraya-cli
         env:

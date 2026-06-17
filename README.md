@@ -10,6 +10,22 @@ General-purpose pairwise sequence aligner for bacterial genomics. Short reads, l
 
 **Phase 1 MVP in development.** Architecture revision completed 2026-05-27. See [issue #58](https://github.com/CFSAN-Biostatistics/phraya/issues/58) for PRD.
 
+## Installation
+
+```bash
+cargo install --git https://github.com/CFSAN-Biostatistics/phraya --locked phraya-cli
+```
+
+This installs the `phraya` binary using Rust's portable SIMD path. On ARM64 (Graviton, Apple Silicon), NEON is always active. On x86-64, a scalar fallback is used — portable builds run at approximately 40–60% the speed of a native SIMD build.
+
+For full AVX2 acceleration on x86-64:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/CFSAN-Biostatistics/phraya --locked phraya-cli
+```
+
+Requires Rust 1.75+. No external binary dependencies (BWA, minimap2, samtools, htslib).
+
 ## Philosophy
 
 Most aligners force you to choose filtering parameters (mapping quality, coverage thresholds, multi-mapping behavior) before seeing results. Wrong assumptions mean expensive re-alignment.
@@ -74,7 +90,73 @@ Workspace with 5 crates:
 - **`.phraya`**: Position index (variant observations + coverage track). Mergeable. Binary MessagePack + zstd.
 - **`.phraya.queries`**: Query index (multi-mapping alternatives per read). Sidecar file. Binary MessagePack + zstd.
 
-## Building
+## Installation
+
+### Prebuilt binaries (recommended)
+
+Download the tarball for your platform from [GitHub Releases](https://github.com/CFSAN-Biostatistics/phraya/releases):
+
+| Tarball | OS | Arch | SIMD | Use when |
+|---------|----|------|------|----------|
+| `phraya-*-x86_64-linux-gnu-native.tar.gz` | Linux | x86_64 | AVX2 | Modern x86_64 Linux (≥2013 CPUs — Haswell/Excavator or newer) |
+| `phraya-*-x86_64-linux-gnu-portable.tar.gz` | Linux | x86_64 | SSE4.2 | Any x86_64 Linux; broadest compatibility |
+| `phraya-*-aarch64-linux-gnu.tar.gz` | Linux | ARM64 | NEON | AWS Graviton, Ampere Altra, ARM servers |
+| `phraya-*-x86_64-darwin.tar.gz` | macOS | Intel | AVX2 | Intel Mac |
+| `phraya-*-aarch64-darwin.tar.gz` | macOS | Apple Silicon | NEON | M1/M2/M3/M4 Mac |
+
+```bash
+tar xzf phraya-*-x86_64-linux-gnu-native.tar.gz
+./phraya --version
+```
+
+**Portable vs native (x86_64 Linux):** The native build uses AVX2 via
+`-C target-cpu=x86-64-v3` and is **~2× faster for k-mer sketching** thanks to the
+simd-minimizers AVX2 path. Use it on any CPU from ~2013 onward. If it exits with
+`Illegal instruction`, fall back to the portable build (SSE4.2 baseline, runs on
+every x86_64 CPU since ~2008).
+
+**ARM builds** (Linux ARM64 and Apple Silicon) always use NEON — there is no
+portable/native split because NEON is mandatory on AArch64 and always available.
+
+## Docker Quick Start
+
+```bash
+# Pull the latest image (amd64 and arm64 supported)
+docker pull ghcr.io/cfsan-biostatistics/phraya:latest
+
+# Verify installation
+docker run --rm ghcr.io/cfsan-biostatistics/phraya:latest --version
+
+# Run with your data (mount current directory as /data)
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    plan --inputs /data/reads/*.fastq --reference /data/ref.fasta --output /data/cohort.phrayaplan
+
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    align /data/cohort.phrayaplan query_id target_id
+
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    filter /data/cohort.phraya --min-coverage 10 --min-mapq 30 --format vcf > variants.vcf
+```
+
+### Available tags
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Most recent release |
+| `v1.2.3` | Exact version |
+| `v1.2` | Latest patch for minor version |
+
+### SIMD in Docker
+
+The Docker image is built with the **SSE4.2 baseline** (`-C target-feature=+sse4.2`) rather than `-C target-cpu=native`. This ensures the image runs on any modern x86-64 CPU but does not use AVX2 acceleration for k-mer sketching.
+
+**For HPC workloads** where you control the hardware, building from source with `-C target-cpu=native` will enable AVX2 (x86-64) or NEON (ARM64) and improve sketching throughput:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+### Building from source
 
 ```bash
 cargo build --release

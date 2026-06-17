@@ -1,8 +1,15 @@
+# Build stage
 FROM rust:1.75-slim AS builder
 
 WORKDIR /build
 
-# Cache dependencies layer
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy workspace manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
 COPY phraya-core/Cargo.toml phraya-core/
 COPY phraya-align/Cargo.toml phraya-align/
@@ -10,27 +17,27 @@ COPY phraya-io/Cargo.toml phraya-io/
 COPY phraya-filter/Cargo.toml phraya-filter/
 COPY phraya-cli/Cargo.toml phraya-cli/
 
-# Stub source files to warm the dependency cache
-RUN for crate in phraya-core phraya-align phraya-io phraya-filter phraya-cli; do \
-      mkdir -p ${crate}/src && echo "fn main() {}" > ${crate}/src/lib.rs; \
-    done && \
-    echo "fn main() {}" > phraya-cli/src/main.rs && \
-    cargo build --release --bin phraya 2>/dev/null || true && \
-    for crate in phraya-core phraya-align phraya-io phraya-filter phraya-cli; do \
-      rm -f ${crate}/src/lib.rs; \
-    done && \
-    rm -f phraya-cli/src/main.rs
+# Create stub lib/main files so cargo can resolve the workspace
+RUN mkdir -p phraya-core/src phraya-align/src phraya-io/src phraya-filter/src phraya-cli/src \
+    && echo "fn main() {}" > phraya-cli/src/main.rs \
+    && for crate in phraya-core phraya-align phraya-io phraya-filter; do \
+         echo "" > $crate/src/lib.rs; \
+       done
 
-# Build the real binary (portable SIMD — runtime CPU unknown in container)
-COPY phraya-core/src phraya-core/src
-COPY phraya-align/src phraya-align/src
-COPY phraya-io/src phraya-io/src
-COPY phraya-filter/src phraya-filter/src
-COPY phraya-cli/src phraya-cli/src
+# Pre-fetch dependencies (portable SIMD — SSE4.2 baseline, no native CPU features)
+RUN RUSTFLAGS="-C target-feature=+sse4.2" cargo build --release --bin phraya 2>/dev/null || true
 
-RUN cargo build --release --bin phraya
+# Copy full source and build for real
+COPY . .
 
-# ── Minimal runtime image ─────────────────────────────────────────────────
+# Touch to force rebuild of non-stub sources
+RUN touch phraya-core/src/lib.rs phraya-align/src/lib.rs phraya-io/src/lib.rs \
+         phraya-filter/src/lib.rs phraya-cli/src/main.rs
+
+# Portable SSE4.2 baseline build — runtime CPU is unknown in containers
+RUN RUSTFLAGS="-C target-feature=+sse4.2" cargo build --release --bin phraya
+
+# Runtime stage — minimal distroless image
 FROM gcr.io/distroless/cc-debian12
 
 COPY --from=builder /build/target/release/phraya /usr/local/bin/phraya
