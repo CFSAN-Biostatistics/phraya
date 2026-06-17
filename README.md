@@ -131,6 +131,71 @@ Phraya differentiates on:
 - Python/R bindings
 - GPU acceleration
 
+## For Maintainers
+
+### Release Process
+
+Phraya uses a tag-triggered release workflow. Push a `v*` tag and all automated channels update within ~15 minutes.
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+#### Automated channels (triggered by tag push)
+
+| Channel | What happens | Secret required |
+|---------|-------------|-----------------|
+| **GitHub Releases** | 5 prebuilt binaries uploaded (portable + native Linux x86_64, Linux ARM64, macOS Intel, macOS M1) | `GITHUB_TOKEN` (automatic) |
+| **Docker** | Multi-arch image pushed to `ghcr.io/cfsan-biostatistics/phraya` with `:latest` + versioned tags | `GITHUB_TOKEN` (automatic) |
+| **crates.io** | All 5 crates published in dependency order | `CARGO_REGISTRY_TOKEN` |
+
+Pre-releases (tags containing `-rc`, `-alpha`, `-beta`) skip crates.io publish and do not update the `:latest` Docker tag.
+
+#### Manual channels (require external PRs)
+
+**Bioconda** (`bioconda-recipes` repo):
+1. Fork [bioconda/bioconda-recipes](https://github.com/bioconda/bioconda-recipes)
+2. Update `recipes/phraya/meta.yaml` — bump `version`, update `sha256` from the GitHub Release SHA256SUMS.txt
+3. Open PR to `bioconda/bioconda-recipes`
+
+**Homebrew** (if using a tap rather than homebrew-core):
+1. Update `Formula/phraya.rb` in the tap repo — bump `version` and `sha256`
+2. Test locally: `brew install --build-from-source Formula/phraya.rb`
+3. Commit and push; Homebrew users get the update on next `brew update`
+
+#### Required secrets
+
+- `CARGO_REGISTRY_TOKEN`: crates.io API token for publishing. Set in repo Settings → Secrets → Actions.
+- `GITHUB_TOKEN`: Automatically provided by GitHub Actions. No setup needed.
+
+#### Verifying a release
+
+After the workflow completes, verify all channels:
+
+```bash
+# GitHub Releases: check all 5 binaries exist
+gh release view v0.2.0 --json assets --jq '[.assets[].name]'
+
+# Docker
+docker pull ghcr.io/cfsan-biostatistics/phraya:v0.2.0
+docker run --rm ghcr.io/cfsan-biostatistics/phraya:v0.2.0 --version
+
+# crates.io: package page should show new version
+# https://crates.io/crates/phraya-cli
+```
+
+#### Platform binary selection guide
+
+| Platform | Recommended binary | Notes |
+|----------|--------------------|-------|
+| Linux x86_64, HPC cluster | `phraya-linux-x86_64-native` | AVX2, ~2× faster k-mer sketching |
+| Linux x86_64, older hardware | `phraya-linux-x86_64-portable` | SSE4.2 baseline, runs everywhere |
+| Linux ARM64 (Graviton, Raspberry Pi) | `phraya-linux-aarch64` | NEON, always enabled |
+| macOS Intel | `phraya-macos-x86_64` | AVX2 |
+| macOS Apple Silicon | `phraya-macos-aarch64` | NEON |
+| Container / unknown CPU | Docker image | Portable SSE4.2 build |
+
 ## License
 
 Unlicense. As a work product of the US Government (17 USC 105), Phraya is in the public domain.
