@@ -1,6 +1,7 @@
 target/
 .git/
 *.md
+.github/
 .claude/
 scripts/
 benches/
