@@ -36,7 +36,7 @@ fn test_batch_mode_end_to_end() {
         .args([
             "run",
             "--bin",
-            "phraya-cli",
+            "phraya",
             "--",
             "plan",
             "--inputs",
@@ -63,7 +63,7 @@ fn test_batch_mode_end_to_end() {
             .args([
                 "run",
                 "--bin",
-                "phraya-cli",
+                "phraya",
                 "--",
                 "align",
                 plan_file.to_str().unwrap(),
@@ -95,7 +95,7 @@ fn test_batch_mode_end_to_end() {
         .args([
             "run",
             "--bin",
-            "phraya-cli",
+            "phraya",
             "--",
             "merge",
             plan_file.to_str().unwrap(),
@@ -141,7 +141,7 @@ fn test_batch_mode_ensure() {
         .args([
             "run",
             "--bin",
-            "phraya-cli",
+            "phraya",
             "--",
             "plan",
             "--inputs",
@@ -165,7 +165,7 @@ fn test_batch_mode_ensure() {
             .args([
                 "run",
                 "--bin",
-                "phraya-cli",
+                "phraya",
                 "--",
                 "align",
                 plan_file.to_str().unwrap(),
@@ -182,7 +182,7 @@ fn test_batch_mode_ensure() {
         .args([
             "run",
             "--bin",
-            "phraya-cli",
+            "phraya",
             "--",
             "align",
             plan_file.to_str().unwrap(),

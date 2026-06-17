@@ -90,7 +90,60 @@ Workspace with 5 crates:
 - **`.phraya`**: Position index (variant observations + coverage track). Mergeable. Binary MessagePack + zstd.
 - **`.phraya.queries`**: Query index (multi-mapping alternatives per read). Sidecar file. Binary MessagePack + zstd.
 
-## Building
+## Installation
+
+### Prebuilt binaries
+
+Download the latest release for Linux x86_64 from the [Releases page](https://github.com/CFSAN-Biostatistics/phraya/releases):
+
+```bash
+# Replace v0.1.0 with the desired version
+curl -LO https://github.com/CFSAN-Biostatistics/phraya/releases/download/v0.1.0/phraya-v0.1.0-x86_64-linux-gnu-portable.tar.gz
+tar -xzf phraya-v0.1.0-x86_64-linux-gnu-portable.tar.gz
+./phraya --version
+```
+
+The portable build uses SSE4.2 (supported on all x86_64 CPUs since ~2008). For best k-mer sketching performance on modern hardware, build from source with `-C target-cpu=native`.
+
+## Docker Quick Start
+
+```bash
+# Pull the latest image (amd64 and arm64 supported)
+docker pull ghcr.io/cfsan-biostatistics/phraya:latest
+
+# Verify installation
+docker run --rm ghcr.io/cfsan-biostatistics/phraya:latest --version
+
+# Run with your data (mount current directory as /data)
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    plan --inputs /data/reads/*.fastq --reference /data/ref.fasta --output /data/cohort.phrayaplan
+
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    align /data/cohort.phrayaplan query_id target_id
+
+docker run --rm -v $(pwd):/data ghcr.io/cfsan-biostatistics/phraya:latest \
+    filter /data/cohort.phraya --min-coverage 10 --min-mapq 30 --format vcf > variants.vcf
+```
+
+### Available tags
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Most recent release |
+| `v1.2.3` | Exact version |
+| `v1.2` | Latest patch for minor version |
+
+### SIMD in Docker
+
+The Docker image is built with the **SSE4.2 baseline** (`-C target-feature=+sse4.2`) rather than `-C target-cpu=native`. This ensures the image runs on any modern x86-64 CPU but does not use AVX2 acceleration for k-mer sketching.
+
+**For HPC workloads** where you control the hardware, building from source with `-C target-cpu=native` will enable AVX2 (x86-64) or NEON (ARM64) and improve sketching throughput:
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+### Build from source
 
 ```bash
 cargo build --release

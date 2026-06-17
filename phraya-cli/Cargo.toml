@@ -17,6 +17,10 @@ categories.workspace = true
 name = "phraya"
 path = "src/main.rs"
 
+[[bin]]
+name = "phraya"
+path = "src/main.rs"
+
 [dependencies]
 phraya-core = { workspace = true }
 phraya-io = { workspace = true }
