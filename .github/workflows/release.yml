@@ -9,6 +9,8 @@ jobs:
   build-linux-portable:
     name: Build Linux x86_64 portable
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
