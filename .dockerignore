@@ -1,0 +1,6 @@
+target/
+.git/
+*.md
+.claude/
+scripts/
+benches/

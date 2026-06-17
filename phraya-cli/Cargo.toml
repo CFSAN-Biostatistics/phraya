@@ -1,7 +1,25 @@
 [package]
 name = "phraya-cli"
-version = "0.1.0"
-edition = "2021"
+description = "General-purpose pairwise sequence aligner for bacterial genomics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "phraya"
+path = "src/main.rs"
+
+[[bin]]
+name = "phraya"
+path = "src/main.rs"
 
 [dependencies]
 phraya-core = { workspace = true }
