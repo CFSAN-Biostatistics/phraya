@@ -13,7 +13,7 @@ General-purpose pairwise sequence aligner for bacterial genomics. Short reads, l
 ## Installation
 
 ```bash
-cargo install --git https://github.com/CFSAN-Biostatistics/phraya --locked phraya-cli
+cargo install --git https://github.com/CFSAN-Biostatistics/phraya --locked phraya
 ```
 
 This installs the `phraya` binary using Rust's portable SIMD path. On ARM64 (Graviton, Apple Silicon), NEON is always active. On x86-64, a scalar fallback is used — portable builds run at approximately 40–60% the speed of a native SIMD build.
@@ -21,7 +21,7 @@ This installs the `phraya` binary using Rust's portable SIMD path. On ARM64 (Gra
 For full AVX2 acceleration on x86-64:
 
 ```bash
-RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/CFSAN-Biostatistics/phraya --locked phraya-cli
+RUSTFLAGS="-C target-cpu=native" cargo install --git https://github.com/CFSAN-Biostatistics/phraya --locked phraya
 ```
 
 Requires Rust 1.75+. No external binary dependencies (BWA, minimap2, samtools, htslib).
@@ -82,7 +82,7 @@ Workspace with 5 crates:
 - **phraya-io**: FASTA/FASTQ/BAM/CRAM parsing, `.phrayaplan`/`.phraya`/`.phraya.queries` formats (MessagePack + zstd)
 - **phraya-align**: WFA extension, SIMD diagonal fill (SSE4.2/NEON), seeding from minimizer sketches
 - **phraya-filter**: Filtering library (threshold/expression/preset), output formatters (VCF/TSV/phraya)
-- **phraya-cli**: Binary CLI (plan/plan-tasks/align/filter subcommands)
+- **phraya** (`phraya-cli/`): Binary CLI (plan/plan-tasks/align/filter subcommands)
 
 ## File Formats
 
@@ -264,7 +264,7 @@ docker pull ghcr.io/cfsan-biostatistics/phraya:v0.2.0
 docker run --rm ghcr.io/cfsan-biostatistics/phraya:v0.2.0 --version
 
 # crates.io: package page should show new version
-# https://crates.io/crates/phraya-cli
+# https://crates.io/crates/phraya
 ```
 
 #### Platform binary selection guide

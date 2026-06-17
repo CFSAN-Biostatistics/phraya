@@ -16,6 +16,7 @@ authors = ["Phraya Contributors"]
 license = "Unlicense"
 repository = "https://github.com/CFSAN-Biostatistics/phraya"
 homepage = "https://github.com/CFSAN-Biostatistics/phraya"
+documentation = "https://docs.rs/phraya"
 readme = "README.md"
 description = "General-purpose pairwise sequence aligner for bacterial genomics with native Rust alignment algorithms"
 keywords = ["bioinformatics", "genomics", "sequence-alignment", "bacteria", "snp-calling"]

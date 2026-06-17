@@ -1,5 +1,5 @@
 [package]
-name = "phraya-cli"
+name = "phraya"
 description = "General-purpose pairwise sequence aligner for bacterial genomics"
 version.workspace = true
 edition.workspace = true
@@ -12,10 +12,6 @@ documentation.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-
-[[bin]]
-name = "phraya"
-path = "src/main.rs"
 
 [[bin]]
 name = "phraya"

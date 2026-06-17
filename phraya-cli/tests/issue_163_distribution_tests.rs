@@ -47,8 +47,8 @@ fn issue_163_readme_documents_standard_cargo_install() {
         "README must document: cargo install --git https://github.com/CFSAN-Biostatistics/phraya"
     );
     assert!(
-        readme.contains("--locked phraya-cli"),
-        "README must include --locked phraya-cli in the install command"
+        readme.contains("--locked phraya"),
+        "README must include --locked phraya in the install command"
     );
 }
 

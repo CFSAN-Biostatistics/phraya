@@ -69,7 +69,7 @@ jobs:
       - name: Build
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo build --release --target ${{ matrix.target }} -p phraya-cli
+        run: cargo build --release --target ${{ matrix.target }} -p phraya
 
       - name: Package
         shell: bash
@@ -219,7 +219,7 @@ jobs:
       - name: Wait for phraya-filter to propagate
         run: sleep 30
 
-      - name: Publish phraya-cli
+      - name: Publish phraya
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p phraya-cli
+        run: cargo publish -p phraya
