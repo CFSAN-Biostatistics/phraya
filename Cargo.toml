@@ -15,6 +15,12 @@ rust-version = "1.75"
 authors = ["Phraya Contributors"]
 license = "Unlicense"
 repository = "https://github.com/CFSAN-Biostatistics/phraya"
+homepage = "https://github.com/CFSAN-Biostatistics/phraya"
+documentation = "https://docs.rs/phraya"
+description = "General-purpose pairwise sequence aligner for bacterial genomics with native Rust alignment algorithms"
+keywords = ["bioinformatics", "genomics", "sequence-alignment", "bacteria", "snp-calling"]
+categories = ["science", "command-line-utilities"]
+publish = true
 
 [workspace.dependencies]
 # Internal crates
