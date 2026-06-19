@@ -1,5 +1,5 @@
 use crate::seeding::find_seeds;
-use crate::{score_alignments, wfa_extend, SeedAnchor};
+use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{sketch_sequence_default, Sequence, VariantObservation};
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
@@ -60,6 +60,14 @@ impl AlignConfig {
     pub fn exact() -> Self {
         Self::new(Strategy::Exact)
     }
+
+    /// Override the coverage-window radius independently of the strategy preset.
+    /// The strategy still selects the alignment algorithm; this only changes the width
+    /// of the per-variant local-coverage annotation.
+    pub fn with_coverage_window_radius(mut self, radius: usize) -> Self {
+        self.coverage_window_radius = radius;
+        self
+    }
 }
 
 impl Default for AlignConfig {
@@ -88,6 +96,83 @@ pub fn align_task(
     align_task_with_config(query, target, plan, &AlignConfig::default())
 }
 
+/// Maximum query length for which the Myers bit-parallel engine is used. Longer reads
+/// fall back to WFA: Myers is O(nm/w) (quadratic in length), while WFA is O(s·n) and
+/// scales better once reads are long enough that the length term dominates.
+const MYERS_MAX_QUERY_LEN: usize = 500;
+
+/// Divergence ceiling for the Fast strategy. Reads whose best alignment exceeds this
+/// fraction of mismatches+indels per base are dropped — the low-sensitivity tradeoff
+/// that lets Fast skip hard/divergent reads for speed.
+const FAST_MAX_DIVERGENCE: f64 = 0.20;
+
+/// Build the list of WFA/Myers anchors (each `query_pos = 0`) from minimizer seeds,
+/// according to the strategy.
+///
+/// - `Exact` / `Balanced`: every distinct seed-derived target start, plus a `(0,0)`
+///   fallback that wins ties in degenerate/repetitive sequences. Highest sensitivity.
+/// - `Fast`: a single anchor at the best-supported target start (minimizer vote),
+///   collapsing the per-read anchor count to O(1) even when a repeat sprays thousands
+///   of seeds. Falls back to `(0,0)` when no seeds are shared.
+fn build_anchors(strategy: Strategy, seeds: &[crate::Seed]) -> Vec<SeedAnchor> {
+    let target_start_of = |s: &crate::Seed| (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
+
+    match strategy {
+        Strategy::Fast => {
+            let mut votes: HashMap<usize, usize> = HashMap::new();
+            for s in seeds {
+                *votes.entry(target_start_of(s)).or_insert(0) += 1;
+            }
+            // Most-voted target start; ties broken toward the earliest position.
+            match votes
+                .into_iter()
+                .max_by_key(|&(start, count)| (count, std::cmp::Reverse(start)))
+            {
+                Some((best_start, _)) => vec![SeedAnchor { query_pos: 0, target_pos: best_start }],
+                None => vec![SeedAnchor { query_pos: 0, target_pos: 0 }],
+            }
+        }
+        Strategy::Balanced | Strategy::Exact => {
+            let mut seen = HashSet::new();
+            let mut result = vec![SeedAnchor { query_pos: 0, target_pos: 0 }];
+            seen.insert(0usize);
+            for s in seeds {
+                let target_start = target_start_of(s);
+                if seen.insert(target_start) {
+                    result.push(SeedAnchor { query_pos: 0, target_pos: target_start });
+                }
+            }
+            result
+        }
+    }
+}
+
+/// Extend a single anchor with the engine selected by `strategy`.
+///
+/// - `Exact`: canonical seeded WFA on every anchor — the reference path.
+/// - `Balanced` / `Fast`: Myers fitting for short reads (identical results to WFA, but
+///   faster), falling back to WFA for reads longer than [`MYERS_MAX_QUERY_LEN`].
+///
+/// Fast's distinction from Balanced is in *which* anchors it extends (seed subsampling)
+/// and a post-hoc divergence cutoff, handled by the caller — not the extension engine.
+fn extend_anchor(
+    strategy: Strategy,
+    query: &[u8],
+    target_window: &[u8],
+    anchor: SeedAnchor,
+) -> crate::WfaResult {
+    match strategy {
+        Strategy::Exact => wfa_extend(query, target_window, anchor),
+        Strategy::Balanced | Strategy::Fast => {
+            if query.len() <= MYERS_MAX_QUERY_LEN {
+                myers_extend(query, target_window, anchor)
+            } else {
+                wfa_extend(query, target_window, anchor)
+            }
+        }
+    }
+}
+
 /// Execute a single alignment task: query vs target with specified configuration.
 pub fn align_task_with_config(
     query: &Sequence,
@@ -108,31 +193,9 @@ pub fn align_task_with_config(
 
     // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
     // Seeds mid-query would miss variants before the seed; aligning from query position 0
-    // ensures the full query is aligned. Deduplicate by target_start to avoid redundant calls.
+    // ensures the full query is aligned. Anchor selection is strategy-dependent.
     let mut alignments = Vec::new();
-
-    // Always start with anchor (0,0) so it wins ties in score_alignments.
-    // Seed-derived anchors for the correct mapping position have lower edit distance
-    // in real data; for degenerate repetitive sequences, (0,0) wins ties and
-    // places variants at reference-relative rather than window-relative positions.
-    let anchors: Vec<SeedAnchor> = {
-        let mut seen = HashSet::new();
-        let mut result = vec![SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        }];
-        seen.insert(0usize);
-        for s in &seeds {
-            let target_start = (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
-            if seen.insert(target_start) {
-                result.push(SeedAnchor {
-                    query_pos: 0,
-                    target_pos: target_start,
-                });
-            }
-        }
-        result
-    };
+    let anchors = build_anchors(config.strategy, &seeds);
 
     for anchor in anchors {
         // Window the target to ~2× query length from the anchor position.
@@ -145,9 +208,9 @@ pub fn align_task_with_config(
         let margin = query.len() * 2;
         let window_end = (anchor.target_pos + margin).min(target.bases().len());
         let target_window = &target.bases()[..window_end];
-        match wfa_extend(query.bases(), target_window, anchor) {
+        match extend_anchor(config.strategy, query.bases(), target_window, anchor) {
             Ok(aln) => alignments.push(aln),
-            Err(e) => log::warn!("WFA failed for anchor {:?}: {:?}", anchor, e),
+            Err(e) => log::warn!("alignment failed for anchor {:?}: {:?}", anchor, e),
         }
     }
 
@@ -157,6 +220,15 @@ pub fn align_task_with_config(
 
     let scored = score_alignments(&alignments, query.len());
     let primary_score = 1.0 - (scored.primary.edit_distance as f64 / query.len().max(1) as f64);
+
+    // Fast strategy: drop reads whose best alignment exceeds the divergence cutoff. This
+    // is the deliberate sensitivity sacrifice — confident, low-divergence reads only.
+    if config.strategy == Strategy::Fast {
+        let divergence = scored.primary.edit_distance as f64 / query.len().max(1) as f64;
+        if divergence > FAST_MAX_DIVERGENCE {
+            return None;
+        }
+    }
 
     // Compute raw (un-quantized) coverage for local_coverage lookups in variants,
     // then quantize separately for the stored coverage track.
@@ -279,7 +351,9 @@ fn extract_variants_from_cigar(
                          .with_kmer_uniqueness(kmer_uniqueness);
 
                         if let Some(mi) = mate_info {
-                            obs = obs.with_mate_info(mi.clone());
+                            obs = obs
+                                .with_mate_info(mi.clone())
+                                .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 });
                         }
 
                         variants.push(obs);
@@ -337,7 +411,9 @@ fn extract_variants_from_cigar(
                     .with_kmer_uniqueness(kmer_uniqueness);
 
                     if let Some(mi) = mate_info {
-                        obs = obs.with_mate_info(mi.clone());
+                        obs = obs
+                            .with_mate_info(mi.clone())
+                            .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 });
                     }
 
                     variants.push(obs);
@@ -388,7 +464,9 @@ fn extract_variants_from_cigar(
                     .with_kmer_uniqueness(kmer_uniqueness);
 
                     if let Some(mi) = mate_info {
-                        obs = obs.with_mate_info(mi.clone());
+                        obs = obs
+                            .with_mate_info(mi.clone())
+                            .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 });
                     }
 
                     variants.push(obs);

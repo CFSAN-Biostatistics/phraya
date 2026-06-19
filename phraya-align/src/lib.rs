@@ -119,6 +119,37 @@ pub fn myers_edit_distance(query: &[u8], target: &[u8]) -> (usize, String) {
     wfa_simd::myers_edit_distance_impl(query, target)
 }
 
+/// Myers fitting extension: the alignment-path counterpart to [`wfa_extend`].
+///
+/// Aligns `query[seed.query_pos..]` against `target[seed.target_pos..]` in *fitting*
+/// mode — the query is fully consumed but the target end is free, so a read windowed
+/// against a longer reference is not penalised for the unconsumed tail. This mirrors
+/// [`wfa_extend`]'s semantics, producing the same edit distance, CIGAR (M/X/I/D), and
+/// consumed target span, so the Myers and WFA strategies are interchangeable for
+/// variant calling. Faster than WFA for short reads and higher-divergence alignments.
+pub fn myers_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
+    if seed.query_pos > query.len() || seed.target_pos > target.len() {
+        return Err(WfaError::InvalidInput(
+            "Seed position beyond sequence length".to_string(),
+        ));
+    }
+
+    let query_suffix = &query[seed.query_pos..];
+    let target_suffix = &target[seed.target_pos..];
+
+    let (edit_distance, cigar, target_consumed) =
+        wfa_simd::myers_fitting_impl(query_suffix, target_suffix);
+
+    Ok(Alignment {
+        cigar,
+        edit_distance,
+        query_start: seed.query_pos,
+        query_end: seed.query_pos + query_suffix.len(),
+        target_start: seed.target_pos,
+        target_end: seed.target_pos + target_consumed,
+    })
+}
+
 /// Score alignments by normalized edit distance and filter alternatives.
 pub fn score_alignments(alignments: &[Alignment], query_len: usize) -> ScoredAlignments {
     if alignments.is_empty() {

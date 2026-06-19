@@ -1,5 +1,27 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use phraya_align::wfa_simd::{count_matching_prefix, count_matching_prefix_scalar};
 use phraya_align::{wfa_extend_naive, wfa_extend_simd, SeedAnchor};
+
+/// Micro-benchmark the WFA inner-loop primitive: scalar byte-by-byte vs the
+/// architecture-dispatched SIMD longest-common-prefix. Run with
+/// `RUSTFLAGS="-C target-feature=+sse2" cargo bench -p phraya-align count_matching_prefix`.
+fn bench_count_matching_prefix(c: &mut Criterion) {
+    let mut group = c.benchmark_group("count_matching_prefix");
+    // Long matching runs with a single trailing mismatch — the common extend case.
+    for run_len in [32usize, 256, 4096] {
+        let a: Vec<u8> = (0..run_len).map(|i| b"ACGT"[i % 4]).collect();
+        let mut b = a.clone();
+        *b.last_mut().unwrap() ^= 0x01; // force the mismatch at the final byte
+
+        group.bench_with_input(BenchmarkId::new("scalar", run_len), &(&a, &b), |bn, (a, b)| {
+            bn.iter(|| count_matching_prefix_scalar(black_box(a), black_box(b)))
+        });
+        group.bench_with_input(BenchmarkId::new("simd", run_len), &(&a, &b), |bn, (a, b)| {
+            bn.iter(|| count_matching_prefix(black_box(a), black_box(b)))
+        });
+    }
+    group.finish();
+}
 
 // Test will fail: functions do not exist yet
 fn bench_10kb_alignment_naive(c: &mut Criterion) {
@@ -240,6 +262,7 @@ fn bench_varying_divergence(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_count_matching_prefix,
     bench_10kb_alignment_naive,
     bench_10kb_alignment_simd,
     bench_comparison,

@@ -365,6 +365,76 @@ fn issue_131_gc_rich_sequence_alignment() {
 // Test Category 6: Performance - Sub-quadratic Behavior
 // ============================================================================
 
+/// Issue #176: differential correctness of Myers fitting extension vs WFA.
+///
+/// Across a broad sweep of randomized reads windowed against ~2× reference (with SNPs
+/// and indels), `myers_extend` must report the same edit distance as `wfa_extend`.
+/// These are two independent fitting-alignment implementations; agreement over hundreds
+/// of cases is the scientific guarantee that the Fast strategy preserves variant calls.
+#[test]
+fn issue_176_myers_fitting_edit_distance_matches_wfa_sweep() {
+    // Small deterministic LCG — no external rng dependency.
+    let mut state: u64 = 0x9E3779B97F4A7C15;
+    let mut next = || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (state >> 33) as u32
+    };
+    let bases = [b'A', b'C', b'G', b'T'];
+
+    let mut cases = 0;
+    for query_len in [60usize, 120, 200, 350] {
+        for trial in 0..80 {
+            // Random query.
+            let query: Vec<u8> = (0..query_len).map(|_| bases[(next() % 4) as usize]).collect();
+
+            // Build a target whose first region derives from the query (with a few SNPs and
+            // maybe a small indel), followed by an unrelated reference tail to ~2× length.
+            let mut region = query.clone();
+            let num_snps = (next() % 5) as usize; // 0..4 substitutions
+            for _ in 0..num_snps {
+                if region.is_empty() { break; }
+                let p = (next() as usize) % region.len();
+                region[p] = bases[(next() % 4) as usize];
+            }
+            // Occasionally introduce one short indel (deletion or insertion in the region).
+            match trial % 3 {
+                1 if region.len() > 10 => {
+                    let p = (next() as usize) % (region.len() - 4);
+                    let del = 1 + (next() % 3) as usize;
+                    region.drain(p..(p + del).min(region.len()));
+                }
+                2 => {
+                    let p = (next() as usize) % (region.len() + 1);
+                    let ins = 1 + (next() % 3) as usize;
+                    let extra: Vec<u8> = (0..ins).map(|_| bases[(next() % 4) as usize]).collect();
+                    region.splice(p..p, extra);
+                }
+                _ => {}
+            }
+
+            // Unrelated reference tail so target ≈ 2× query (exercises the fitting path).
+            let tail_len = query_len + query_len / 2 + 20;
+            let tail: Vec<u8> = (0..tail_len).map(|_| bases[(next() % 4) as usize]).collect();
+            let mut target = region;
+            target.extend_from_slice(&tail);
+
+            let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
+            let myers = phraya_align::myers_extend(&query, &target, seed.clone())
+                .expect("myers_extend should succeed");
+            let wfa = wfa_extend(&query, &target, seed).expect("wfa_extend should succeed");
+
+            assert_eq!(
+                myers.edit_distance, wfa.edit_distance,
+                "edit distance disagreed (query_len={query_len}, trial={trial}): \
+                 myers={} wfa={}\n  query={:?}\n  target={:?}",
+                myers.edit_distance, wfa.edit_distance, query, target
+            );
+            cases += 1;
+        }
+    }
+    assert!(cases >= 300, "expected a broad sweep, ran {cases}");
+}
+
 /// Issue #131: WFA completes short-read alignment in O(s) time.
 ///
 /// The executor windows the target to ~2× query length before calling wfa_extend,
@@ -902,7 +972,11 @@ fn issue_144_myers_150bp_short_read_matches_wfa() {
     );
 }
 
-/// Issue #144: Myers produces identical output to WFA on 300bp window (realistic alignment window)
+/// Issue #176: Myers fitting extension produces identical output to WFA fitting on a
+/// realistic 300bp window. A 150bp read windowed against ~2× reference must NOT be
+/// penalised for the unconsumed target tail — both aligners free the target end.
+/// (The global `myers_edit_distance` primitive intentionally differs here; the
+/// alignment path uses `myers_extend`, which is fitting like `wfa_extend`.)
 #[test]
 fn issue_144_myers_300bp_window_matches_wfa() {
     // Realistic: 150bp read aligned vs ~300bp window on reference
@@ -914,20 +988,24 @@ fn issue_144_myers_300bp_window_matches_wfa() {
     target[150] = b'G';
     target[275] = b'T';
 
-    let (myers_dist, myers_cigar) = phraya_align::myers_edit_distance(&query, &target);
-
     let seed = SeedAnchor {
         query_pos: 0,
         target_pos: 0,
     };
+    let myers_result = phraya_align::myers_extend(&query, &target, seed.clone())
+        .expect("Myers fitting extension should succeed");
     let wfa_result = wfa_extend(&query, &target, seed).expect("WFA should succeed");
 
     assert_eq!(
-        myers_dist, wfa_result.edit_distance,
-        "Myers must match WFA on 300bp window alignment"
+        myers_result.edit_distance, wfa_result.edit_distance,
+        "Myers fitting must match WFA edit distance on 300bp window alignment"
     );
     assert_eq!(
-        myers_cigar, wfa_result.cigar,
-        "Myers CIGAR must match WFA on 300bp window alignment"
+        myers_result.cigar, wfa_result.cigar,
+        "Myers fitting CIGAR must match WFA on 300bp window alignment"
+    );
+    assert_eq!(
+        myers_result.target_end, wfa_result.target_end,
+        "Myers fitting must consume the same target span as WFA"
     );
 }

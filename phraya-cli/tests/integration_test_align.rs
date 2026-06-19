@@ -126,6 +126,56 @@ fn issue_78_align_writes_queries_sidecar() {
     );
 }
 
+// ── Issue #176: --coverage-window orthogonal override ─────────────────────────
+
+/// `phraya align --strategy fast --coverage-window N` is accepted and succeeds: the
+/// coverage-window radius can be set independently of the strategy preset.
+#[test]
+fn issue_176_align_accepts_coverage_window_override() {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+
+    let fasta = create_fasta(
+        p,
+        "seqs.fa",
+        &[
+            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
+            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
+        ],
+    );
+
+    let plan_path = p.join("test.phrayaplan");
+    write_test_plan(&plan_path, &fasta);
+    let output_path = p.join("out.phraya");
+
+    let status = std::process::Command::new("cargo")
+        .args([
+            "run",
+            "--manifest-path",
+            get_manifest_path().to_str().unwrap(),
+            "--",
+            "align",
+            plan_path.to_str().unwrap(),
+            "read1",
+            "ref",
+            "--output",
+            output_path.to_str().unwrap(),
+            "--strategy",
+            "fast",
+            "--coverage-window",
+            "10",
+        ])
+        .output()
+        .expect("cargo run failed");
+
+    assert!(
+        status.status.success(),
+        "phraya align --coverage-window should succeed.\nstderr: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert!(output_path.exists(), ".phraya output should be created");
+}
+
 // ── Slice 3 ──────────────────────────────────────────────────────────────────
 
 /// phraya align exits non-zero for an unknown query_id

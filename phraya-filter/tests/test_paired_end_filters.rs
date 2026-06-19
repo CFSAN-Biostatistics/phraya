@@ -30,12 +30,13 @@ fn create_test_obs(insert_size: i32, proper_pair: bool, mate_mapped: bool) -> Va
         "sample:read".to_string(), // provenance
     )
     .with_mate_info(mate_info)
+    .with_pair_counts(1, if proper_pair { 1 } else { 0 })
 }
 
 #[test]
 fn filter_requires_proper_pairs() {
     let filter = FilterBuilder::new()
-        .require_proper_pairs(true)
+        .require_proper_pairs(1.0)
         .build();
 
     let obs_proper = create_test_obs(400, true, true);
@@ -154,7 +155,7 @@ fn filter_skips_paired_checks_for_unpaired_reads() {
 #[test]
 fn filter_rejects_unpaired_when_proper_pairs_required() {
     let filter = FilterBuilder::new()
-        .require_proper_pairs(true)
+        .require_proper_pairs(1.0)
         .build();
 
     // Observation without mate_info
@@ -188,7 +189,7 @@ fn filter_combined_proper_and_discordant() {
     };
 
     let filter = FilterBuilder::new()
-        .require_proper_pairs(true)
+        .require_proper_pairs(1.0)
         .exclude_discordant_pairs(true)
         .with_insert_distribution(dist)
         .build();
@@ -249,7 +250,7 @@ fn filter_all_paired_constraints_together() {
     };
 
     let filter = FilterBuilder::new()
-        .require_proper_pairs(true)
+        .require_proper_pairs(1.0)
         .exclude_discordant_pairs(true)
         .min_insert_size(300)
         .max_insert_size(600)
@@ -290,7 +291,7 @@ fn filter_with_coverage_and_paired_constraints() {
     let filter = FilterBuilder::new()
         .min_coverage(5)
         .min_mapq(20)
-        .require_proper_pairs(true)
+        .require_proper_pairs(1.0)
         .exclude_discordant_pairs(true)
         .with_insert_distribution(dist)
         .build();
