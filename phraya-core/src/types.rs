@@ -169,6 +169,15 @@ pub struct VariantObservation {
     /// Number of reads at this position that are properly paired (SAM flag 0x2)
     #[serde(default)]
     proper_pair_count: u32,
+    /// Sum of absolute insert sizes from paired reads at this position (for mean computation).
+    #[serde(default)]
+    insert_size_sum: i64,
+    /// Number of paired reads contributing an insert size at this position.
+    #[serde(default)]
+    insert_size_count: u32,
+    /// Number of paired reads at this position whose mate was unmapped (SAM flag 0x8).
+    #[serde(default)]
+    unmapped_mate_count: u32,
     /// Mate relationship metadata for paired-end reads (insert size filters).
     /// Kept as the final field so that omitting it when `None` (the common case) only
     /// shortens the trailing end of the MessagePack array, leaving all earlier fields
@@ -209,6 +218,9 @@ impl VariantObservation {
             mate_info: None,
             total_paired_count: 0,
             proper_pair_count: 0,
+            insert_size_sum: 0,
+            insert_size_count: 0,
+            unmapped_mate_count: 0,
         }
     }
 
@@ -282,6 +294,60 @@ impl VariantObservation {
         } else {
             Some(self.proper_pair_count as f64 / self.total_paired_count as f64)
         }
+    }
+
+    /// Set aggregate insert-size stats from contributing reads.
+    pub fn with_insert_stats(mut self, insert_size_sum: i64, insert_size_count: u32) -> Self {
+        self.insert_size_sum = insert_size_sum;
+        self.insert_size_count = insert_size_count;
+        self
+    }
+
+    /// Add insert-size stats from another read at the same position (used during merge).
+    pub fn add_insert_stats(&mut self, insert_size_sum: i64, insert_size_count: u32) {
+        self.insert_size_sum += insert_size_sum;
+        self.insert_size_count += insert_size_count;
+    }
+
+    /// Mean absolute insert size across paired reads at this position.
+    /// Returns None if no paired reads contributed insert sizes.
+    pub fn mean_insert_size(&self) -> Option<f64> {
+        if self.insert_size_count == 0 {
+            None
+        } else {
+            Some(self.insert_size_sum as f64 / self.insert_size_count as f64)
+        }
+    }
+
+    /// Raw insert-size stats: (sum, count).
+    pub fn insert_stats(&self) -> (i64, u32) {
+        (self.insert_size_sum, self.insert_size_count)
+    }
+
+    /// Increment the count of paired reads whose mate was unmapped at this position.
+    pub fn add_unmapped_mate_count(&mut self, count: u32) {
+        self.unmapped_mate_count += count;
+    }
+
+    /// Set unmapped-mate count (builder pattern).
+    pub fn with_unmapped_mate_count(mut self, count: u32) -> Self {
+        self.unmapped_mate_count = count;
+        self
+    }
+
+    /// Fraction of paired reads at this position whose mate was unmapped.
+    /// Returns None if no paired reads cover this position.
+    pub fn unmapped_mate_fraction(&self) -> Option<f64> {
+        if self.total_paired_count == 0 {
+            None
+        } else {
+            Some(self.unmapped_mate_count as f64 / self.total_paired_count as f64)
+        }
+    }
+
+    /// Raw unmapped-mate count.
+    pub fn unmapped_mate_count(&self) -> u32 {
+        self.unmapped_mate_count
     }
 
     /// Get the position of this variant

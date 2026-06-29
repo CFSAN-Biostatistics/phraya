@@ -245,6 +245,11 @@ pub fn align_task_with_config(
     // Look up mate info from plan (if available from BAM input)
     let mate_info = plan.mate_info.get(query.id());
 
+    // Pre-compute aggregate insert stats from mate_info so variants are merge-stable.
+    let insert_stats: Option<(i64, u32)> = mate_info.map(|mi| {
+        (mi.insert_size.abs() as i64, 1u32)
+    });
+
     let variants = extract_variants_from_cigar(
         &scored.primary.cigar,
         scored.primary.target_start,
@@ -260,6 +265,7 @@ pub fn align_task_with_config(
         config.coverage_window_radius,
         &plan.hotspot_intervals,
         mate_info,
+        insert_stats,
     );
 
     let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
@@ -296,6 +302,7 @@ fn extract_variants_from_cigar(
     coverage_window_radius: usize,
     hotspot_intervals: &[(u32, u32)],
     mate_info: Option<&phraya_core::types::MateInfo>,
+    insert_stats: Option<(i64, u32)>,
 ) -> Vec<VariantObservation> {
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
@@ -353,7 +360,11 @@ fn extract_variants_from_cigar(
                         if let Some(mi) = mate_info {
                             obs = obs
                                 .with_mate_info(mi.clone())
-                                .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 });
+                                .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 })
+                                                .with_unmapped_mate_count(if mi.mate_mapped { 0 } else { 1 });
+                            if let Some((sum, count)) = insert_stats {
+                                obs = obs.with_insert_stats(sum, count);
+                            }
                         }
 
                         variants.push(obs);
@@ -413,7 +424,11 @@ fn extract_variants_from_cigar(
                     if let Some(mi) = mate_info {
                         obs = obs
                             .with_mate_info(mi.clone())
-                            .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 });
+                            .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 })
+                            .with_unmapped_mate_count(if mi.mate_mapped { 0 } else { 1 });
+                        if let Some((sum, count)) = insert_stats {
+                            obs = obs.with_insert_stats(sum, count);
+                        }
                     }
 
                     variants.push(obs);
@@ -466,7 +481,11 @@ fn extract_variants_from_cigar(
                     if let Some(mi) = mate_info {
                         obs = obs
                             .with_mate_info(mi.clone())
-                            .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 });
+                            .with_pair_counts(1, if mi.proper_pair { 1 } else { 0 })
+                            .with_unmapped_mate_count(if mi.mate_mapped { 0 } else { 1 });
+                        if let Some((sum, count)) = insert_stats {
+                            obs = obs.with_insert_stats(sum, count);
+                        }
                     }
 
                     variants.push(obs);

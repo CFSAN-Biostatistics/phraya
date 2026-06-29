@@ -31,6 +31,7 @@ fn create_test_obs(insert_size: i32, proper_pair: bool, mate_mapped: bool) -> Va
     )
     .with_mate_info(mate_info)
     .with_pair_counts(1, if proper_pair { 1 } else { 0 })
+    .with_insert_stats(insert_size.abs() as i64, 1)
 }
 
 #[test]
@@ -311,4 +312,43 @@ fn filter_with_coverage_and_paired_constraints() {
     ).with_mate_info(mate_info);
 
     assert!(!filter.apply(&obs_low_cov), "Should fail low coverage");
+}
+
+/// Helper: build an observation with aggregate unmapped-mate stats only (post-merge scenario).
+fn obs_with_unmapped_mate_stats(total_paired: u32, unmapped_mate_count: u32) -> VariantObservation {
+    let mut alleles = HashMap::new();
+    alleles.insert(b'A', 10);
+    VariantObservation::new(
+        100, b'A', alleles, 0.95, "10M".to_string(), 60, 0, vec![10], 35.0, "sample:read".to_string(),
+    )
+    .with_pair_counts(total_paired, total_paired)
+    .with_unmapped_mate_count(unmapped_mate_count)
+}
+
+#[test]
+fn require_both_mates_mapped_passes_when_majority_mapped_post_merge() {
+    // 8 of 10 reads have mate mapped → 20% unmapped → below 50% threshold → pass
+    let obs = obs_with_unmapped_mate_stats(10, 2);
+    let filter = FilterBuilder::new().require_both_mates_mapped(true).build();
+    assert!(filter.apply(&obs), "20% unmapped mates should pass");
+}
+
+#[test]
+fn require_both_mates_mapped_rejects_when_majority_unmapped_post_merge() {
+    // 6 of 10 reads have unmapped mate → 60% → above 50% threshold → reject
+    let obs = obs_with_unmapped_mate_stats(10, 6);
+    let filter = FilterBuilder::new().require_both_mates_mapped(true).build();
+    assert!(!filter.apply(&obs), "60% unmapped mates should be rejected");
+}
+
+#[test]
+fn require_both_mates_mapped_passes_unpaired_reads() {
+    // No paired reads (total_paired=0) → unmapped_mate_fraction returns None → pass
+    let mut alleles = HashMap::new();
+    alleles.insert(b'A', 10);
+    let obs = VariantObservation::new(
+        100, b'A', alleles, 0.95, "10M".to_string(), 60, 0, vec![10], 35.0, "sample:read".to_string(),
+    ); // no mate_info, no pair counts
+    let filter = FilterBuilder::new().require_both_mates_mapped(true).build();
+    assert!(filter.apply(&obs), "unpaired reads pass when no aggregate data available");
 }
