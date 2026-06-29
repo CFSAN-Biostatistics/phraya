@@ -111,11 +111,7 @@ pub fn format_vcf(
         let filter = "PASS";
 
         // Build INFO field
-        let coverage = if !primary.local_coverage().is_empty() {
-            primary.local_coverage()[0]
-        } else {
-            0
-        };
+        let coverage = primary.coverage_at_variant().unwrap_or(0);
         let mapq = primary.mapq() as u32;
         let cigar = primary.cigar();
         let edit_dist = primary.edit_distance();

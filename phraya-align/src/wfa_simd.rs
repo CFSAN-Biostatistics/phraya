@@ -1063,7 +1063,7 @@ mod simd_diff_tests {
     //! *wrong* SIMD fill (e.g. an anti-diagonal indexing bug) would not. The
     //! companion `scripts/assert_simd.sh` proves the kernel is actually SIMD.
     use super::{fill_scalar, fill_simd};
-    use crate::{wfa_extend_naive, wfa_extend_simd, SeedAnchor};
+    use crate::{wfa_extend, wfa_extend_naive, SeedAnchor};
 
     /// Deterministic, dependency-free PRNG (SplitMix64) for reproducible cases.
     struct Rng(u64);
@@ -1167,7 +1167,7 @@ mod simd_diff_tests {
                         target_pos: 0,
                     };
                     let naive = wfa_extend_naive(&q, &t, seed).unwrap();
-                    let simd = wfa_extend_simd(&q, &t, seed).unwrap();
+                    let simd = wfa_extend(&q, &t, seed).unwrap();
                     assert_eq!(
                         naive.edit_distance, simd.edit_distance,
                         "edit distance mismatch (q.len={}, t.len={}, div={}%)",
@@ -1241,14 +1241,14 @@ mod simd_diff_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::{wfa_extend, wfa_extend_naive, wfa_extend_simd, SeedAnchor};
+    use crate::{wfa_extend, wfa_extend_naive, SeedAnchor};
 
     #[test]
     fn test_simd_exact_match() {
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
 
-        let result = wfa_extend_simd(
+        let result = wfa_extend(
             query,
             target,
             SeedAnchor {
@@ -1268,7 +1268,7 @@ mod tests {
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACTTACGT";
 
-        let result = wfa_extend_simd(
+        let result = wfa_extend(
             query,
             target,
             SeedAnchor {
@@ -1289,7 +1289,7 @@ mod tests {
         let query = b"ACGTACGT";
         let target = b"ACGTAACGT";
 
-        let result = wfa_extend_simd(
+        let result = wfa_extend(
             query,
             target,
             SeedAnchor {
@@ -1308,7 +1308,7 @@ mod tests {
         let query = b"ACGTAACGT";
         let target = b"ACGTACGT";
 
-        let result = wfa_extend_simd(
+        let result = wfa_extend(
             query,
             target,
             SeedAnchor {
@@ -1327,7 +1327,7 @@ mod tests {
         let query = b"ACGTACGTTAGC";
         let target = b"ACGTTCGTAGC";
 
-        let result = wfa_extend_simd(
+        let result = wfa_extend(
             query,
             target,
             SeedAnchor {
@@ -1343,12 +1343,12 @@ mod tests {
     }
 
     // Differential tests: naive vs SIMD must agree on edit distance.
-    // Only meaningful on x86_64 where wfa_extend_simd uses a different kernel
+    // Only meaningful on x86_64 where wfa_extend uses a different kernel
     // (wfa_extend_diag_simd_impl) than wfa_extend_naive (fill_wfa). On other
-    // architectures, wfa_extend_simd delegates to naive — comparing them is tautological.
+    // architectures, wfa_extend delegates to naive — comparing them is tautological.
     #[cfg(target_arch = "x86_64")]
     mod simd_vs_naive_differential {
-        use crate::{wfa_extend_naive, wfa_extend_simd, SeedAnchor};
+        use crate::{wfa_extend_naive, wfa_extend, SeedAnchor};
 
     #[test]
     fn test_simd_matches_naive_exact() {
@@ -1360,7 +1360,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1382,7 +1382,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1404,7 +1404,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1426,7 +1426,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1448,7 +1448,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1470,7 +1470,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1492,7 +1492,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1514,7 +1514,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1536,7 +1536,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1558,7 +1558,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1580,7 +1580,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1602,7 +1602,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1624,7 +1624,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1646,7 +1646,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1668,7 +1668,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1690,7 +1690,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1712,7 +1712,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1734,7 +1734,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1756,7 +1756,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1778,7 +1778,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend_simd(query, target, seed);
+        let simd_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(simd_result.is_ok());
@@ -1937,12 +1937,12 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_exact_match() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
 
-        let result = wfa_extend_neon(
+        let result = wfa_extend(
             query,
             target,
             SeedAnchor {
@@ -1961,7 +1961,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_exact() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
@@ -1971,7 +1971,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -1990,7 +1990,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_mismatch() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACTTACGT";
@@ -2000,7 +2000,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2016,7 +2016,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_insertion() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGT";
         let target = b"ACGTAACGT";
@@ -2026,7 +2026,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2042,7 +2042,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_deletion() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTAACGT";
         let target = b"ACGTACGT";
@@ -2052,7 +2052,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2068,7 +2068,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_complex() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTTAGC";
         let target = b"ACGTTCGTAGC";
@@ -2078,7 +2078,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2094,7 +2094,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_10kb() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query: Vec<u8> = (0..10_000)
             .map(|i| match i % 4 {
@@ -2124,7 +2124,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(&query, &target, seed.clone());
-        let neon_result = wfa_extend_neon(&query, &target, seed);
+        let neon_result = wfa_extend(&query, &target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2143,7 +2143,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_invalid_seed_beyond_query() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGT";
         let target = b"ACGTACGT";
@@ -2152,7 +2152,7 @@ mod tests {
             target_pos: 0,
         };
 
-        let result = wfa_extend_neon(query, target, seed);
+        let result = wfa_extend(query, target, seed);
         assert!(result.is_err());
     }
 
@@ -2160,7 +2160,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_invalid_seed_beyond_target() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGT";
         let target = b"ACGTACGT";
@@ -2169,7 +2169,7 @@ mod tests {
             target_pos: 100, // beyond target length
         };
 
-        let result = wfa_extend_neon(query, target, seed);
+        let result = wfa_extend(query, target, seed);
         assert!(result.is_err());
     }
 
@@ -2177,7 +2177,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_runs_unconditionally_on_aarch64() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
@@ -2187,7 +2187,7 @@ mod tests {
         };
 
         // Must run without runtime detection on aarch64
-        let result = wfa_extend_neon(query, target, seed);
+        let result = wfa_extend(query, target, seed);
         assert!(result.is_ok(), "NEON must run unconditionally on aarch64");
     }
 
@@ -2195,7 +2195,7 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "aarch64"))]
     fn issue_72_neon_fallback_on_non_aarch64() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
@@ -2205,7 +2205,7 @@ mod tests {
         };
 
         // Must not crash and should fall back gracefully
-        let result = wfa_extend_neon(query, target, seed);
+        let result = wfa_extend(query, target, seed);
         assert!(
             result.is_ok(),
             "NEON must fall back to naive on non-aarch64"
@@ -2216,7 +2216,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_alignment_positions_at_start() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
@@ -2225,7 +2225,7 @@ mod tests {
             target_pos: 0,
         };
 
-        let result = wfa_extend_neon(query, target, seed);
+        let result = wfa_extend(query, target, seed);
         assert!(result.is_ok());
 
         let alignment = result.unwrap();
@@ -2240,7 +2240,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_alignment_positions_at_midway() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
@@ -2249,7 +2249,7 @@ mod tests {
             target_pos: 4,
         };
 
-        let result = wfa_extend_neon(query, target, seed);
+        let result = wfa_extend(query, target, seed);
         assert!(result.is_ok());
 
         let alignment = result.unwrap();
@@ -2263,7 +2263,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_high_divergence() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGTACGT";
         let target = b"TGCATGCATGCATGCA";
@@ -2273,7 +2273,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2289,7 +2289,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_repeat_regions() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ATATATATATATAT";
         let target = b"ATATATATATAT";
@@ -2299,7 +2299,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2315,7 +2315,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_gc_rich() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"GCGCGCGCGCGCGCGC";
         let target = b"GCGCGCGGCGCGCGC";
@@ -2325,7 +2325,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2341,7 +2341,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_consecutive_indels() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTAAAACGT";
         let target = b"ACGTCGT";
@@ -2351,7 +2351,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());
@@ -2367,7 +2367,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_empty_suffix_at_seed() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
@@ -2376,7 +2376,7 @@ mod tests {
             target_pos: 12,
         };
 
-        let result = wfa_extend_neon(query, target, seed);
+        let result = wfa_extend(query, target, seed);
         assert!(result.is_ok());
 
         let alignment = result.unwrap();
@@ -2394,7 +2394,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_10kb_benchmark_completes() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
         use std::time::Instant;
 
         let query: Vec<u8> = (0..10_000)
@@ -2424,7 +2424,7 @@ mod tests {
         };
 
         let start = Instant::now();
-        let result = wfa_extend_neon(&query, &target, seed);
+        let result = wfa_extend(&query, &target, seed);
         let elapsed = start.elapsed();
 
         assert!(
@@ -2442,7 +2442,7 @@ mod tests {
     #[test]
     #[cfg(target_arch = "aarch64")]
     fn issue_72_neon_matches_naive_multiple_indels() {
-        use crate::wfa_extend_neon;
+        use crate::wfa_extend;
 
         let query = b"ACGTACGTACGTACGT";
         let target = b"ACGTTCGTAACGTACG";
@@ -2452,7 +2452,7 @@ mod tests {
         };
 
         let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let neon_result = wfa_extend_neon(query, target, seed);
+        let neon_result = wfa_extend(query, target, seed);
 
         assert!(naive_result.is_ok());
         assert!(neon_result.is_ok());

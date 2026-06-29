@@ -53,49 +53,14 @@ pub fn wfa_extend_naive(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaRes
     wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
 
-/// WFA extension (explicit entry point, same as wfa_extend).
+/// WFA O(s·n) extension — the single production entry point.
 ///
-/// Historical name preserved for API compatibility. Now uses O(s·n) WFA on all
-/// platforms. The "simd" name is misleading (originally referred to O(n×m)
-/// diagonal DP with portable SIMD, which was 28× slower than WFA).
-pub fn wfa_extend_simd(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    // Always use WFA, not diagonal DP
-    wfa_simd::wfa_extend_naive_impl(query, target, seed)
-}
-
-/// WFA extension (explicit entry point, same as wfa_extend).
-///
-/// Historical name preserved for API compatibility. Now uses O(s·n) WFA on all
-/// platforms. The "neon" name is misleading (originally referred to O(n×m)
-/// diagonal DP with portable SIMD, which was 28× slower than WFA).
-pub fn wfa_extend_neon(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    // Always use WFA, not diagonal DP
-    wfa_simd::wfa_extend_naive_impl(query, target, seed)
-}
-
-/// Runtime-dispatched WFA extension using multiversion.
-///
-/// Automatically selects SSE4.2 (if available) or naive implementation
-/// based on runtime CPU feature detection via the multiversion crate.
-// Production uses WFA O(s·n) wavefront alignment for all architectures.
-// The `wfa_extend_simd_impl` / `wfa_extend_neon_impl` functions were originally
-// designed for portable SIMD diagonal DP, but that's O(n×m) and 28× slower than
-// WFA. Real SIMD acceleration (if added) will target WFA operations, not DP.
-#[cfg(target_arch = "x86_64")]
+/// Aligns `query[seed.query_pos..]` against `target[seed.target_pos..]`.
+/// SIMD acceleration runs inside `count_matching_prefix` (SSE2 on x86_64,
+/// NEON on aarch64, u64-XOR elsewhere); there is no separate dispatch at
+/// this level. Use `wfa_extend_naive` in tests that want the deterministic
+/// scalar implementation explicitly.
 pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    // Always use WFA (O(s·n)), not diagonal DP (O(n×m))
-    wfa_simd::wfa_extend_naive_impl(query, target, seed)
-}
-
-#[cfg(target_arch = "aarch64")]
-pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    // Always use WFA (O(s·n)), not diagonal DP (O(n×m))
-    wfa_simd::wfa_extend_naive_impl(query, target, seed)
-}
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub fn wfa_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult {
-    // No SIMD path for other architectures.
     wfa_simd::wfa_extend_naive_impl(query, target, seed)
 }
 

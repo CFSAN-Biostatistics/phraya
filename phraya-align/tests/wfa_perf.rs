@@ -4,7 +4,7 @@
 //! `#[ignore]` by default (microbenchmarks are meaningless in the debug build
 //! `cargo test --all` uses). CI runs it in release with native SIMD enabled:
 //!   RUSTFLAGS="-C target-cpu=native" cargo test --release --test wfa_perf -- --ignored
-use phraya_align::{wfa_extend_naive, wfa_extend_simd, SeedAnchor};
+use phraya_align::{wfa_extend_naive, wfa_extend, SeedAnchor};
 use std::time::{Duration, Instant};
 
 fn make_pair(len: usize, div_pct: usize) -> (Vec<u8>, Vec<u8>) {
@@ -49,7 +49,7 @@ fn simd_faster_than_naive_ge_500bp() {
             std::hint::black_box(wfa_extend_naive(&q, &t, seed).unwrap());
         });
         let simd = best_of(15, || {
-            std::hint::black_box(wfa_extend_simd(&q, &t, seed).unwrap());
+            std::hint::black_box(wfa_extend(&q, &t, seed).unwrap());
         });
         let speedup = naive.as_secs_f64() / simd.as_secs_f64();
         eprintln!("len={len:>5}: naive={naive:>10.2?} simd={simd:>10.2?} speedup={speedup:.2}x");

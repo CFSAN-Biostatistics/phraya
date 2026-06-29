@@ -51,15 +51,10 @@ impl Column {
                     alts.iter().map(|&b| b as char).collect::<String>()
                 }
             }
-            Column::Coverage => {
-                // Use local_coverage[0] as proxy for coverage (consistent with ThresholdFilter)
-                // If empty, return 0
-                if obs.local_coverage().is_empty() {
-                    "0".to_string()
-                } else {
-                    obs.local_coverage()[0].to_string()
-                }
-            }
+            Column::Coverage => obs
+                .coverage_at_variant()
+                .unwrap_or(0)
+                .to_string(),
             Column::Mapq => obs.mapq().to_string(),
             Column::Cigar => obs.cigar().to_string(),
             Column::EditDistance => obs.edit_distance().to_string(),

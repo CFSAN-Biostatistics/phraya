@@ -37,169 +37,10 @@ impl FilterPreset {
     }
 }
 
-/// Threshold-based filter configuration
-#[derive(Debug, Clone)]
-pub struct FilterBuilder {
-    min_coverage: Option<u32>,
-    max_coverage: Option<u32>,
-    min_mapq: Option<u8>,
-    max_mapq: Option<u8>,
-    min_base_quality: Option<f64>,
-    min_allele_frequency: Option<f64>,
-    min_kmer_uniqueness: Option<f64>,
-    exclude_tandem_repeats: bool,
-    // Paired-end filters
-    exclude_discordant_pairs: bool,
-    discordant_sigma_threshold: f64,
-    /// Minimum fraction of covering reads that must be proper pairs (0.0–1.0). None = no requirement.
-    require_proper_pairs: Option<f64>,
-    min_insert_size: Option<i32>,
-    max_insert_size: Option<i32>,
-    require_both_mates_mapped: bool,
-    insert_distribution: Option<phraya_io::plan::InsertSizeDistribution>,
-}
-
-impl FilterBuilder {
-    /// Create a new filter builder with no filters
-    pub fn new() -> Self {
-        FilterBuilder {
-            min_coverage: None,
-            max_coverage: None,
-            min_mapq: None,
-            max_mapq: None,
-            min_base_quality: None,
-            min_allele_frequency: None,
-            min_kmer_uniqueness: None,
-            exclude_tandem_repeats: false,
-            exclude_discordant_pairs: false,
-            discordant_sigma_threshold: 3.0,
-            require_proper_pairs: None,
-            min_insert_size: None,
-            max_insert_size: None,
-            require_both_mates_mapped: false,
-            insert_distribution: None,
-        }
-    }
-
-    /// Set minimum coverage threshold
-    pub fn min_coverage(mut self, threshold: u32) -> Self {
-        self.min_coverage = Some(threshold);
-        self
-    }
-
-    /// Set maximum coverage threshold
-    pub fn max_coverage(mut self, threshold: u32) -> Self {
-        self.max_coverage = Some(threshold);
-        self
-    }
-
-    /// Set minimum MAPQ threshold
-    pub fn min_mapq(mut self, threshold: u8) -> Self {
-        self.min_mapq = Some(threshold);
-        self
-    }
-
-    /// Set maximum MAPQ threshold
-    pub fn max_mapq(mut self, threshold: u8) -> Self {
-        self.max_mapq = Some(threshold);
-        self
-    }
-
-    /// Set minimum base quality threshold
-    pub fn min_base_quality(mut self, threshold: f64) -> Self {
-        self.min_base_quality = Some(threshold);
-        self
-    }
-
-    /// Set minimum allele frequency threshold
-    pub fn min_allele_frequency(mut self, threshold: f64) -> Self {
-        self.min_allele_frequency = Some(threshold);
-        self
-    }
-
-    /// Set minimum k-mer uniqueness threshold
-    pub fn min_kmer_uniqueness(mut self, threshold: f64) -> Self {
-        self.min_kmer_uniqueness = Some(threshold);
-        self
-    }
-
-    /// Exclude variants in tandem repeat regions.
-    pub fn exclude_tandem_repeats(mut self, value: bool) -> Self {
-        self.exclude_tandem_repeats = value;
-        self
-    }
-
-    /// Exclude discordant pairs (insert size beyond mean ± Nσ)
-    pub fn exclude_discordant_pairs(mut self, value: bool) -> Self {
-        self.exclude_discordant_pairs = value;
-        self
-    }
-
-    /// Set sigma threshold for discordant pair detection (default: 3.0)
-    pub fn discordant_sigma_threshold(mut self, sigma: f64) -> Self {
-        self.discordant_sigma_threshold = sigma;
-        self
-    }
-
-    /// Require at least this fraction of covering reads to be proper pairs (0.0–1.0).
-    pub fn require_proper_pairs(mut self, min_fraction: f64) -> Self {
-        self.require_proper_pairs = Some(min_fraction);
-        self
-    }
-
-    /// Set minimum insert size (absolute value)
-    pub fn min_insert_size(mut self, size: i32) -> Self {
-        self.min_insert_size = Some(size);
-        self
-    }
-
-    /// Set maximum insert size (absolute value)
-    pub fn max_insert_size(mut self, size: i32) -> Self {
-        self.max_insert_size = Some(size);
-        self
-    }
-
-    /// Require both mates mapped
-    pub fn require_both_mates_mapped(mut self, value: bool) -> Self {
-        self.require_both_mates_mapped = value;
-        self
-    }
-
-    /// Provide insert size distribution for discordant pair detection
-    pub fn with_insert_distribution(mut self, dist: phraya_io::plan::InsertSizeDistribution) -> Self {
-        self.insert_distribution = Some(dist);
-        self
-    }
-
-    /// Build the filter
-    pub fn build(self) -> ThresholdFilter {
-        ThresholdFilter {
-            min_coverage: self.min_coverage,
-            max_coverage: self.max_coverage,
-            min_mapq: self.min_mapq,
-            max_mapq: self.max_mapq,
-            min_base_quality: self.min_base_quality,
-            min_allele_frequency: self.min_allele_frequency,
-            min_kmer_uniqueness: self.min_kmer_uniqueness,
-            exclude_tandem_repeats: self.exclude_tandem_repeats,
-            exclude_discordant_pairs: self.exclude_discordant_pairs,
-            discordant_sigma_threshold: self.discordant_sigma_threshold,
-            require_proper_pairs: self.require_proper_pairs,
-            min_insert_size: self.min_insert_size,
-            max_insert_size: self.max_insert_size,
-            require_both_mates_mapped: self.require_both_mates_mapped,
-            insert_distribution: self.insert_distribution,
-        }
-    }
-}
-
-impl Default for FilterBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Threshold-based filter for VariantObservations
+/// Threshold-based filter for VariantObservations.
+///
+/// Constructed via the builder pattern: `ThresholdFilter::new().min_coverage(10).build()`.
+/// `FilterBuilder` is a type alias for this type — callers using `FilterBuilder` continue to work.
 #[derive(Debug, Clone)]
 pub struct ThresholdFilter {
     min_coverage: Option<u32>,
@@ -219,19 +60,133 @@ pub struct ThresholdFilter {
     insert_distribution: Option<phraya_io::plan::InsertSizeDistribution>,
 }
 
+/// Backward-compatible alias. Prefer `ThresholdFilter` directly.
+pub type FilterBuilder = ThresholdFilter;
+
+impl ThresholdFilter {
+    pub fn new() -> Self {
+        ThresholdFilter {
+            min_coverage: None,
+            max_coverage: None,
+            min_mapq: None,
+            max_mapq: None,
+            min_base_quality: None,
+            min_allele_frequency: None,
+            min_kmer_uniqueness: None,
+            exclude_tandem_repeats: false,
+            exclude_discordant_pairs: false,
+            discordant_sigma_threshold: 3.0,
+            require_proper_pairs: None,
+            min_insert_size: None,
+            max_insert_size: None,
+            require_both_mates_mapped: false,
+            insert_distribution: None,
+        }
+    }
+
+    /// No-op: returns `self`. Exists for backward compatibility with `.build()` call sites.
+    pub fn build(self) -> ThresholdFilter {
+        self
+    }
+
+    pub fn min_coverage(mut self, threshold: u32) -> Self {
+        self.min_coverage = Some(threshold);
+        self
+    }
+
+    pub fn max_coverage(mut self, threshold: u32) -> Self {
+        self.max_coverage = Some(threshold);
+        self
+    }
+
+    pub fn min_mapq(mut self, threshold: u8) -> Self {
+        self.min_mapq = Some(threshold);
+        self
+    }
+
+    pub fn max_mapq(mut self, threshold: u8) -> Self {
+        self.max_mapq = Some(threshold);
+        self
+    }
+
+    pub fn min_base_quality(mut self, threshold: f64) -> Self {
+        self.min_base_quality = Some(threshold);
+        self
+    }
+
+    pub fn min_allele_frequency(mut self, threshold: f64) -> Self {
+        self.min_allele_frequency = Some(threshold);
+        self
+    }
+
+    pub fn min_kmer_uniqueness(mut self, threshold: f64) -> Self {
+        self.min_kmer_uniqueness = Some(threshold);
+        self
+    }
+
+    pub fn exclude_tandem_repeats(mut self, value: bool) -> Self {
+        self.exclude_tandem_repeats = value;
+        self
+    }
+
+    pub fn exclude_discordant_pairs(mut self, value: bool) -> Self {
+        self.exclude_discordant_pairs = value;
+        self
+    }
+
+    pub fn discordant_sigma_threshold(mut self, sigma: f64) -> Self {
+        self.discordant_sigma_threshold = sigma;
+        self
+    }
+
+    pub fn require_proper_pairs(mut self, min_fraction: f64) -> Self {
+        self.require_proper_pairs = Some(min_fraction);
+        self
+    }
+
+    pub fn min_insert_size(mut self, size: i32) -> Self {
+        self.min_insert_size = Some(size);
+        self
+    }
+
+    pub fn max_insert_size(mut self, size: i32) -> Self {
+        self.max_insert_size = Some(size);
+        self
+    }
+
+    pub fn require_both_mates_mapped(mut self, value: bool) -> Self {
+        self.require_both_mates_mapped = value;
+        self
+    }
+
+    pub fn with_insert_distribution(mut self, dist: phraya_io::plan::InsertSizeDistribution) -> Self {
+        self.insert_distribution = Some(dist);
+        self
+    }
+}
+
+impl Default for ThresholdFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ThresholdFilter {
     /// Apply filter to an observation
     pub fn apply(&self, obs: &VariantObservation) -> bool {
-        // Check coverage (local_coverage[0] as proxy for coverage)
         if let Some(min) = self.min_coverage {
-            if obs.local_coverage().is_empty() || obs.local_coverage()[0] < min {
-                return false;
+            match obs.coverage_at_variant() {
+                None => return false,
+                Some(cov) if cov < min => return false,
+                _ => {}
             }
         }
 
         if let Some(max) = self.max_coverage {
-            if !obs.local_coverage().is_empty() && obs.local_coverage()[0] > max {
-                return false;
+            if let Some(cov) = obs.coverage_at_variant() {
+                if cov > max {
+                    return false;
+                }
             }
         }
 
@@ -938,10 +893,7 @@ impl std::error::Error for ExprParseError {}
 /// Extract a field value from a VariantObservation
 fn extract_field(field: &str, obs: &VariantObservation) -> Result<f64, ExprParseError> {
     match field {
-        "coverage" => {
-            let cov = obs.local_coverage().first().copied().unwrap_or(0) as f64;
-            Ok(cov)
-        }
+        "coverage" => Ok(obs.coverage_at_variant().unwrap_or(0) as f64),
         "mapq" => Ok(obs.mapq() as f64),
         "allele_frequency" => {
             let total: u32 = obs.all_alleles().values().sum();
@@ -960,10 +912,7 @@ fn extract_field(field: &str, obs: &VariantObservation) -> Result<f64, ExprParse
         }
         "base_quality" => Ok(obs.avg_base_quality()),
         "confidence" => Ok(obs.confidence()),
-        "kmer_uniqueness" => {
-            // If kmer_uniqueness is not available, default to 1.0
-            Ok(1.0)
-        }
+        "kmer_uniqueness" => Ok(obs.kmer_uniqueness()),
         "edit_distance" => Ok(obs.edit_distance() as f64),
         "in_tandem_repeat" => Ok(if obs.in_tandem_repeat() { 1.0 } else { 0.0 }),
         _ => Err(ExprParseError::UnknownField(field.to_string())),
@@ -1492,6 +1441,44 @@ mod expr_filter_tests {
             !filter.apply(&obs_not_equal),
             "mapq == 60 should fail for mapq=50"
         );
+    }
+
+    /// ExpressionFilter and ThresholdFilter must agree on kmer_uniqueness.
+    /// Previously extract_field("kmer_uniqueness") always returned 1.0, so
+    /// `kmer_uniqueness < 0.5` always evaluated false while the threshold
+    /// filter correctly rejected the same observation.
+    #[test]
+    fn expr_kmer_uniqueness_agrees_with_threshold_filter() {
+        // Observation with kmer_uniqueness = 0.2 (low — non-unique region)
+        let low_uniq_obs = {
+            let mut alleles = HashMap::new();
+            alleles.insert(b'A', 80u32);
+            alleles.insert(b'T', 20u32);
+            VariantObservation::new(
+                100, b'A', alleles, 0.9, "10M".to_string(), 60, 0,
+                vec![20], 35.0, "test:read".to_string(),
+            ).with_kmer_uniqueness(0.2)
+        };
+
+        let expr_filter  = ExprFilter::new("kmer_uniqueness >= 0.5").expect("valid expr");
+        let thresh_filter = FilterBuilder::new().min_kmer_uniqueness(0.5).build();
+
+        // Both filters must agree: 0.2 < 0.5, so reject.
+        assert!(!expr_filter.apply(&low_uniq_obs),  "expr filter must reject low kmer_uniqueness");
+        assert!(!thresh_filter.apply(&low_uniq_obs), "threshold filter must reject low kmer_uniqueness");
+
+        // High uniqueness: both must pass.
+        let high_uniq_obs = {
+            let mut alleles = HashMap::new();
+            alleles.insert(b'A', 80u32);
+            alleles.insert(b'T', 20u32);
+            VariantObservation::new(
+                200, b'A', alleles, 0.9, "10M".to_string(), 60, 0,
+                vec![20], 35.0, "test:read".to_string(),
+            ).with_kmer_uniqueness(0.8)
+        };
+        assert!(expr_filter.apply(&high_uniq_obs),  "expr filter must pass high kmer_uniqueness");
+        assert!(thresh_filter.apply(&high_uniq_obs), "threshold filter must pass high kmer_uniqueness");
     }
 
     /// Issue #150: Inequality operator

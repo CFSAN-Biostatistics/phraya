@@ -4,7 +4,7 @@ pub mod plan;
 pub mod queries;
 pub mod use_case;
 
-pub use use_case::{classify_input, detect_use_case, InputType, UseCase, UseCaseError};
+pub use use_case::{classify_input, InputType, UseCaseError};
 
 use flate2::read::GzDecoder;
 use phraya_core::types::{ParseError, Sequence};

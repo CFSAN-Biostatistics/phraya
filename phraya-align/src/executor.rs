@@ -332,6 +332,7 @@ fn extract_variants_from_cigar(
                         let local_coverage: Vec<u32> = (window_start..window_end)
                             .map(|pos| coverage.get(pos).copied().unwrap_or(0))
                             .collect();
+                        let variant_offset = (tp - window_start) as u32;
 
                         let in_repeat = repeat_regions
                             .iter()
@@ -355,7 +356,8 @@ fn extract_variants_from_cigar(
                             avg_base_quality,
                             provenance.clone(),
                         ).with_tandem_repeat(in_repeat)
-                         .with_kmer_uniqueness(kmer_uniqueness);
+                         .with_kmer_uniqueness(kmer_uniqueness)
+                         .with_coverage_window_offset(variant_offset);
 
                         if let Some(mi) = mate_info {
                             obs = obs
@@ -379,11 +381,12 @@ fn extract_variants_from_cigar(
                 // Skipping 'I' at tail-end where query has already ended prevents false deletions
                 if t_pos < target.len() && q_pos < query.len() {
                     let deleted_bases = &target[t_pos..(t_pos + count).min(target.len())];
-                    let window_start = if t_pos >= 50 { t_pos - 50 } else { 0 };
-                    let window_end = (t_pos + 51).min(target.len());
+                    let window_start = if t_pos >= coverage_window_radius { t_pos - coverage_window_radius } else { 0 };
+                    let window_end = (t_pos + coverage_window_radius + 1).min(target.len());
                     let local_coverage: Vec<u32> = (window_start..window_end)
                         .map(|pos| coverage.get(pos).copied().unwrap_or(0))
                         .collect();
+                    let variant_offset = (t_pos - window_start) as u32;
 
                     let in_repeat = repeat_regions
                         .iter()
@@ -418,7 +421,8 @@ fn extract_variants_from_cigar(
                     )
                     .with_tandem_repeat(in_repeat)
                     .with_variant_type(phraya_core::types::VariantType::Deletion)
-                    .with_kmer_uniqueness(kmer_uniqueness);
+                    .with_kmer_uniqueness(kmer_uniqueness)
+                    .with_coverage_window_offset(variant_offset);
 
                     if let Some(mi) = mate_info {
                         obs = obs
@@ -438,11 +442,12 @@ fn extract_variants_from_cigar(
                 // Emit one VariantObservation for the inserted region
                 if q_pos < query.len() && t_pos < target.len() {
                     let inserted_bases = &query[q_pos..(q_pos + count).min(query.len())];
-                    let window_start = if t_pos >= 50 { t_pos - 50 } else { 0 };
-                    let window_end = (t_pos + 51).min(target.len());
+                    let window_start = if t_pos >= coverage_window_radius { t_pos - coverage_window_radius } else { 0 };
+                    let window_end = (t_pos + coverage_window_radius + 1).min(target.len());
                     let local_coverage: Vec<u32> = (window_start..window_end)
                         .map(|pos| coverage.get(pos).copied().unwrap_or(0))
                         .collect();
+                    let variant_offset = (t_pos - window_start) as u32;
 
                     let in_repeat = repeat_regions
                         .iter()
@@ -474,7 +479,8 @@ fn extract_variants_from_cigar(
                     )
                     .with_tandem_repeat(in_repeat)
                     .with_variant_type(phraya_core::types::VariantType::Insertion)
-                    .with_kmer_uniqueness(kmer_uniqueness);
+                    .with_kmer_uniqueness(kmer_uniqueness)
+                    .with_coverage_window_offset(variant_offset);
 
                     if let Some(mi) = mate_info {
                         obs = obs

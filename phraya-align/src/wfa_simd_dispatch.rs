@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::{wfa_extend, wfa_extend_naive, wfa_extend_simd, SeedAnchor};
+    use crate::{wfa_extend, wfa_extend_naive, SeedAnchor};
 
     #[test]
     fn test_multiversion_dispatch_selects_correct_target() {
@@ -27,54 +27,40 @@ mod tests {
         // Verify that the SIMD match-extension path (count_matching_prefix_arch)
         // correctly handles an input that crosses the 16-byte chunk boundary.
         // A 20-byte pair with a mismatch at position 16 forces the loop to process
-        // one full 16-byte SIMD chunk and then locate the mismatch in the tail.
-        // Both wfa_extend_simd and wfa_extend_naive must agree on edit_distance and CIGAR.
+        // one full 16-byte SIMD chunk and then locate the mismatch in the 4-byte tail.
+        // wfa_extend (which uses count_matching_prefix internally) and wfa_extend_naive
+        // must agree — both correctness and edit distance are verified.
         let query  = b"ACGTACGTACGTACGTACGT"; // 20 bytes
         let target = b"ACGTACGTACGTACGTXCGT"; // mismatch at byte 16
         let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
 
-        let simd  = wfa_extend_simd(query, target, seed.clone()).expect("simd path failed");
-        let naive = wfa_extend_naive(query, target, seed).expect("naive path failed");
+        let result = wfa_extend(query, target, seed.clone()).expect("wfa_extend failed");
+        let naive  = wfa_extend_naive(query, target, seed).expect("naive path failed");
 
         assert_eq!(
-            simd.edit_distance, naive.edit_distance,
-            "SIMD edit_distance disagrees with naive on cross-chunk input"
+            result.edit_distance, naive.edit_distance,
+            "wfa_extend edit_distance disagrees with naive on cross-chunk input"
         );
         assert_eq!(
-            simd.cigar, naive.cigar,
-            "SIMD CIGAR disagrees with naive on cross-chunk input"
+            result.cigar, naive.cigar,
+            "wfa_extend CIGAR disagrees with naive on cross-chunk input"
         );
+        assert_eq!(result.edit_distance, 1, "one mismatch at position 16");
     }
 
     #[test]
-    fn test_dispatched_function_matches_manual_selection() {
-        // This test verifies that the multiversion-dispatched function
-        // produces the same result as manually selecting the implementation.
-
+    fn test_dispatched_function_agrees_with_naive() {
+        // wfa_extend and wfa_extend_naive route to the same underlying implementation;
+        // their outputs must be identical on any input.
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
+        let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
 
-        let dispatched = wfa_extend(query, target, seed.clone());
+        let result = wfa_extend(query, target, seed.clone()).unwrap();
+        let naive  = wfa_extend_naive(query, target, seed).unwrap();
 
-        // Manually select based on feature detection
-        let manual = if crate::wfa_simd::is_sse42_available() {
-            wfa_extend_simd(query, target, seed)
-        } else {
-            wfa_extend_naive(query, target, seed)
-        };
-
-        assert!(dispatched.is_ok());
-        assert!(manual.is_ok());
-
-        let dispatched_result = dispatched.unwrap();
-        let manual_result = manual.unwrap();
-
-        assert_eq!(dispatched_result.cigar, manual_result.cigar);
-        assert_eq!(dispatched_result.edit_distance, manual_result.edit_distance);
+        assert_eq!(result.cigar, naive.cigar);
+        assert_eq!(result.edit_distance, naive.edit_distance);
     }
 
     #[test]
@@ -260,7 +246,7 @@ mod tests {
     // (see lib.rs). SIMD correctness under real inputs is verified separately
     // in simd_diff_tests::fill_simd_matches_fill_scalar_property (calls fill_simd
     // directly) and the #[cfg(x86_64)] simd_vs_naive_differential module
-    // (calls wfa_extend_simd_impl directly).
+    // (calls wfa_extend / count_matching_prefix directly).
 
     #[test]
     fn issue_71_diagonal_fill_sse42_2x2_matrix() {

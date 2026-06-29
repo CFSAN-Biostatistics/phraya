@@ -175,6 +175,10 @@ pub struct VariantObservation {
     /// Number of paired reads contributing an insert size at this position.
     #[serde(default)]
     insert_size_count: u32,
+    /// Index into `local_coverage` that corresponds to the variant position itself.
+    /// `coverage_at_variant()` uses this instead of always returning `[0]`.
+    #[serde(default)]
+    coverage_window_variant_offset: u32,
     /// Mate relationship metadata for paired-end reads (insert size filters).
     /// Kept as the final field so that omitting it when `None` (the common case) only
     /// shortens the trailing end of the MessagePack array, leaving all earlier fields
@@ -212,6 +216,7 @@ impl VariantObservation {
             in_tandem_repeat: false,
             variant_type: VariantType::default(),
             kmer_uniqueness: default_kmer_uniqueness(),
+            coverage_window_variant_offset: 0,
             mate_info: None,
             total_paired_count: 0,
             proper_pair_count: 0,
@@ -251,6 +256,19 @@ impl VariantObservation {
     /// Get the k-mer uniqueness score.
     pub fn kmer_uniqueness(&self) -> f64 {
         self.kmer_uniqueness
+    }
+
+    /// Set the index within `local_coverage` that corresponds to the variant position.
+    pub fn with_coverage_window_offset(mut self, offset: u32) -> Self {
+        self.coverage_window_variant_offset = offset;
+        self
+    }
+
+    /// Coverage at the variant position itself (not the window start).
+    pub fn coverage_at_variant(&self) -> Option<u32> {
+        self.local_coverage
+            .get(self.coverage_window_variant_offset as usize)
+            .copied()
     }
 
     /// Set mate information for paired-end reads.
