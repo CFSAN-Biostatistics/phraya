@@ -23,15 +23,26 @@ mod tests {
     }
 
     #[test]
-    fn test_sse42_feature_detection() {
-        // This test verifies that SSE4.2 feature detection works correctly.
+    fn test_sse42_path_handles_cross_chunk_boundary() {
+        // Verify that the SIMD match-extension path (count_matching_prefix_arch)
+        // correctly handles an input that crosses the 16-byte chunk boundary.
+        // A 20-byte pair with a mismatch at position 16 forces the loop to process
+        // one full 16-byte SIMD chunk and then locate the mismatch in the tail.
+        // Both wfa_extend_simd and wfa_extend_naive must agree on edit_distance and CIGAR.
+        let query  = b"ACGTACGTACGTACGTACGT"; // 20 bytes
+        let target = b"ACGTACGTACGTACGTXCGT"; // mismatch at byte 16
+        let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
 
-        let sse42_available = crate::wfa_simd::is_sse42_available();
+        let simd  = wfa_extend_simd(query, target, seed.clone()).expect("simd path failed");
+        let naive = wfa_extend_naive(query, target, seed).expect("naive path failed");
 
-        // Detection should be deterministic and match CPU capabilities
-        assert!(
-            sse42_available == crate::wfa_simd::is_sse42_available(),
-            "SSE4.2 detection must be consistent across calls"
+        assert_eq!(
+            simd.edit_distance, naive.edit_distance,
+            "SIMD edit_distance disagrees with naive on cross-chunk input"
+        );
+        assert_eq!(
+            simd.cigar, naive.cigar,
+            "SIMD CIGAR disagrees with naive on cross-chunk input"
         );
     }
 

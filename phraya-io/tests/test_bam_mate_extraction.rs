@@ -1,4 +1,5 @@
-use phraya_io::bam_cram::{BamCramParser, ParsedReads};
+use phraya_core::types::MateInfo;
+use phraya_io::bam_cram::BamCramParser;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -21,112 +22,72 @@ fn bam_parser_extracts_mate_info() {
     println!("BAM parsing test requires valid BAM file construction");
 }
 
+/// Verify that BamCramParser rejects files that are plainly not BAM.
+/// This calls the real parser entry point; a non-BAM file must return an error,
+/// not silently produce empty output.
 #[test]
-fn parsed_reads_structure() {
-    use phraya_core::types::Sequence;
-    use std::collections::HashMap;
+fn bam_parser_returns_err_on_non_bam_input() {
+    let mut f = NamedTempFile::new().unwrap();
+    write!(f, ">read1\nACGTACGT\n").unwrap();
+    f.flush().unwrap();
+    let result = BamCramParser::from_bam_path(f.path());
+    assert!(result.is_err(), "FASTA content must not be accepted as BAM");
+}
 
-    // Verify ParsedReads can be constructed
-    let sequences = vec![
-        Sequence::new(
-            b"ATCGATCG".to_vec(),
-            Some(vec![30; 8]),
-            "read1".to_string(),
-            None,
-        ),
-    ];
+/// MateInfo::is_discordant uses the absolute value of insert_size, treats
+/// zero as "unmapped / unpaired" (never discordant), and applies the sigma
+/// multiplier to std_dev. All four behaviours tested here.
+#[test]
+fn mate_info_is_discordant_semantics() {
+    // mean=400, std_dev=50, sigma=3.0 → threshold deviation = 150 → window [250, 550]
+    let ok = MateInfo::new("r/2".to_string(), true, 450, true, false, true);
+    assert!(!ok.is_discordant(400, 50, 3.0), "450 within 3σ must be concordant");
 
-    let mut mate_info = HashMap::new();
-    mate_info.insert(
-        "read1".to_string(),
-        phraya_core::types::MateInfo::new(
-            "read1/2".to_string(),
-            true,
-            450,
-            true,
-            false,
-            true,
-        ),
+    let out = MateInfo::new("r/2".to_string(), true, 700, true, false, true);
+    assert!(out.is_discordant(400, 50, 3.0), "700 beyond 3σ must be discordant");
+
+    // Negative insert_size: mate is upstream; absolute value must be used.
+    let neg_ok = MateInfo::new("r/2".to_string(), true, -450, true, false, true);
+    assert!(!neg_ok.is_discordant(400, 50, 3.0), "|-450| within 3σ must be concordant");
+
+    let neg_out = MateInfo::new("r/2".to_string(), true, -700, true, false, true);
+    assert!(neg_out.is_discordant(400, 50, 3.0), "|-700| beyond 3σ must be discordant");
+
+    // Zero insert_size means unmapped mate: must never be considered discordant.
+    let zero = MateInfo::new("r/2".to_string(), false, 0, true, false, false);
+    assert!(!zero.is_discordant(400, 50, 3.0), "insert_size=0 must not be discordant");
+
+    // Wider sigma accepts the same value that narrow sigma rejects.
+    let borderline = MateInfo::new("r/2".to_string(), true, 600, true, false, true);
+    assert!(borderline.is_discordant(400, 50, 3.0), "600 rejected at 3σ (window [250,550])");
+    assert!(!borderline.is_discordant(400, 50, 5.0), "600 accepted at 5σ (window [150,650])");
+}
+
+/// All six fields passed to MateInfo::new must round-trip correctly.
+/// This guards against silent field-ordering bugs in the constructor.
+#[test]
+fn mate_info_fields_roundtrip_through_constructor() {
+    let first = MateInfo::new(
+        "read123/2".to_string(),
+        true,   // proper_pair
+        -450,   // insert_size (negative = mate upstream)
+        true,   // is_first_in_pair
+        false,  // is_second_in_pair
+        true,   // mate_mapped
     );
+    assert_eq!(first.mate_id, "read123/2");
+    assert!(first.proper_pair);
+    assert_eq!(first.insert_size, -450);
+    assert!(first.is_first_in_pair);
+    assert!(!first.is_second_in_pair);
+    assert!(first.mate_mapped);
 
-    let parsed = ParsedReads {
-        sequences,
-        mate_info,
-    };
-
-    assert_eq!(parsed.sequences.len(), 1);
-    assert_eq!(parsed.mate_info.len(), 1);
-    assert!(parsed.mate_info.contains_key("read1"));
-}
-
-/// Test mate ID construction logic
-#[test]
-fn mate_id_toggling() {
-    // Simulate the logic from BamCramParser
-
-    // Read with /1 suffix → mate is /2
-    let id1 = "read123/1";
-    let base_id1 = id1.trim_end_matches("/1").trim_end_matches("/2");
-    let is_first = true;
-    let mate_id1 = if is_first {
-        format!("{}/2", base_id1)
-    } else {
-        format!("{}/1", base_id1)
-    };
-    assert_eq!(mate_id1, "read123/2");
-
-    // Read with /2 suffix → mate is /1
-    let id2 = "read123/2";
-    let base_id2 = id2.trim_end_matches("/1").trim_end_matches("/2");
-    let is_second = false; // is_first = false
-    let mate_id2 = if is_second {
-        format!("{}/2", base_id2)
-    } else {
-        format!("{}/1", base_id2)
-    };
-    assert_eq!(mate_id2, "read123/1");
-
-    // Read without suffix
-    let id3 = "read456";
-    let base_id3 = id3.trim_end_matches("/1").trim_end_matches("/2");
-    let mate_id3 = format!("{}/2", base_id3);
-    assert_eq!(mate_id3, "read456/2");
-}
-
-/// Test SAM flag interpretation
-#[test]
-fn sam_flags_interpretation() {
-    // Simulate flag checks from noodles
-    // In real code: flags.is_segmented(), flags.is_properly_segmented(), etc.
-
-    // SAM flags as u16 bitfield
-    const PAIRED: u16 = 0x1;
-    const PROPER_PAIR: u16 = 0x2;
-    const MATE_UNMAPPED: u16 = 0x8;
-    const FIRST_IN_PAIR: u16 = 0x40;
-    const SECOND_IN_PAIR: u16 = 0x80;
-
-    // Example: properly paired first read
-    let flags = PAIRED | PROPER_PAIR | FIRST_IN_PAIR;
-    let is_paired = (flags & PAIRED) != 0;
-    let proper_pair = (flags & PROPER_PAIR) != 0;
-    let is_first = (flags & FIRST_IN_PAIR) != 0;
-    let is_second = (flags & SECOND_IN_PAIR) != 0;
-    let mate_unmapped = (flags & MATE_UNMAPPED) != 0;
-
-    assert!(is_paired);
-    assert!(proper_pair);
-    assert!(is_first);
-    assert!(!is_second);
-    assert!(!mate_unmapped);
-
-    // Example: paired but not proper (discordant)
-    let flags2 = PAIRED | FIRST_IN_PAIR; // Missing PROPER_PAIR
-    let proper_pair2 = (flags2 & PROPER_PAIR) != 0;
-    assert!(!proper_pair2);
-
-    // Example: mate unmapped
-    let flags3 = PAIRED | MATE_UNMAPPED | FIRST_IN_PAIR;
-    let mate_unmapped3 = (flags3 & MATE_UNMAPPED) != 0;
-    assert!(mate_unmapped3);
+    // Second-in-pair with unmapped mate.
+    let second = MateInfo::new("read123/1".to_string(), false, 0, false, true, false);
+    assert_eq!(second.mate_id, "read123/1");
+    assert!(!second.proper_pair);
+    assert_eq!(second.insert_size, 0);
+    assert!(!second.is_first_in_pair);
+    assert!(second.is_second_in_pair);
+    assert!(!second.mate_mapped);
 }

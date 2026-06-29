@@ -1194,17 +1194,19 @@ mod simd_diff_tests {
         assert_eq!(stride_corner(b"ACGT", b""), 4); // empty target
     }
 
-    /// Real replacement for the deleted `SAFETY_INVARIANTS_DOCUMENTED = true`
-    /// theater: scan the implementation (everything before the test modules) and
-    /// require every `unsafe` to carry a `// SAFETY:` comment within two lines.
-    /// The portable-SIMD kernel currently uses no `unsafe` at all (so this passes
-    /// vacuously) — but it guards any future raw-pointer fast path from sneaking
-    /// in undocumented.
+    /// Scan the implementation for two invariants:
+    ///
+    /// 1. Every `unsafe` block has a `// SAFETY:` comment within the preceding two lines.
+    /// 2. On SIMD platforms (x86_64 / aarch64), at least one `unsafe` block must exist
+    ///    — the arch-specific `count_matching_prefix_arch` intrinsic loops. If the count
+    ///    drops to zero, SIMD code was silently removed and this guard becomes meaningless.
+    ///    On non-SIMD platforms, zero `unsafe` blocks is the correct expectation.
     #[test]
     fn every_unsafe_in_impl_has_safety_comment() {
         let src = include_str!("wfa_simd.rs");
         let impl_src = src.split("#[cfg(test)]").next().unwrap();
         let lines: Vec<&str> = impl_src.lines().collect();
+        let mut unsafe_count = 0usize;
         for (n, line) in lines.iter().enumerate() {
             let tr = line.trim_start();
             if tr.starts_with("//") {
@@ -1212,6 +1214,7 @@ mod simd_diff_tests {
             }
             let uses_unsafe = tr.starts_with("unsafe ") || tr.contains(" unsafe {");
             if uses_unsafe {
+                unsafe_count += 1;
                 let documented =
                     (1..=2).any(|d| n >= d && lines[n - d].trim_start().starts_with("// SAFETY:"));
                 assert!(
@@ -1222,6 +1225,17 @@ mod simd_diff_tests {
                 );
             }
         }
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        assert!(
+            unsafe_count >= 1,
+            "expected ≥1 unsafe block in the SIMD implementation (count_matching_prefix_arch), \
+             found 0; was the arch-specific path removed without updating this guard?"
+        );
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        assert_eq!(
+            unsafe_count, 0,
+            "unexpected unsafe block(s) on non-SIMD platform; the fallback path must be safe"
+        );
     }
 }
 
