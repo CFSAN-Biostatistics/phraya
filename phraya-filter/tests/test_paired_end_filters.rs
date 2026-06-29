@@ -31,6 +31,7 @@ fn create_test_obs(insert_size: i32, proper_pair: bool, mate_mapped: bool) -> Va
     )
     .with_mate_info(mate_info)
     .with_pair_counts(1, if proper_pair { 1 } else { 0 })
+    .with_insert_stats(insert_size.abs() as i64, 1)
 }
 
 #[test]

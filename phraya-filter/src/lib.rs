@@ -299,35 +299,38 @@ impl ThresholdFilter {
             }
         }
 
-        // Paired-end filters on individual mate_info (insert size, discordant, both-mapped)
-        if let Some(mate_info) = obs.mate_info() {
-            // Filter 2: Exclude discordant pairs
-            if self.exclude_discordant_pairs {
-                if let Some(ref dist) = self.insert_distribution {
-                    if mate_info.is_discordant(
-                        dist.mean,
-                        dist.std_dev,
-                        self.discordant_sigma_threshold,
-                    ) {
+        // Filter 2: Exclude discordant pairs — uses mean_insert_size (merge-stable) compared
+        // against the plan's insert-size distribution at the configured sigma threshold.
+        if self.exclude_discordant_pairs {
+            if let (Some(mean_ins), Some(ref dist)) = (obs.mean_insert_size(), &self.insert_distribution) {
+                let threshold = dist.mean as f64 + self.discordant_sigma_threshold * dist.std_dev as f64;
+                if mean_ins > threshold {
+                    return false;
+                }
+            }
+            // No mean insert size or no distribution → cannot determine discordance → pass
+        }
+
+        // Filter 3: Insert size range — uses mean_insert_size (merge-stable).
+        if self.min_insert_size.is_some() || self.max_insert_size.is_some() {
+            if let Some(mean_ins) = obs.mean_insert_size() {
+                let mean_ins_i32 = mean_ins.round() as i32;
+                if let Some(min) = self.min_insert_size {
+                    if mean_ins_i32 < min {
+                        return false;
+                    }
+                }
+                if let Some(max) = self.max_insert_size {
+                    if mean_ins_i32 > max {
                         return false;
                     }
                 }
             }
+            // If no insert size data available, pass (insert size filter is not applicable)
+        }
 
-            // Filter 3: Insert size range
-            let abs_insert_size = mate_info.insert_size.abs();
-            if let Some(min) = self.min_insert_size {
-                if abs_insert_size < min {
-                    return false;
-                }
-            }
-            if let Some(max) = self.max_insert_size {
-                if abs_insert_size > max {
-                    return false;
-                }
-            }
-
-            // Filter 4: Both mates mapped
+        // Filter 4: Both mates mapped — falls back to mate_info (pre-merge only).
+        if let Some(mate_info) = obs.mate_info() {
             if self.require_both_mates_mapped && !mate_info.mate_mapped {
                 return false;
             }
@@ -351,6 +354,7 @@ impl ThresholdFilter {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use phraya_io;
 
     fn create_observation(
         position: u32,
@@ -694,6 +698,150 @@ mod tests {
 
         let filter = FilterPreset::Sensitive.builder().build();
         assert!(filter.apply(&obs), "sensitive must not exclude tandem repeat variants");
+    }
+
+    fn obs_with_insert_stats(insert_size_sum: i64, insert_size_count: u32, total_paired: u32) -> VariantObservation {
+        create_observation(100, 60, 10, 35.0)
+            .with_pair_counts(total_paired, total_paired) // all properly paired for simplicity
+            .with_insert_stats(insert_size_sum, insert_size_count)
+    }
+
+    fn test_dist() -> phraya_io::plan::InsertSizeDistribution {
+        phraya_io::plan::InsertSizeDistribution {
+            mean: 400,
+            std_dev: 50,
+            orientation: "FR".to_string(),
+            sample_size: 1000,
+        }
+    }
+
+    #[test]
+    fn min_insert_size_filter_passes_when_mean_above_threshold() {
+        // mean = 400 / 1 = 400 → passes min=200
+        let obs = obs_with_insert_stats(400, 1, 1);
+        let filter = FilterBuilder::new().min_insert_size(200).build();
+        assert!(filter.apply(&obs));
+    }
+
+    #[test]
+    fn min_insert_size_filter_rejects_when_mean_below_threshold() {
+        // mean = 100 / 1 = 100 → fails min=200
+        let obs = obs_with_insert_stats(100, 1, 1);
+        let filter = FilterBuilder::new().min_insert_size(200).build();
+        assert!(!filter.apply(&obs));
+    }
+
+    #[test]
+    fn max_insert_size_filter_passes_when_mean_below_threshold() {
+        // mean = 300 / 1 = 300 → passes max=500
+        let obs = obs_with_insert_stats(300, 1, 1);
+        let filter = FilterBuilder::new().max_insert_size(500).build();
+        assert!(filter.apply(&obs));
+    }
+
+    #[test]
+    fn max_insert_size_filter_rejects_when_mean_above_threshold() {
+        // mean = 800 / 1 = 800 → fails max=500
+        let obs = obs_with_insert_stats(800, 1, 1);
+        let filter = FilterBuilder::new().max_insert_size(500).build();
+        assert!(!filter.apply(&obs));
+    }
+
+    #[test]
+    fn insert_size_filter_passes_when_no_paired_reads() {
+        // No insert data (count=0) → filter is not applicable, pass through
+        let obs = obs_with_insert_stats(0, 0, 0);
+        let filter = FilterBuilder::new().min_insert_size(200).max_insert_size(500).build();
+        assert!(filter.apply(&obs), "no paired reads → insert size filter should not apply");
+    }
+
+    #[test]
+    fn insert_size_filter_works_after_merge_with_aggregate_stats() {
+        // Two reads merged: inserts 300+500=800, count=2 → mean=400 → passes [300,500]
+        let obs = obs_with_insert_stats(800, 2, 2);
+        let filter = FilterBuilder::new().min_insert_size(300).max_insert_size(500).build();
+        assert!(filter.apply(&obs), "mean=400 passes [300,500]");
+
+        // Two reads: 50+150=200, count=2 → mean=100 → fails min=300
+        let obs_fail = obs_with_insert_stats(200, 2, 2);
+        assert!(!filter.apply(&obs_fail), "mean=100 fails min=300");
+    }
+
+    #[test]
+    fn exclude_discordant_pairs_passes_when_mean_within_distribution() {
+        // mean=450, dist=400±50×3=550 → 450 < 550 → concordant → pass
+        let obs = obs_with_insert_stats(450, 1, 1);
+        let filter = FilterBuilder::new()
+            .exclude_discordant_pairs(true)
+            .with_insert_distribution(test_dist())
+            .build();
+        assert!(filter.apply(&obs), "mean=450 is within 3σ of 400");
+    }
+
+    #[test]
+    fn exclude_discordant_pairs_rejects_when_mean_beyond_distribution() {
+        // mean=800, dist=400±50×3=550 → 800 > 550 → discordant → reject
+        let obs = obs_with_insert_stats(800, 1, 1);
+        let filter = FilterBuilder::new()
+            .exclude_discordant_pairs(true)
+            .with_insert_distribution(test_dist())
+            .build();
+        assert!(!filter.apply(&obs), "mean=800 exceeds 3σ threshold of 550");
+    }
+
+    #[test]
+    fn exclude_discordant_pairs_passes_when_no_paired_reads() {
+        // No insert data → cannot determine discordance → pass
+        let obs = obs_with_insert_stats(0, 0, 0);
+        let filter = FilterBuilder::new()
+            .exclude_discordant_pairs(true)
+            .with_insert_distribution(test_dist())
+            .build();
+        assert!(filter.apply(&obs), "no paired reads → discordant filter should not apply");
+    }
+
+    #[test]
+    fn exclude_discordant_pairs_passes_without_distribution() {
+        // No distribution provided → cannot determine discordance → pass
+        let obs = obs_with_insert_stats(800, 1, 1);
+        let filter = FilterBuilder::new().exclude_discordant_pairs(true).build();
+        assert!(filter.apply(&obs), "no distribution → discordant filter has no effect");
+    }
+
+    #[test]
+    fn discordant_filter_respects_sigma_threshold() {
+        // dist=400±50, obs mean=600; at 3σ threshold=550 → 600>550 → discordant
+        let obs = obs_with_insert_stats(600, 1, 1);
+        let filter_3s = FilterBuilder::new()
+            .exclude_discordant_pairs(true)
+            .discordant_sigma_threshold(3.0)
+            .with_insert_distribution(test_dist())
+            .build();
+        assert!(!filter_3s.apply(&obs), "mean=600 > 550 at 3σ");
+
+        // at 5σ threshold=650 → 600<650 → concordant
+        let filter_5s = FilterBuilder::new()
+            .exclude_discordant_pairs(true)
+            .discordant_sigma_threshold(5.0)
+            .with_insert_distribution(test_dist())
+            .build();
+        assert!(filter_5s.apply(&obs), "mean=600 < 650 at 5σ");
+    }
+
+    #[test]
+    fn discordant_filter_works_after_merge_with_aggregate_mean() {
+        // 10 reads merged: 8 concordant (insert~400) + 2 extreme (insert~1000)
+        // sum = 8*400 + 2*1000 = 3200+2000 = 5200, count=10 → mean=520 > 550? No, 520<550 → pass
+        let obs_pass = obs_with_insert_stats(5200, 10, 10);
+        let filter = FilterBuilder::new()
+            .exclude_discordant_pairs(true)
+            .with_insert_distribution(test_dist())
+            .build();
+        assert!(filter.apply(&obs_pass), "mean=520 is within 3σ=550 post-merge");
+
+        // 2 extreme reads: sum=2000, count=2 → mean=1000 > 550 → reject
+        let obs_fail = obs_with_insert_stats(2000, 2, 2);
+        assert!(!filter.apply(&obs_fail), "mean=1000 exceeds 3σ=550 post-merge");
     }
 }
 
