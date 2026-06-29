@@ -163,7 +163,16 @@ pub struct VariantObservation {
     /// K-mer uniqueness score at this position (0.0-1.0)
     #[serde(default = "default_kmer_uniqueness")]
     kmer_uniqueness: f64,
-    /// Mate relationship metadata for paired-end reads
+    /// Number of reads at this position that are paired (SAM flag 0x1)
+    #[serde(default)]
+    total_paired_count: u32,
+    /// Number of reads at this position that are properly paired (SAM flag 0x2)
+    #[serde(default)]
+    proper_pair_count: u32,
+    /// Mate relationship metadata for paired-end reads (insert size filters).
+    /// Kept as the final field so that omitting it when `None` (the common case) only
+    /// shortens the trailing end of the MessagePack array, leaving all earlier fields
+    /// correctly positioned; `#[serde(default)]` restores it to `None` on read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mate_info: Option<MateInfo>,
 }
@@ -198,6 +207,8 @@ impl VariantObservation {
             variant_type: VariantType::default(),
             kmer_uniqueness: default_kmer_uniqueness(),
             mate_info: None,
+            total_paired_count: 0,
+            proper_pair_count: 0,
         }
     }
 
@@ -243,6 +254,34 @@ impl VariantObservation {
     /// Get mate information.
     pub fn mate_info(&self) -> Option<&MateInfo> {
         self.mate_info.as_ref()
+    }
+
+    /// Set aggregate pair counts (reads at this position that are paired / properly paired).
+    pub fn with_pair_counts(mut self, total_paired: u32, proper_paired: u32) -> Self {
+        self.total_paired_count = total_paired;
+        self.proper_pair_count = proper_paired;
+        self
+    }
+
+    /// Raw pair counts: (total_paired, proper_paired).
+    pub fn pair_counts(&self) -> (u32, u32) {
+        (self.total_paired_count, self.proper_pair_count)
+    }
+
+    /// Add pair counts from another observation at the same position (used during merge).
+    pub fn add_pair_counts(&mut self, total_paired: u32, proper_paired: u32) {
+        self.total_paired_count += total_paired;
+        self.proper_pair_count += proper_paired;
+    }
+
+    /// Fraction of paired reads at this position that are properly paired (0.0–1.0).
+    /// Returns None if no paired reads cover this position.
+    pub fn proper_pair_fraction(&self) -> Option<f64> {
+        if self.total_paired_count == 0 {
+            None
+        } else {
+            Some(self.proper_pair_count as f64 / self.total_paired_count as f64)
+        }
     }
 
     /// Get the position of this variant

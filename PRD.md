@@ -97,14 +97,31 @@ pub trait Aligner: Send + Sync {
 
 ### Strategy Mapping
 
-| Strategy | Speed | Sensitivity | Seeding | Extension | Use Case |
-|---|---|---|---|---|---|
-| `exact` | Slowest | Highest | FM-index, no threshold | Full WFA, wide band | Outbreak analysis, regulatory |
-| `balanced` | Moderate | High | FM-index, min seed length | WFA adaptive band | General purpose (default) |
-| `fast` | Fast | Good | Minimizer, sparse chain | Narrow band SW | Cluster screening, QC |
-| `sketch` | Fastest | Approx | K-mer sketch only | None | Distance-only, triage |
+> **Revised 2026-06-19** (see [ADR-0003](docs/adr/0003-alignment-strategy-ladder.md),
+> [ADR-0004](docs/adr/0004-fast-strategy-low-sensitivity.md)). The original mapping
+> below assumed FM-index seeding and an `exact` tier that searched the reference without
+> seeds. As built, **all strategies use minimizer seeding** (no FM-index was
+> implemented), and **`exact` is the most-sensitive *seeded* WFA path**, not a seedless
+> search. The original `exact` design — a single `(0,0)` anchor over the full target — is
+> unsound: WFA fitting fixes the target *start* at the anchor, so it only finds reads
+> mapping at reference position 0. True seedless / free-start semi-global alignment is
+> **deferred** to its own design. The `sketch` tier remains unimplemented.
 
-Users select `--strategy`; code routes to appropriate parameters/algorithms.
+**As-built ladder** (minimizer seeding throughout; presets also set a default
+coverage-window radius, overridable via `--coverage-window`):
+
+| Strategy | Speed | Sensitivity | Anchors | Extension | Use Case |
+|---|---|---|---|---|---|
+| `exact` | Slowest | Highest | all distinct seed target-starts | seeded WFA `O(s·n)` | Outbreak analysis, regulatory; trusted reference engine |
+| `balanced` *(default)* | Moderate | High (= exact) | all distinct seed target-starts | Myers fitting `O(nm/w)` ≤500 bp, WFA fallback | General purpose; exact results, faster engine |
+| `fast` | Fast | Reduced (deliberate) | single best-voted target-start | Myers/WFA + 20% divergence cutoff | Cluster screening, QC triage |
+| `sketch` | Fastest | Approx | — | k-mer sketch only *(not yet implemented)* | Distance-only, triage |
+
+Myers and WFA are both exact and produce identical edit distances (differential-tested),
+so `balanced` is a safe default while `exact` preserves the canonical WFA path. `fast`
+trades sensitivity for speed: seed-vote subsampling (under-reports multi-mapping) plus a
+divergence cutoff (drops hard reads). Users select `--strategy`; code routes to the
+appropriate algorithm and anchor policy.
 
 ### Platform Optimization
 
@@ -112,6 +129,14 @@ Users select `--strategy`; code routes to appropriate parameters/algorithms.
 - x86-64: SSE4.2 baseline, AVX2, AVX-512 compiled into same binary → CPUID dispatch
 - ARM64: NEON (mandatory on aarch64, no dispatch needed)
 - Kernels: WFA diagonal extension, Smith-Waterman cell fill, minimizer hash comparison
+
+> **As built** (see [ADR-0002](docs/adr/0002-simd-match-extension.md)): the
+> SIMD-accelerated alignment kernel is the **match-extension primitive**
+> (`count_matching_prefix`), shared by WFA and Myers. It uses SSE2 (x86-64) / NEON
+> (aarch64) selected at **compile time** — both are architecture baselines, so no runtime
+> CPUID dispatch is needed — with a portable u64 fallback. Measured 5–9× over scalar.
+> Minimizer hashing is SIMD-accelerated upstream by `simd-minimizers`. AVX2/AVX-512 and
+> Smith-Waterman fill remain future work.
 
 **Multi-core** (automatic):
 - Rayon work-stealing for pairwise batch dispatch

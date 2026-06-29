@@ -28,7 +28,7 @@ phraya-cli/      # Binary CLI: plan/plan-tasks/align/merge/filter subcommands
 - **Deferred filtering**: Alignment produces rich `.phraya` files (multi-mapping, CIGAR, coverage tracks, k-mer uniqueness). Filter parameters applied post-hoc, not during alignment.
 - **Library-first**: `phraya-filter` crate exposes filtering API. CLI is thin wrapper. Enables Python bindings, R integration, custom pipelines.
 - **Evidence-informed alignment**: `.phrayaplan` files contain k-mer landscape + variation hotspots estimated from input sequences before alignment begins.
-- **Platform-native SIMD**: simd-minimizers handles AVX2/NEON dispatch for sketching. WFA alignment is currently scalar; SIMD acceleration (if added) will target wavefront operations, not diagonal DP.
+- **Platform-native SIMD**: simd-minimizers handles AVX2/NEON dispatch for sketching. The WFA/Myers inner loop (match extension) is SIMD-accelerated via `count_matching_prefix` (SSE2 on x86_64 / NEON on aarch64, both arch baselines — selected at compile time, no runtime dispatch; portable u64-XOR fallback elsewhere). ~5–9× faster than scalar on long match runs.
 - **Sketch reuse**: `phraya plan` computes `MinimizerSketch` per sequence and stores them in `.phrayaplan` (v2) keyed by sequence ID. `phraya align` reuses them instead of recomputing; falls back to recomputing if sketch not in plan.
 
 ## Pipeline
@@ -52,9 +52,23 @@ phraya filter → VCF | TSV | filtered .phraya
 ### Alignment Algorithm
 
 - **Seeding**: `sketch_sequence_default()` (phraya-core, via simd-minimizers, k=21 w=11) → `find_seeds()` (phraya-align/seeding.rs)
-- **Extension**: WFA with SIMD-accelerated diagonal fill (SSE4.2/NEON)
+- **Extension**: WFA O(s·n) (`wfa_extend`, fitting mode) or Myers bit-parallel O(nm/w) (`myers_extend`, fitting mode) — both share the SIMD `count_matching_prefix` match-extension primitive and emit the identical CIGAR convention (M/X consume both, `I` = target-only, `D` = query-only). Differential-tested to agree on edit distance.
 - **Scoring**: Multi-mapping score ratio = (1 - edit_dist/query_len) for primary vs alternatives
 - **Output**: Store all alignments with score_ratio ≥ 0.95 (hard-coded opinion)
+
+#### Strategy ladder (`--strategy`, `executor::Strategy`)
+
+Each preset selects an algorithm **and** a default coverage-window radius; `--coverage-window N` (or `AlignConfig::with_coverage_window_radius`) overrides the radius orthogonally.
+
+| Strategy | Algorithm | Anchors | Coverage radius | Role |
+|----------|-----------|---------|-----------------|------|
+| `exact` | seeded WFA, all anchors | all distinct seed target-starts + (0,0) | ±25bp | canonical reference path |
+| `balanced` (default) | Myers fitting ≤500bp, WFA fallback | same as exact | ±50bp | exact results, faster engine |
+| `fast` | Myers/WFA + divergence cutoff | single best-voted target-start (seed subsampling) | ±150bp | low-sensitivity survey |
+
+- Myers ↔ WFA give identical edit distances (proven by differential sweep), so `balanced` is safe as the default; `exact` remains the trusted WFA reference.
+- `fast` trades sensitivity for speed: seed-vote subsampling collapses per-read anchor count to O(1) in repeats (under-reports multi-mapping), and reads whose best alignment exceeds `FAST_MAX_DIVERGENCE` (0.20, hard-coded opinion) are dropped.
+- Myers/WFA both run in **fitting** mode (query fully consumed, target end free) above the `n ≤ m + m/2 + 10` threshold; below it both fall back to global, so they stay consistent.
 
 ## File Formats
 

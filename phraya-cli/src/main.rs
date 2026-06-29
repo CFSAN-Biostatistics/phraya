@@ -86,9 +86,15 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         output: Option<PathBuf>,
 
-        /// Alignment strategy: fast (±150bp window), balanced (±50bp, default), exact (±25bp)
+        /// Alignment strategy preset (selects algorithm + default coverage window):
+        /// exact (seeded WFA, ±25bp), balanced (Myers fitting + WFA fallback, ±50bp,
+        /// default), fast (seed subsampling + divergence cutoff, ±150bp, low sensitivity)
         #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
         strategy: String,
+
+        /// Override the per-variant coverage-window radius (bp), independent of --strategy
+        #[arg(long, value_name = "N")]
+        coverage_window: Option<usize>,
 
         /// Batch mode: worker ID (0-indexed)
         #[arg(long, value_name = "N")]
@@ -148,9 +154,10 @@ enum Commands {
         #[arg(long, value_name = "F", default_value = "3.0")]
         discordant_sigma: f64,
 
-        /// Require proper pairs (SAM flag 0x2)
-        #[arg(long)]
-        require_proper_pairs: bool,
+        /// Minimum fraction of covering reads that must be proper pairs.
+        /// Accepts a fraction (0.0–1.0) or a percentage (1–100); e.g. 0.9 or 90.
+        #[arg(long, value_name = "N")]
+        require_proper_pairs: Option<f64>,
 
         /// Minimum insert size (absolute value)
         #[arg(long, value_name = "N")]
@@ -195,6 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             target_id,
             output,
             strategy,
+            coverage_window,
             worker,
             ensure,
             threads,
@@ -206,19 +214,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 other => return Err(format!("unknown strategy: {other}; expected fast, balanced, or exact").into()),
             };
 
+            // Strategy sets the default coverage-window radius; --coverage-window overrides it.
+            let mut config = AlignConfig::new(strat);
+            if let Some(radius) = coverage_window {
+                config = config.with_coverage_window_radius(radius);
+            }
+
             if ensure {
-                run_align_ensure(&plan_file, AlignConfig::new(strat), threads)?;
+                run_align_ensure(&plan_file, config, threads)?;
             } else if let Some(worker_id) = worker {
                 if output.is_some() {
                     return Err("--output not allowed with --worker (output path from plan)".into());
                 }
-                run_align_worker(&plan_file, worker_id, AlignConfig::new(strat))?;
+                run_align_worker(&plan_file, worker_id, config)?;
             } else {
                 // Traditional mode
                 let query = query_id.ok_or("QUERY_ID required in traditional mode")?;
                 let target = target_id.ok_or("TARGET_ID required in traditional mode")?;
                 let out = output.ok_or("--output required in traditional mode")?;
-                run_align(&plan_file, &query, &target, &out, AlignConfig::new(strat))?;
+                run_align(&plan_file, &query, &target, &out, config)?;
             }
         }
         Commands::Merge { inputs, output } => {
@@ -1114,7 +1128,7 @@ fn run_filter(
     preset: Option<&str>,
     exclude_discordant_pairs: bool,
     discordant_sigma: f64,
-    require_proper_pairs: bool,
+    require_proper_pairs: Option<f64>,
     min_insert_size: Option<i32>,
     max_insert_size: Option<i32>,
     require_both_mates_mapped: bool,
@@ -1168,8 +1182,15 @@ fn run_filter(
             .exclude_discordant_pairs(true)
             .discordant_sigma_threshold(discordant_sigma);
     }
-    if require_proper_pairs {
-        filter_builder = filter_builder.require_proper_pairs(true);
+    if let Some(raw) = require_proper_pairs {
+        let fraction = if raw > 1.0 { raw / 100.0 } else { raw };
+        if !(0.0..=1.0).contains(&fraction) {
+            return Err(format!(
+                "--require-proper-pairs value {} is out of range (must be 0–1 or 0–100)",
+                raw
+            ).into());
+        }
+        filter_builder = filter_builder.require_proper_pairs(fraction);
     }
     if let Some(min) = min_insert_size {
         filter_builder = filter_builder.min_insert_size(min);

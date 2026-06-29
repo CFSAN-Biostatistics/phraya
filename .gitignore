@@ -37,3 +37,6 @@ Thumbs.db
 *.cubin
 *.fatbin
 *.ptx
+
+# Local Claude Code state (worktrees, skills, agents)
+.claude/

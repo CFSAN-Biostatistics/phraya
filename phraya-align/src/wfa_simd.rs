@@ -29,6 +29,132 @@ thread_local! {
 }
 
 // ============================================================================
+// SIMD-accelerated match extension
+// ============================================================================
+//
+// The WFA inner loop ("extend") advances along a diagonal while query and target
+// bytes are equal. This is the alignment hot path. `count_matching_prefix` returns
+// the length of the longest common prefix of two byte slices — i.e. the number of
+// matching bytes before the first mismatch (or the shorter length, if no mismatch).
+//
+// Three tiers, all returning bit-identical results (enforced by differential tests):
+//   - `count_matching_prefix_scalar`: byte-by-byte reference. Always correct.
+//   - `count_matching_prefix_u64`:    8 bytes/step via little-endian XOR. Portable,
+//                                     no `unsafe`, endian-independent.
+//   - arch SIMD (SSE2 / NEON):        16 bytes/step. SSE2 is mandatory on x86_64 and
+//                                     NEON is mandatory on aarch64, so these are selected
+//                                     at compile time with no runtime feature dispatch.
+
+/// Length of the longest common prefix of `a` and `b` (matching bytes before the
+/// first mismatch, capped at `a.len().min(b.len())`). Dispatches to the fastest tier
+/// available for the target architecture.
+#[inline]
+pub fn count_matching_prefix(a: &[u8], b: &[u8]) -> usize {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        count_matching_prefix_arch(a, b)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        count_matching_prefix_u64(a, b)
+    }
+}
+
+/// 16-bytes-per-step SSE2 implementation. SSE2 is part of the x86_64 baseline, so the
+/// intrinsics are always available and need no runtime feature detection. Compares 16
+/// bytes at a time; on the first chunk containing a mismatch, locates it from the
+/// per-byte equality mask. The sub-16-byte tail falls through to the scalar reference.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn count_matching_prefix_arch(a: &[u8], b: &[u8]) -> usize {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    // SAFETY: SSE2 is guaranteed on all x86_64 targets. Loads are unaligned
+    // (`loadu`) and bounded by `i + 16 <= n`, so they never read past the slices.
+    unsafe {
+        while i + 16 <= n {
+            let va = _mm_loadu_si128(a.as_ptr().add(i) as *const __m128i);
+            let vb = _mm_loadu_si128(b.as_ptr().add(i) as *const __m128i);
+            let eq = _mm_cmpeq_epi8(va, vb);
+            // One bit per byte: 1 where equal. All 16 equal => 0xFFFF.
+            let mask = _mm_movemask_epi8(eq) as u32 & 0xFFFF;
+            if mask != 0xFFFF {
+                // First 0 bit = first mismatching byte within this chunk.
+                return i + (mask ^ 0xFFFF).trailing_zeros() as usize;
+            }
+            i += 16;
+        }
+    }
+    i + count_matching_prefix_scalar(&a[i..n], &b[i..n])
+}
+
+/// 16-bytes-per-step NEON implementation. Advanced SIMD (NEON) is mandatory on
+/// AArch64, so the intrinsics are always available with no runtime detection.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub fn count_matching_prefix_arch(a: &[u8], b: &[u8]) -> usize {
+    use std::arch::aarch64::*;
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    // SAFETY: NEON is guaranteed on all aarch64 targets. Loads are bounded by
+    // `i + 16 <= n`, so they never read past the slices.
+    unsafe {
+        while i + 16 <= n {
+            let va = vld1q_u8(a.as_ptr().add(i));
+            let vb = vld1q_u8(b.as_ptr().add(i));
+            let eq = vceqq_u8(va, vb); // 0xFF per byte where equal, else 0x00.
+            // Horizontal min across the 16 lanes: 0xFF iff every byte matched.
+            if vminvq_u8(eq) != 0xFF {
+                let mut lanes = [0u8; 16];
+                vst1q_u8(lanes.as_mut_ptr(), eq);
+                let first = lanes.iter().position(|&x| x != 0xFF).unwrap();
+                return i + first;
+            }
+            i += 16;
+        }
+    }
+    i + count_matching_prefix_scalar(&a[i..n], &b[i..n])
+}
+
+/// Byte-by-byte reference implementation. The semantic ground truth all other tiers
+/// are differential-tested against.
+#[inline]
+pub fn count_matching_prefix_scalar(a: &[u8], b: &[u8]) -> usize {
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i < n && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+/// Portable 8-bytes-per-step implementation using little-endian word XOR.
+///
+/// Reading each 8-byte chunk as a little-endian `u64` makes byte index 0 the least
+/// significant byte, so the XOR of two chunks has its lowest set bit in the first
+/// differing byte regardless of host endianness; `trailing_zeros() / 8` is therefore
+/// the index of the first mismatch within the chunk. No `unsafe`.
+#[inline]
+pub fn count_matching_prefix_u64(a: &[u8], b: &[u8]) -> usize {
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i + 8 <= n {
+        let aw = u64::from_le_bytes(a[i..i + 8].try_into().unwrap());
+        let bw = u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        let diff = aw ^ bw;
+        if diff != 0 {
+            return i + (diff.trailing_zeros() as usize / 8);
+        }
+        i += 8;
+    }
+    while i < n && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+// ============================================================================
 // Naive WFA Implementation
 // ============================================================================
 
@@ -119,14 +245,15 @@ fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
 
     // --- Extend helper: advance query pos on diagonal k as far as matches allow ---
     let extend = |q_pos: i32, k: i32| -> i32 {
-        let mut i = q_pos;
-        loop {
-            let j = i - k; // target pos
-            if i >= qn || j >= tn || j < 0 { break; }
-            if q[i as usize] != t[j as usize] { break; }
-            i += 1;
+        // Advance along diagonal k while query/target bytes match. SIMD-accelerated
+        // longest-common-prefix over the suffixes starting at (q_pos, q_pos - k).
+        let j = q_pos - k; // target pos
+        if q_pos < 0 || q_pos >= qn || j < 0 || j >= tn {
+            return q_pos;
         }
-        i
+        let qi = q_pos as usize;
+        let ti = j as usize;
+        q_pos + count_matching_prefix(&q[qi..], &t[ti..]) as i32
     };
 
     // s=0: start on diagonal 0
@@ -2511,21 +2638,14 @@ fn reconstruct_column(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize) -> 
     col
 }
 
-/// Myers bit-parallel edit distance for arbitrary query length.
-/// Uses multi-word blocks of 64 bits for queries > 64bp.
-/// Returns (edit_distance, CIGAR string).
-pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) {
+/// Myers bit-parallel forward pass. Returns one `(vp, vn, bottom_score)` tuple per
+/// target column, where `bottom_score` for column `j` is `dp[m][j+1]` — the edit
+/// distance of the full query against `target[..=j]`. Caller must ensure `m > 0`
+/// (the column DP is meaningless for an empty query). An empty target yields no columns.
+fn myers_forward(query: &[u8], target: &[u8]) -> Vec<(Vec<u64>, Vec<u64>, usize)> {
     const W: usize = 64;
     let m = query.len();
     let n = target.len();
-
-    if m == 0 {
-        let cigar = if n > 0 { format!("{n}I") } else { String::new() };
-        return (n, cigar);
-    }
-    if n == 0 {
-        return (m, format!("{m}D"));
-    }
 
     let num_blocks = (m + W - 1) / W;
     let last_block = num_blocks - 1;
@@ -2602,16 +2722,25 @@ pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) 
         columns.push((vp.clone(), vn.clone(), score));
     }
 
-    let edit_distance = score;
+    columns
+}
 
-    // Backtrace: reconstruct CIGAR from stored columns.
+/// Reconstruct a CIGAR from Myers forward-pass `columns`, tracing the optimal edit
+/// path from cell `(query.len(), end_ti)` back to `(0, 0)`. `end_ti` is the number of
+/// target columns consumed: pass `target.len()` for a global alignment, or a chosen
+/// fitting endpoint to free the target tail. Requires `query` non-empty.
+fn myers_backtrace(
+    query: &[u8],
+    target: &[u8],
+    columns: &[(Vec<u64>, Vec<u64>, usize)],
+    end_ti: usize,
+) -> String {
+    let m = query.len();
     let col0: Vec<usize> = (0..=m).collect();
-    let empty_vp = vec![0u64; num_blocks];
-    let empty_vn = vec![0u64; num_blocks];
 
-    let mut ops: Vec<u8> = Vec::with_capacity(m + n);
+    let mut ops: Vec<u8> = Vec::with_capacity(m + end_ti);
     let mut qi = m;
-    let mut ti = n;
+    let mut ti = end_ti;
 
     while qi > 0 || ti > 0 {
         if qi == 0 {
@@ -2657,7 +2786,6 @@ pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) 
         }
     }
 
-    let _ = (empty_vp, empty_vn); // suppress unused warning
     ops.reverse();
 
     // Compact run-length encoding into CIGAR string.
@@ -2679,4 +2807,152 @@ pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) 
         cigar.push(cur_op as char);
     }
 
-    (edit_distance, cigar)}
+    cigar
+}
+
+/// Myers bit-parallel **global** edit distance for arbitrary query length.
+/// Uses multi-word blocks of 64 bits for queries > 64bp.
+/// Returns (edit_distance, CIGAR string) consuming the entire query and target.
+pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) {
+    let m = query.len();
+    let n = target.len();
+
+    if m == 0 {
+        let cigar = if n > 0 { format!("{n}I") } else { String::new() };
+        return (n, cigar);
+    }
+    if n == 0 {
+        return (m, format!("{m}D"));
+    }
+
+    let columns = myers_forward(query, target);
+    // bottom_score of the final column is dp[m][n] — the global edit distance.
+    let edit_distance = columns.last().map(|c| c.2).unwrap_or(m);
+    let cigar = myers_backtrace(query, target, &columns, n);
+    (edit_distance, cigar)
+}
+
+/// Myers bit-parallel **fitting** alignment: the query must be fully consumed, but the
+/// target end is free (no penalty for an unconsumed target tail). This is the correct
+/// mode for aligning a read against a longer reference window, and mirrors
+/// [`fill_wfa_fitting`]'s semantics so the Myers and WFA alignment paths agree.
+///
+/// Returns `(edit_distance, cigar, target_consumed)` where `target_consumed` is the
+/// number of target bases in the chosen fitting alignment.
+///
+/// When the target is not substantially longer than the query (`n <= m + m/2 + 10`),
+/// delegates to the global path — exactly the threshold [`fill_wfa_fitting`] uses — so
+/// that terminal indels are not silently hidden by a free end gap.
+pub fn myers_fitting_impl(query: &[u8], target: &[u8]) -> (usize, String, usize) {
+    let m = query.len();
+    let n = target.len();
+
+    if m == 0 {
+        // Empty query, target end free: consume nothing.
+        return (0, String::new(), 0);
+    }
+    if n == 0 {
+        return (m, format!("{m}D"), 0);
+    }
+
+    // For similar-length sequences, global == fitting and global avoids spurious early
+    // termination that would under-count terminal edits.
+    if n <= m + m / 2 + 10 {
+        let (edit, cigar) = myers_edit_distance_impl(query, target);
+        return (edit, cigar, n);
+    }
+
+    let columns = myers_forward(query, target);
+
+    // Fitting endpoint: minimise dp[m][c] over target prefixes of length c in 0..=n.
+    // c == 0 means consuming no target (all query deleted: dp[m][0] = m). For c >= 1 the
+    // score is columns[c-1].2. Break ties toward the smallest c (earliest endpoint), which
+    // drops trailing target-only ops rather than emitting spurious terminal deletions.
+    let mut best_consumed = 0usize;
+    let mut best_score = m;
+    for (c_minus_1, col) in columns.iter().enumerate() {
+        if col.2 < best_score {
+            best_score = col.2;
+            best_consumed = c_minus_1 + 1;
+        }
+    }
+
+    let cigar = myers_backtrace(query, target, &columns, best_consumed);
+    (best_score, cigar, best_consumed)
+}
+
+#[cfg(test)]
+mod simd_prefix_tests {
+    use super::{count_matching_prefix, count_matching_prefix_scalar, count_matching_prefix_u64};
+
+    #[test]
+    fn counts_matching_prefix_before_first_mismatch() {
+        // 4 matching bytes, then a mismatch at index 4.
+        let a = b"ACGTACGT";
+        let b = b"ACGTTCGT";
+        assert_eq!(count_matching_prefix(a, b), 4);
+    }
+
+    /// Build a battery of (a, b) pairs that exercise the boundaries the chunked
+    /// implementations care about: lengths straddling 8 and 16 bytes, a mismatch at
+    /// every possible position, empty/short slices, and unequal lengths.
+    fn battery() -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut cases = Vec::new();
+        // Identical sequences of every length 0..40 (no mismatch; capped at len).
+        for len in 0..40 {
+            let v: Vec<u8> = (0..len).map(|i| b"ACGT"[i % 4]).collect();
+            cases.push((v.clone(), v));
+        }
+        // Mismatch at position p for a 40-byte sequence, for every p.
+        for p in 0..40 {
+            let a: Vec<u8> = (0..40).map(|i| b"ACGT"[i % 4]).collect();
+            let mut b = a.clone();
+            b[p] ^= 0x01; // flip a bit so the byte differs
+            cases.push((a, b));
+        }
+        // Unequal lengths: prefix matches, then one runs out.
+        cases.push((b"ACGTACGTAC".to_vec(), b"ACGTACGT".to_vec()));
+        cases.push((b"ACGT".to_vec(), b"ACGTACGTACGT".to_vec()));
+        // Empty cases.
+        cases.push((Vec::new(), b"ACGT".to_vec()));
+        cases.push((b"ACGT".to_vec(), Vec::new()));
+        cases
+    }
+
+    #[test]
+    fn u64_tier_matches_scalar() {
+        for (a, b) in battery() {
+            assert_eq!(
+                count_matching_prefix_u64(&a, &b),
+                count_matching_prefix_scalar(&a, &b),
+                "u64 tier disagreed with scalar on a={a:?} b={b:?}"
+            );
+        }
+    }
+
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[test]
+    fn arch_tier_matches_scalar() {
+        use super::count_matching_prefix_arch;
+        for (a, b) in battery() {
+            assert_eq!(
+                count_matching_prefix_arch(&a, &b),
+                count_matching_prefix_scalar(&a, &b),
+                "arch SIMD tier disagreed with scalar on a={a:?} b={b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_matches_scalar() {
+        // The production entry point must agree with the reference on every case,
+        // whichever tier the target architecture selects.
+        for (a, b) in battery() {
+            assert_eq!(
+                count_matching_prefix(&a, &b),
+                count_matching_prefix_scalar(&a, &b),
+                "dispatched count_matching_prefix disagreed with scalar on a={a:?} b={b:?}"
+            );
+        }
+    }
+}

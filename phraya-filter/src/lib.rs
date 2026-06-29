@@ -51,7 +51,8 @@ pub struct FilterBuilder {
     // Paired-end filters
     exclude_discordant_pairs: bool,
     discordant_sigma_threshold: f64,
-    require_proper_pairs: bool,
+    /// Minimum fraction of covering reads that must be proper pairs (0.0–1.0). None = no requirement.
+    require_proper_pairs: Option<f64>,
     min_insert_size: Option<i32>,
     max_insert_size: Option<i32>,
     require_both_mates_mapped: bool,
@@ -72,7 +73,7 @@ impl FilterBuilder {
             exclude_tandem_repeats: false,
             exclude_discordant_pairs: false,
             discordant_sigma_threshold: 3.0,
-            require_proper_pairs: false,
+            require_proper_pairs: None,
             min_insert_size: None,
             max_insert_size: None,
             require_both_mates_mapped: false,
@@ -140,9 +141,9 @@ impl FilterBuilder {
         self
     }
 
-    /// Require proper pairs (SAM flag 0x2)
-    pub fn require_proper_pairs(mut self, value: bool) -> Self {
-        self.require_proper_pairs = value;
+    /// Require at least this fraction of covering reads to be proper pairs (0.0–1.0).
+    pub fn require_proper_pairs(mut self, min_fraction: f64) -> Self {
+        self.require_proper_pairs = Some(min_fraction);
         self
     }
 
@@ -211,7 +212,7 @@ pub struct ThresholdFilter {
     exclude_tandem_repeats: bool,
     exclude_discordant_pairs: bool,
     discordant_sigma_threshold: f64,
-    require_proper_pairs: bool,
+    require_proper_pairs: Option<f64>,
     min_insert_size: Option<i32>,
     max_insert_size: Option<i32>,
     require_both_mates_mapped: bool,
@@ -289,13 +290,17 @@ impl ThresholdFilter {
             return false;
         }
 
-        // Paired-end filters (skip if no mate_info)
-        if let Some(mate_info) = obs.mate_info() {
-            // Filter 1: Require proper pairs
-            if self.require_proper_pairs && !mate_info.proper_pair {
-                return false;
+        // Filter 1: Require minimum proper-pair fraction
+        if let Some(min_fraction) = self.require_proper_pairs {
+            match obs.proper_pair_fraction() {
+                None => return false, // no paired reads → reject
+                Some(frac) if frac < min_fraction => return false,
+                _ => {}
             }
+        }
 
+        // Paired-end filters on individual mate_info (insert size, discordant, both-mapped)
+        if let Some(mate_info) = obs.mate_info() {
             // Filter 2: Exclude discordant pairs
             if self.exclude_discordant_pairs {
                 if let Some(ref dist) = self.insert_distribution {
@@ -326,11 +331,8 @@ impl ThresholdFilter {
             if self.require_both_mates_mapped && !mate_info.mate_mapped {
                 return false;
             }
-        } else {
-            // No mate info: reject if paired filters are required
-            if self.require_proper_pairs || self.require_both_mates_mapped {
-                return false;
-            }
+        } else if self.require_both_mates_mapped {
+            return false;
         }
 
         true
