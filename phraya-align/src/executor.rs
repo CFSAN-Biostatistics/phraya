@@ -1,4 +1,4 @@
-use crate::seeding::find_seeds;
+use crate::seeding::{build_minimizer_index, find_seeds_indexed, MinimizerIndex};
 use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{sketch_sequence_default, Sequence, VariantObservation};
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
@@ -173,23 +173,76 @@ fn extend_anchor(
     }
 }
 
+/// Precomputed, read-only per-target data shared across every query aligned to one
+/// target.
+///
+/// The main use case (Case 2: N reads vs one reference) aligns many queries against a
+/// single target. The target-derived structures here — the minimizer index and the
+/// tandem-repeat regions — depend only on the target, so building them once and calling
+/// [`align_read`] per query removes O(target) work (and a full-genome `to_uppercase`
+/// copy and sketch clone) from each read. This mirrors how `plan.hotspot_intervals` is
+/// precomputed once and passed read-only.
+pub struct TargetContext<'a> {
+    target: &'a Sequence,
+    minimizer_index: MinimizerIndex,
+    repeat_regions: Vec<phraya_core::RepeatRegion>,
+}
+
+impl<'a> TargetContext<'a> {
+    /// Build the shared context for `target`, reusing the plan's precomputed sketch if
+    /// present and falling back to recomputing it otherwise.
+    pub fn build(target: &'a Sequence, plan: &PhrayaPlan) -> Self {
+        let sketch = plan
+            .get_sketch(target.id())
+            .cloned()
+            .unwrap_or_else(|| sketch_sequence_default(target));
+        let minimizer_index = build_minimizer_index(&sketch);
+        let target_str = String::from_utf8_lossy(target.bases());
+        let repeat_regions =
+            detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
+        TargetContext {
+            target,
+            minimizer_index,
+            repeat_regions,
+        }
+    }
+
+    /// The target sequence this context was built for.
+    pub fn target(&self) -> &Sequence {
+        self.target
+    }
+}
+
 /// Execute a single alignment task: query vs target with specified configuration.
+///
+/// Thin wrapper that builds a [`TargetContext`] and delegates to [`align_read`]. When
+/// aligning many queries against one target, build the context once and call
+/// [`align_read`] directly instead of paying the per-target build on every query.
 pub fn align_task_with_config(
     query: &Sequence,
     target: &Sequence,
     plan: &PhrayaPlan,
     config: &AlignConfig,
 ) -> Option<AlignmentResult> {
-    // Reuse pre-computed sketches from plan if available; fall back to recomputing
+    let ctx = TargetContext::build(target, plan);
+    align_read(&ctx, query, plan, config)
+}
+
+/// Align a single query against the target described by `ctx`.
+pub fn align_read(
+    ctx: &TargetContext<'_>,
+    query: &Sequence,
+    plan: &PhrayaPlan,
+    config: &AlignConfig,
+) -> Option<AlignmentResult> {
+    let target = ctx.target;
+
+    // Query sketch is per-read; reuse the plan's copy if present, else recompute.
     let query_sketch = plan
         .get_sketch(query.id())
         .cloned()
         .unwrap_or_else(|| sketch_sequence_default(query));
-    let target_sketch = plan
-        .get_sketch(target.id())
-        .cloned()
-        .unwrap_or_else(|| sketch_sequence_default(target));
-    let seeds = find_seeds(&query_sketch, &target_sketch);
+    let seeds = find_seeds_indexed(&query_sketch, &ctx.minimizer_index);
 
     // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
     // Seeds mid-query would miss variants before the seed; aligning from query position 0
@@ -235,10 +288,6 @@ pub fn align_task_with_config(
     let raw_coverage = compute_raw_coverage(&scored, target.len());
     let coverage_track = quantize_coverage(&raw_coverage);
 
-    // Compute tandem repeat regions in the target once for the whole task.
-    let target_str = String::from_utf8_lossy(target.bases());
-    let repeat_regions = detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
-
     let query_mapq = query.mapq().unwrap_or(60);
     let query_avg_bq = query.avg_quality().unwrap_or(60.0);
 
@@ -258,7 +307,7 @@ pub fn align_task_with_config(
         scored.primary.edit_distance as u32,
         query.id().to_string(),
         &raw_coverage,
-        &repeat_regions,
+        &ctx.repeat_regions,
         query_mapq,
         query_avg_bq,
         primary_score,

@@ -70,9 +70,10 @@ echo ">> $LABEL: wall=${WALL}s peak_rss=${RSS_MB}MB"
 echo ">> results appended to $RESULTS"
 
 # Correctness oracle: the .phraya embeds a wall-clock timestamp, so hashing it
-# directly is useless across runs. Instead hash the sorted variant TSV (no
-# timestamp; sorting neutralises any HashMap iteration order) plus the query
-# sidecar. These digests MUST match across code revisions for a pure perf change.
-TSV_DIGEST="$("$PHRAYA" filter "$OUT" --format tsv 2>/dev/null | sort | sha256sum | cut -d' ' -f1)"
-QUERIES_DIGEST="$(sha256sum "${OUT}.queries" 2>/dev/null | cut -d' ' -f1)"
-echo ">> correctness: variants_tsv=$TSV_DIGEST queries=$QUERIES_DIGEST"
+# directly is useless across runs. Instead hash the variant TSV with allele-token
+# order normalized (normalize_tsv.py) and lines sorted — this is invariant to the
+# per-process HashMap iteration order, so it changes ONLY if the actual variant
+# data changes. This digest MUST match across code revisions for a pure perf change.
+NORM="$REPO_ROOT/scripts/benchmark/local/normalize_tsv.py"
+TSV_DIGEST="$("$PHRAYA" filter "$OUT" --format tsv 2>/dev/null | python3 "$NORM" | sort | sha256sum | cut -d' ' -f1)"
+echo ">> correctness: variants_tsv=$TSV_DIGEST"

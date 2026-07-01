@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use log::info;
-use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
+use phraya_align::executor::{align_read, align_task_with_config, AlignConfig, Strategy, TargetContext};
 use phraya_core::types::{
     compute_kmer_uniqueness, detect_hotspot_intervals, select_centroid, sketch_sequence_default,
     CoverageTrack, MinimizerSketch, Sequence,
@@ -388,6 +388,11 @@ fn run_align_worker_with_plan(
     }
     let target = target_seq.ok_or("No target sequence found")?;
 
+    // Build the shared target context once, then align every read in the chunk against
+    // it. This hoists the per-target minimizer index and tandem-repeat detection out of
+    // the per-read loop (they depend only on the reference, not the read).
+    let target_ctx = TargetContext::build(&target, &plan);
+
     // Extract and align reads in this chunk
     let mut all_variants = Vec::new();
     let mut all_query_positions = HashMap::new();
@@ -402,7 +407,7 @@ fn run_align_worker_with_plan(
         let query_id = seq.id().to_string();
 
         // Align
-        if let Some(result) = align_task_with_config(&seq, &target, &plan, &config) {
+        if let Some(result) = align_read(&target_ctx, &seq, &plan, &config) {
             all_variants.extend(result.variants);
             all_query_positions.insert(query_id, result.query_positions);
             for (i, &cov) in result.coverage_track.iter().enumerate() {
