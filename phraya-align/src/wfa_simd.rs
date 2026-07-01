@@ -271,7 +271,7 @@ fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
         return (cigar, 0);
     }
 
-    wf_hist.push((wf_cur.clone(), ops_cur.clone()));
+    wf_hist.push((wf_cur, ops_cur));
 
     // Iterate edit distances
     let max_s = qn + tn; // upper bound
@@ -371,15 +371,16 @@ fn fill_wfa_fitting(q: &[u8], t: &[u8]) -> (String, usize, usize) {
     let mut wf_cur = vec![UNSET; size];
     let mut wf_hist: Vec<(Vec<i32>, Vec<u8>)> = Vec::new();
 
+    // Same greedy diagonal extension as the global path, via the SIMD
+    // `count_matching_prefix` (16 bytes/step) instead of a scalar byte loop.
     let extend = |q_pos: i32, k: i32| -> i32 {
-        let mut i = q_pos;
-        loop {
-            let j = i - k;
-            if i >= qn || j >= tn || j < 0 { break; }
-            if q[i as usize] != t[j as usize] { break; }
-            i += 1;
+        let j = q_pos - k; // target pos
+        if q_pos < 0 || q_pos >= qn || j < 0 || j >= tn {
+            return q_pos;
         }
-        i
+        let qi = q_pos as usize;
+        let ti = j as usize;
+        q_pos + count_matching_prefix(&q[qi..], &t[ti..]) as i32
     };
 
     let k0_idx = tn as usize;
@@ -392,7 +393,7 @@ fn fill_wfa_fitting(q: &[u8], t: &[u8]) -> (String, usize, usize) {
         return (cigar, 0, t_end);
     }
 
-    wf_hist.push((wf_cur.clone(), ops_cur.clone()));
+    wf_hist.push((wf_cur, ops_cur));
 
     let max_s = qn + tn;
     for s in 1..=max_s {
@@ -2639,8 +2640,10 @@ mod wfa_algorithm_tests {
 
 /// Reconstruct column i of the DP matrix from stored (vp, vn) bitvectors.
 /// `bottom_score` = dp[m][j], returned column is dp[0..=m][j].
-fn reconstruct_column(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize) -> Vec<usize> {
-    let mut col = vec![0usize; m + 1];
+/// Reconstruct an edit-distance DP column from Myers `(vp, vn)` bitvectors into a caller
+/// -provided buffer (`col.len()` must be `m + 1`). Fills in place so the backtrace can
+/// reuse two column buffers instead of allocating a fresh column per traceback step.
+fn reconstruct_into(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize, col: &mut [usize]) {
     col[m] = bottom_score;
     for i in (0..m).rev() {
         let block = i / 64;
@@ -2649,7 +2652,24 @@ fn reconstruct_column(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize) -> 
         let vn_bit = ((vn[block] >> bit) & 1) as isize;
         col[i] = (col[i + 1] as isize - vp_bit + vn_bit) as usize;
     }
-    col
+}
+
+/// Fill `buf` (length `m + 1`) with edit-distance DP column `j` for the backtrace.
+/// Column 0 is the identity `0..=m`; column `j > 0` is reconstructed from `columns[j-1]`.
+fn fill_dp_column(
+    columns: &[(Vec<u64>, Vec<u64>, usize)],
+    m: usize,
+    j: usize,
+    buf: &mut [usize],
+) {
+    if j == 0 {
+        for (i, slot) in buf.iter_mut().enumerate() {
+            *slot = i;
+        }
+    } else {
+        let (vp, vn, bs) = &columns[j - 1];
+        reconstruct_into(vp, vn, m, *bs, buf);
+    }
 }
 
 /// Myers bit-parallel forward pass. Returns one `(vp, vn, bottom_score)` tuple per
@@ -2682,13 +2702,17 @@ fn myers_forward(query: &[u8], target: &[u8]) -> Vec<(Vec<u64>, Vec<u64>, usize)
     // Forward pass: store (vp, vn, bottom_score) per target column for backtrace.
     let mut columns: Vec<(Vec<u64>, Vec<u64>, usize)> = Vec::with_capacity(n);
 
+    // Reused scratch for the next column. The per-column snapshots the backtrace needs
+    // are still pushed as owned copies, but the working buffers are swapped across
+    // columns rather than reallocated each iteration (4 allocs/column -> 2).
+    let mut new_vp = vec![0u64; num_blocks];
+    let mut new_vn = vec![0u64; num_blocks];
+
     for &tb in target {
         let mut add_carry: u64 = 0;
         let mut hp_carry: u64 = 1; // sentinel: dp[0][j]=j means HP row-0 is always +1
         let mut hn_carry: u64 = 0;
 
-        let mut new_vp = vec![0u64; num_blocks];
-        let mut new_vn = vec![0u64; num_blocks];
         let mut last_hp = 0u64;
         let mut last_hn = 0u64;
 
@@ -2731,8 +2755,10 @@ fn myers_forward(query: &[u8], target: &[u8]) -> Vec<(Vec<u64>, Vec<u64>, usize)
         if (last_hp >> score_bit) & 1 != 0 { score += 1; }
         if (last_hn >> score_bit) & 1 != 0 { score = score.saturating_sub(1); }
 
-        vp = new_vp;
-        vn = new_vn;
+        // The freshly computed column becomes current; the old current buffers become
+        // next iteration's scratch (fully overwritten before they are read again).
+        std::mem::swap(&mut vp, &mut new_vp);
+        std::mem::swap(&mut vn, &mut new_vn);
         columns.push((vp.clone(), vn.clone(), score));
     }
 
@@ -2750,13 +2776,25 @@ fn myers_backtrace(
     end_ti: usize,
 ) -> String {
     let m = query.len();
-    let col0: Vec<usize> = (0..=m).collect();
 
     let mut ops: Vec<u8> = Vec::with_capacity(m + end_ti);
     let mut qi = m;
     let mut ti = end_ti;
 
+    // Two reused DP-column buffers walked leftward as `ti` decreases: `cur_col` holds dp
+    // column `ti`, `prev_col` holds column `ti - 1`. Each column is reconstructed at most
+    // once (when `ti` first reaches it) instead of ~3× per step with a fresh allocation,
+    // which is what made the backtrace O(n·m) with hundreds of allocations per read.
+    let mut cur_col = vec![0usize; m + 1];
+    let mut prev_col = vec![0usize; m + 1];
+    if ti > 0 {
+        fill_dp_column(columns, m, ti, &mut cur_col);
+        fill_dp_column(columns, m, ti - 1, &mut prev_col);
+    }
+
     while qi > 0 || ti > 0 {
+        // Once `qi == 0` only I moves remain (they never read a column), and once
+        // `ti == 0` only D moves remain — so neither branch needs the column buffers.
         if qi == 0 {
             ops.push(b'I');
             ti -= 1;
@@ -2768,19 +2806,9 @@ fn myers_backtrace(
             continue;
         }
 
-        let (vp_cur, vn_cur, bs_cur) = &columns[ti - 1];
-        let cur = reconstruct_column(vp_cur, vn_cur, m, *bs_cur)[qi];
-
-        let prev_col = if ti >= 2 {
-            let (vp_prev, vn_prev, bs_prev) = &columns[ti - 2];
-            reconstruct_column(vp_prev, vn_prev, m, *bs_prev)
-        } else {
-            col0.clone()
-        };
+        let cur = cur_col[qi];
         let diag_cost = if query[qi - 1] == target[ti - 1] { 0 } else { 1 };
         let from_diag = prev_col[qi - 1] + diag_cost;
-
-        let cur_col = reconstruct_column(vp_cur, vn_cur, m, *bs_cur);
         let from_above = cur_col[qi - 1] + 1;
         let from_left = prev_col[qi] + 1;
 
@@ -2789,14 +2817,23 @@ fn myers_backtrace(
         if cur == from_above {
             ops.push(b'D');
             qi -= 1;
+            // ti unchanged — the column buffers stay valid.
         } else if cur == from_left {
             ops.push(b'I');
             ti -= 1;
+            std::mem::swap(&mut cur_col, &mut prev_col);
+            if ti > 0 {
+                fill_dp_column(columns, m, ti - 1, &mut prev_col);
+            }
         } else {
             debug_assert_eq!(cur, from_diag, "backtrace: no valid predecessor at qi={qi} ti={ti} cur={cur} from_diag={from_diag} from_above={from_above} from_left={from_left}");
             ops.push(if diag_cost == 0 { b'M' } else { b'X' });
             qi -= 1;
             ti -= 1;
+            std::mem::swap(&mut cur_col, &mut prev_col);
+            if ti > 0 {
+                fill_dp_column(columns, m, ti - 1, &mut prev_col);
+            }
         }
     }
 
