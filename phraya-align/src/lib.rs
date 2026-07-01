@@ -3,7 +3,9 @@ pub mod seeding;
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
 
-pub use executor::{align_read, align_task_with_config, AlignConfig, Strategy, TargetContext};
+pub use executor::{
+    align_read, align_task_with_config, AlignConfig, Strategy, TargetContext, WindowedCoverage,
+};
 pub use seeding::{build_minimizer_index, find_seeds, find_seeds_indexed, MinimizerIndex, Seed};
 
 #[cfg(test)]

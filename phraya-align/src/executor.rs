@@ -76,13 +76,53 @@ impl Default for AlignConfig {
     }
 }
 
+/// Per-read coverage over only the aligned span.
+///
+/// A single read touches ~its own length of the target, so materializing a
+/// genome-length vector per read (and scanning it on merge) is wasteful. This
+/// carries just the covered window: `counts[j]` is the coverage at absolute target
+/// position `start + j`; every position outside `[start, start + counts.len())` is 0.
+#[derive(Debug, Clone, Default)]
+pub struct WindowedCoverage {
+    /// Absolute target position of `counts[0]`.
+    pub start: usize,
+    /// Coverage over `[start, start + counts.len())`. Outside the window, 0.
+    pub counts: Vec<u32>,
+}
+
+impl WindowedCoverage {
+    /// Coverage at an absolute target position (0 outside the window).
+    #[inline]
+    pub fn get_abs(&self, abs_pos: usize) -> u32 {
+        abs_pos
+            .checked_sub(self.start)
+            .and_then(|j| self.counts.get(j))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Expand to a full-length genome track of length `len`, for the single-read
+    /// output path (which writes a whole-reference coverage track).
+    pub fn to_full(&self, len: usize) -> Vec<u32> {
+        let mut full = vec![0u32; len];
+        for (j, &c) in self.counts.iter().enumerate() {
+            let pos = self.start + j;
+            if pos < len {
+                full[pos] = c;
+            }
+        }
+        full
+    }
+}
+
 /// Result of a single alignment task.
 #[derive(Debug, Clone)]
 pub struct AlignmentResult {
     /// Variant observations at polymorphic sites
     pub variants: Vec<VariantObservation>,
-    /// Coverage track (position → count), quantized to nearest 5
-    pub coverage_track: Vec<u32>,
+    /// Coverage over the aligned span (quantized to nearest 5), windowed to avoid a
+    /// genome-length buffer per read. Merge into a genome accumulator at `.start`.
+    pub coverage: WindowedCoverage,
     /// Query index: (target_position, normalized_score) for primary + alternatives
     pub query_positions: Vec<(u32, f64)>,
 }
@@ -283,10 +323,9 @@ pub fn align_read(
         }
     }
 
-    // Compute raw (un-quantized) coverage for local_coverage lookups in variants,
-    // then quantize separately for the stored coverage track.
-    let raw_coverage = compute_raw_coverage(&scored, target.len());
-    let coverage_track = quantize_coverage(&raw_coverage);
+    // Raw (un-quantized) coverage over just the aligned span, for local_coverage
+    // lookups in variants; quantized separately for the stored coverage track.
+    let raw_coverage = compute_windowed_coverage(&scored, target.len());
 
     let query_mapq = query.mapq().unwrap_or(60);
     let query_avg_bq = query.avg_quality().unwrap_or(60.0);
@@ -317,6 +356,13 @@ pub fn align_read(
         insert_stats,
     );
 
+    // Quantize in place over the window; positions outside the window quantize to 0
+    // (quantize(0) == 0), so the merged genome track is identical to quantizing full.
+    let coverage = WindowedCoverage {
+        start: raw_coverage.start,
+        counts: quantize_coverage(&raw_coverage.counts),
+    };
+
     let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
     for alt in &scored.alternatives {
         let alt_score = 1.0 - (alt.edit_distance as f64 / query.len().max(1) as f64);
@@ -325,7 +371,7 @@ pub fn align_read(
 
     Some(AlignmentResult {
         variants,
-        coverage_track,
+        coverage,
         query_positions,
     })
 }
@@ -343,7 +389,7 @@ fn extract_variants_from_cigar(
     target: &[u8],
     edit_distance: u32,
     provenance: String,
-    coverage: &[u32],
+    coverage: &WindowedCoverage,
     repeat_regions: &[phraya_core::RepeatRegion],
     mapq: u8,
     avg_base_quality: f64,
@@ -379,7 +425,7 @@ fn extract_variants_from_cigar(
                         let window_start = if tp >= coverage_window_radius { tp - coverage_window_radius } else { 0 };
                         let window_end = (tp + coverage_window_radius + 1).min(target.len());
                         let local_coverage: Vec<u32> = (window_start..window_end)
-                            .map(|pos| coverage.get(pos).copied().unwrap_or(0))
+                            .map(|pos| coverage.get_abs(pos))
                             .collect();
                         let variant_offset = (tp - window_start) as u32;
 
@@ -433,7 +479,7 @@ fn extract_variants_from_cigar(
                     let window_start = if t_pos >= coverage_window_radius { t_pos - coverage_window_radius } else { 0 };
                     let window_end = (t_pos + coverage_window_radius + 1).min(target.len());
                     let local_coverage: Vec<u32> = (window_start..window_end)
-                        .map(|pos| coverage.get(pos).copied().unwrap_or(0))
+                        .map(|pos| coverage.get_abs(pos))
                         .collect();
                     let variant_offset = (t_pos - window_start) as u32;
 
@@ -494,7 +540,7 @@ fn extract_variants_from_cigar(
                     let window_start = if t_pos >= coverage_window_radius { t_pos - coverage_window_radius } else { 0 };
                     let window_end = (t_pos + coverage_window_radius + 1).min(target.len());
                     let local_coverage: Vec<u32> = (window_start..window_end)
-                        .map(|pos| coverage.get(pos).copied().unwrap_or(0))
+                        .map(|pos| coverage.get_abs(pos))
                         .collect();
                     let variant_offset = (t_pos - window_start) as u32;
 
@@ -566,17 +612,39 @@ fn parse_cigar(cigar: &str) -> Vec<(usize, char)> {
     ops
 }
 
-fn compute_raw_coverage(scored: &crate::ScoredAlignments, target_len: usize) -> Vec<u32> {
-    let mut track = vec![0u32; target_len];
-    let all_alns = std::iter::once(&scored.primary).chain(scored.alternatives.iter());
-    for aln in all_alns {
+/// Raw per-read coverage over just the union of the primary + alternative alignment
+/// spans. Outside that span the coverage is zero (only this read's alignments
+/// contribute), so windowing to it loses nothing versus a genome-length buffer.
+fn compute_windowed_coverage(
+    scored: &crate::ScoredAlignments,
+    target_len: usize,
+) -> WindowedCoverage {
+    let all_alns = || std::iter::once(&scored.primary).chain(scored.alternatives.iter());
+
+    // Span = [min target_start, max target_end) across all alignments.
+    let mut lo = usize::MAX;
+    let mut hi = 0usize;
+    for aln in all_alns() {
+        let start = aln.target_start.min(target_len);
+        let end = aln.target_end.min(target_len);
+        if start < end {
+            lo = lo.min(start);
+            hi = hi.max(end);
+        }
+    }
+    if lo >= hi {
+        return WindowedCoverage::default();
+    }
+
+    let mut counts = vec![0u32; hi - lo];
+    for aln in all_alns() {
         let start = aln.target_start.min(target_len);
         let end = aln.target_end.min(target_len);
         for pos in start..end {
-            track[pos] = track[pos].saturating_add(1);
+            counts[pos - lo] = counts[pos - lo].saturating_add(1);
         }
     }
-    track
+    WindowedCoverage { start: lo, counts }
 }
 
 fn quantize_coverage(raw: &[u32]) -> Vec<u32> {
@@ -630,9 +698,9 @@ mod tests {
             "Perfect match should have no variants"
         );
         assert_eq!(
-            result.coverage_track.len(),
+            result.coverage.to_full(target.len()).len(),
             target.len(),
-            "Coverage track should match target length"
+            "Coverage track should reconstruct to target length"
         );
     }
 

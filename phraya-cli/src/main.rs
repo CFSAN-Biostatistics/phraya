@@ -309,8 +309,15 @@ fn run_align(
     let result = align_task_with_config(query, target, &plan, &config)
         .ok_or_else(|| format!("alignment failed for {query_id} vs {target_id}"))?;
 
-    // Build .phraya file
-    let coverage = CoverageTrack::new(result.coverage_track.iter().map(|&v| v as usize).collect());
+    // Build .phraya file (single-read path: expand the windowed coverage to full length).
+    let coverage = CoverageTrack::new(
+        result
+            .coverage
+            .to_full(target.len())
+            .iter()
+            .map(|&v| v as usize)
+            .collect(),
+    );
     let phraya_file = phraya::PhrayaFile::new(
         target.len() as u32,
         query_id.to_string(),
@@ -410,8 +417,14 @@ fn run_align_worker_with_plan(
         if let Some(result) = align_read(&target_ctx, &seq, &plan, &config) {
             all_variants.extend(result.variants);
             all_query_positions.insert(query_id, result.query_positions);
-            for (i, &cov) in result.coverage_track.iter().enumerate() {
-                coverage_track[i] += cov;
+            // Merge the windowed coverage into the genome accumulator at its offset,
+            // touching only the aligned span instead of scanning the whole genome.
+            let cov = &result.coverage;
+            for (j, &c) in cov.counts.iter().enumerate() {
+                let pos = cov.start + j;
+                if pos < coverage_track.len() {
+                    coverage_track[pos] += c;
+                }
             }
         }
     }

@@ -438,12 +438,13 @@ fn issue_15_coverage_track_valid() {
 
     let result = result.expect("alignment failed");
 
-    // Coverage track must match target length
+    // Coverage track (windowed per read) must reconstruct to the target length.
+    let full_coverage = result.coverage.to_full(seq1.len());
     assert_eq!(
-        result.coverage_track.len(),
+        full_coverage.len(),
         seq1.len(),
         "Coverage track length {} does not match target length {}",
-        result.coverage_track.len(),
+        full_coverage.len(),
         seq1.len()
     );
 
