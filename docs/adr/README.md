@@ -24,3 +24,4 @@ the old one (and update the old one's Status). Do not edit history.
 | [0003](0003-alignment-strategy-ladder.md) | Alignment strategy ladder and Myers fitting default | Accepted |
 | [0004](0004-fast-strategy-low-sensitivity.md) | Fast strategy: seed subsampling + divergence cutoff | Accepted |
 | [0005](0005-paired-end-proper-pair-fraction.md) | Paired-end proper-pair fraction filtering | Accepted |
+| [0006](0006-simd-build-requirements-and-packaging.md) | SIMD build requirements and packaging (`target-cpu` / `ensure_simd`) | Proposed |
