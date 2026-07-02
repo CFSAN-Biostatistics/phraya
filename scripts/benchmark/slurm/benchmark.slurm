@@ -2,22 +2,23 @@
 #SBATCH --job-name=phraya_bench
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=128G
 #SBATCH --time=4:00:00
 
 # Main benchmark array job
-# Decodes task ID → (target, aligner, replicate), runs alignment with timing
+# Decodes task ID → (target, aligner, replicate), runs alignment+calling with timing
+#
+# Aligners (4 total):
+#   bwa-mem2      — alignment only (throughput baseline, SAM output)
+#   minimap2      — alignment only (throughput baseline, SAM output)
+#   bwa-pipeline  — bwa mem + sort + mpileup + bcftools call (fair phraya comparison)
+#   phraya        — full alignment + variant observation pipeline
 
 set -euo pipefail
 
-# Load environment
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Load environment (uses absolute tool paths — module system unreliable in SLURM)
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "$SCRIPT_DIR/config/global.env"
-
-# Load modules
-module load "$MODULE_BWA" || echo "WARNING: Failed to load $MODULE_BWA"
-module load "$MODULE_MINIMAP" || echo "WARNING: Failed to load $MODULE_MINIMAP"
-module load "$MODULE_SAMTOOLS" || echo "WARNING: Failed to load $MODULE_SAMTOOLS"
 
 # Verify required variables from environment
 if [[ -z "${RUN_DIR:-}" ]] || [[ -z "${TARGETS_FILE:-}" ]]; then
@@ -27,7 +28,7 @@ fi
 
 # Decode array task ID → (target_idx, aligner_idx, replicate_idx)
 TASK_ID=${SLURM_ARRAY_TASK_ID}
-NUM_ALIGNERS=3  # bwa-mem2, minimap2, phraya
+NUM_ALIGNERS=4  # bwa-mem2, minimap2, bwa-pipeline, phraya
 NUM_REPLICATES=$REPLICATES
 
 TARGET_IDX=$((TASK_ID / (NUM_ALIGNERS * NUM_REPLICATES)))
@@ -35,7 +36,7 @@ ALIGNER_IDX=$(((TASK_ID / NUM_REPLICATES) % NUM_ALIGNERS))
 REPLICATE_IDX=$((TASK_ID % NUM_REPLICATES))
 
 # Map aligner index to name
-ALIGNERS=("bwa-mem2" "minimap2" "phraya")
+ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya")
 ALIGNER="${ALIGNERS[$ALIGNER_IDX]}"
 
 # Read target from targets.conf (skip comments, filter large if needed)
@@ -55,8 +56,8 @@ IFS='|' read -r TARGET_ID TARGET_PATH SIZE_CLASS GENOME_SIZE_GB <<< "$TARGET_LIN
 # Construct paths
 DATA_DIR="$DATA_ROOT/$TARGET_PATH/data"
 REF_FASTA="$DATA_DIR/reference/reference.fasta"
-READS_1="$DATA_DIR/reads/reads_1.fastq.gz"
-READS_2="$DATA_DIR/reads/reads_2.fastq.gz"
+READS_1="$DATA_DIR/reads/reads_1_30k.fastq.gz"
+READS_2="$DATA_DIR/reads/reads_2_30k.fastq.gz"
 
 # Output directory
 OUT_DIR="$RUN_DIR/$TARGET_ID/$ALIGNER/rep_$REPLICATE_IDX"
@@ -80,59 +81,34 @@ for f in "$REF_FASTA" "$READS_1" "$READS_2"; do
     fi
 done
 
-# Build index if not present (one-time per target, flock-protected)
-INDEX_DIR="$DATA_DIR/reference"
-case $ALIGNER in
-    bwa-mem2)
-        if [[ ! -f "$INDEX_DIR/reference.fasta.bwt.2bit.64" ]]; then
-            (
-                flock -x 200
-                if [[ ! -f "$INDEX_DIR/reference.fasta.bwt.2bit.64" ]]; then
-                    echo "Building BWA-MEM2 index for $TARGET_ID..."
-                    bwa-mem2 index "$REF_FASTA"
-                fi
-            ) 200>"$INDEX_DIR/.bwa_index.lock"
-        fi
-        ;;
-    minimap2)
-        if [[ ! -f "$INDEX_DIR/reference.mmi" ]]; then
-            (
-                flock -x 200
-                if [[ ! -f "$INDEX_DIR/reference.mmi" ]]; then
-                    echo "Building minimap2 index for $TARGET_ID..."
-                    minimap2 -d "$INDEX_DIR/reference.mmi" "$REF_FASTA"
-                fi
-            ) 200>"$INDEX_DIR/.minimap_index.lock"
-        fi
-        ;;
-    phraya)
-        # phraya computes sketches during plan, no separate index build
-        # Ensure binary exists
-        PHRAYA="${PHRAYA_ROOT}/target/release/phraya"
-        if [[ ! -f "$PHRAYA" ]]; then
-            echo "ERROR: phraya binary not found at $PHRAYA" >&2
-            echo "Build phraya: cd $PHRAYA_ROOT && cargo build --release" >&2
-            exit 1
-        fi
-        ;;
-esac
+# Pre-flight check for phraya binary
+if [[ "$ALIGNER" == "phraya" ]]; then
+    PHRAYA="${PHRAYA_ROOT}/target/release/phraya"
+    if [[ ! -f "$PHRAYA" ]]; then
+        echo "ERROR: phraya binary not found at $PHRAYA" >&2
+        exit 1
+    fi
+fi
 
-# Run aligner via wrapper script
+# Run aligner via wrapper script (wrappers handle index build internally)
 WRAPPER="$SCRIPT_DIR/wrappers/${ALIGNER}.sh"
 if [[ ! -f "$WRAPPER" ]]; then
     echo "ERROR: Wrapper not found: $WRAPPER" >&2
     exit 1
 fi
 
-echo "Running $ALIGNER alignment..."
+echo "Running $ALIGNER..."
 "$WRAPPER" "$REF_FASTA" "$READS_1" "$READS_2" "$OUT_DIR" "$THREADS"
 
-# Parse timing output
+# Write timing.json (read wall_seconds from timing.txt, add metadata)
 if [[ -f "$OUT_DIR/timing.txt" ]]; then
-    python3 "$SCRIPT_DIR/utils/parse_time.py" "$OUT_DIR/timing.txt" > "$OUT_DIR/timing.json"
+    WALL=$(grep 'wall_seconds=' "$OUT_DIR/timing.txt" | head -1 | cut -d= -f2 | tr -d ' ')
+    cat > "$OUT_DIR/timing.json" <<JSON
+{"aligner":"$ALIGNER","target":"$TARGET_ID","replicate":$REPLICATE_IDX,"wall_seconds":${WALL:-null},"threads":$THREADS,"node":"$SLURM_JOB_NODELIST"}
+JSON
 else
-    echo "ERROR: timing.txt not found after alignment" >&2
+    echo "ERROR: timing.txt not found after run" >&2
     exit 1
 fi
 
-echo "=== Task Complete ==="
+echo "=== Task Complete: ${WALL:-?}s ==="

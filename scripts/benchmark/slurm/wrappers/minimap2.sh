@@ -1,31 +1,26 @@
 #!/bin/bash
-# minimap2 aligner wrapper with timing capture
+# minimap2 alignment-only wrapper (throughput baseline — SAM output)
 # Usage: minimap2.sh <ref.fasta> <reads_1.fq.gz> <reads_2.fq.gz> <out_dir> <threads>
-
 set -euo pipefail
 
-REF=$1
-READS_1=$2
-READS_2=$3
-OUT_DIR=$4
-THREADS=$5
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$SCRIPT_DIR/config/global.env"
 
-# Verify inputs exist
+REF=$1; READS_1=$2; READS_2=$3; OUT_DIR=$4; THREADS=$5
+
 for f in "$REF" "$READS_1" "$READS_2"; do
-    if [[ ! -f "$f" ]]; then
-        echo "ERROR: Input file not found: $f" >&2
-        exit 1
-    fi
+    [[ -f "$f" ]] || { echo "ERROR: not found: $f" >&2; exit 1; }
 done
 
-# Use pre-built .mmi index if available, else use FASTA directly
+# Build .mmi index (flock-protected, one-time per reference)
 INDEX="${REF%.fasta}.mmi"
-if [[ -f "$INDEX" ]]; then
-    REF_ARG="$INDEX"
-else
-    REF_ARG="$REF"
+if [[ ! -f "$INDEX" ]]; then
+    (flock -x 200; [[ -f "$INDEX" ]] || $MINIMAP2_BIN -d "$INDEX" "$REF") 200>"${REF}.mmi.lock"
 fi
 
-# Run minimap2 with timing (-x sr = short read preset)
-/usr/bin/time -v minimap2 -ax sr -t "$THREADS" "$REF_ARG" "$READS_1" "$READS_2" \
-    > "$OUT_DIR/alignment.sam" 2> "$OUT_DIR/timing.txt"
+START=$SECONDS
+$MINIMAP2_BIN -ax sr -t "$THREADS" "$INDEX" "$READS_1" "$READS_2" > "$OUT_DIR/alignment.sam"
+ELAPSED=$((SECONDS - START))
+
+echo "wall_seconds=$ELAPSED threads=$THREADS aligner=minimap2" > "$OUT_DIR/timing.txt"
+echo "Elapsed: ${ELAPSED}s" >&2
