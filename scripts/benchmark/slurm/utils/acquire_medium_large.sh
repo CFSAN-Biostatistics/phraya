@@ -242,17 +242,22 @@ acquire_T8b() {
     local REF="$REF_DIR/reference.fasta"
     mkdir -p "$REF_DIR" "$READS_DIR"
 
-    if [[ ! -f "$REF" ]]; then
-        echo "[T8b] Downloading IWGSC RefSeq v1.0 hexaploid wheat (~15 GB compressed, ~17 GB uncompressed)..."
-        echo "[T8b] Downloading chromosomes in parallel (21 chromosomes + unanchored)..."
+    if [[ ! -f "$REF" ]] || [[ ! -s "$REF" ]]; then
+        # Remove any truncated file from a previous failed attempt
+        rm -f "$REF"
+        echo "[T8b] Downloading IWGSC RefSeq v1.0 hexaploid wheat (sequential per chromosome to avoid append races)..."
+        BASE="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/900/519/105/GCA_900519105.1_IWGSC_v1.0/GCA_900519105.1_IWGSC_v1.0_assembly_structure/Primary_Assembly/assembled_chromosomes/FASTA"
         for CHR in chr1A chr1B chr1D chr2A chr2B chr2D chr3A chr3B chr3D \
                    chr4A chr4B chr4D chr5A chr5B chr5D chr6A chr6B chr6D \
-                   chr7A chr7B chr7D chrUn; do
-            (curl -sL "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/900/519/105/GCA_900519105.1_IWGSC_v1.0/GCA_900519105.1_IWGSC_v1.0_assembly_structure/Primary_Assembly/assembled_chromosomes/FASTA/${CHR}.fna.gz" \
-                | gzip -d >> "$REF" 2>/dev/null) &
+                   chr7A chr7B chr7D; do
+            echo "[T8b]   downloading $CHR..."
+            curl -sL "$BASE/${CHR}.fna.gz" | gzip -d >> "$REF" || { echo "[T8b] WARNING: $CHR failed, continuing"; }
         done
-        wait
-        [[ -s "$REF" ]] || { echo "[T8b] ERROR: failed to download hexaploid wheat" >&2; return 1; }
+        # chrUn (unanchored scaffolds)
+        curl -sL "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/900/519/105/GCA_900519105.1_IWGSC_v1.0/GCA_900519105.1_IWGSC_v1.0_assembly_structure/non-nuclear/assembled_chromosomes/FASTA/chrUn.fna.gz" \
+            | gzip -d >> "$REF" 2>/dev/null || true
+        [[ -s "$REF" ]] || { echo "[T8b] ERROR: reference empty after download" >&2; return 1; }
+        echo "[T8b] Reference assembled: $(du -sh $REF | cut -f1)"
     fi
     build_indexes "$REF"
 
