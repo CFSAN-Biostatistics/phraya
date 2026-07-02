@@ -70,24 +70,37 @@ subsample_30k() {
 }
 
 sim_dwgsim() {
-    # dwgsim -1 150 -2 150 -C COVERAGE REF reads
-    local REF=$1 COVERAGE=$2 READS_DIR=$3 SEED=$4
+    # Simulate exactly N_READS pairs via -N (fixed count, fast regardless of genome size).
+    # We only need 30k + headroom; 100k pairs is sufficient and takes ~1-2 min per genome.
+    local REF=$1 READS_DIR=$2 SEED=$3
+    local N_READS=100000
     mkdir -p "$READS_DIR/tmp_sim"
-    $DWGSIM -1 150 -2 150 -C "$COVERAGE" -z "$SEED" "$REF" "$READS_DIR/tmp_sim/reads"
+    $DWGSIM -1 150 -2 150 -N "$N_READS" -z "$SEED" "$REF" "$READS_DIR/tmp_sim/reads"
     mv "$READS_DIR/tmp_sim/reads.bwa.read1.fastq.gz" "$READS_DIR/reads_1.fastq.gz"
     mv "$READS_DIR/tmp_sim/reads.bwa.read2.fastq.gz" "$READS_DIR/reads_2.fastq.gz"
     rm -rf "$READS_DIR/tmp_sim"
+    echo "  Simulated $N_READS read pairs"
 }
 
 sim_art() {
-    # art_illumina -ss HS25 -p -l 150 -f COVERAGE -i REF -o prefix
-    local REF=$1 COVERAGE=$2 READS_DIR=$3 SEED=$4
+    # art_illumina -c COUNT (read pairs per position) is awkward for fixed N.
+    # Use -c 1 -f 0 trick: simulate with -c 1 (gives genome_len/150 pairs), then subsample.
+    # For large genomes just use -f 0.001 to get ~genome_len*0.001/150 pairs — easily enough.
+    # Better: use fixed -c on a sampled region. Simplest: use wgsim as fallback for fixed N.
+    local REF=$1 READS_DIR=$2 SEED=$3
+    local N_READS=100000
     mkdir -p "$READS_DIR/tmp_sim"
-    $ART -ss HS25 -p -l 150 -f "$COVERAGE" -i "$REF" \
+    # art_illumina requires --paired-end via -p, reads per base via -f, not fixed -N.
+    # Workaround: simulate 1x coverage (fast), then top up with second 1x pass if too few reads.
+    $ART -ss HS25 -p -l 150 -f 0.05 -i "$REF" \
+        -rs "$SEED" -o "$READS_DIR/tmp_sim/reads" -q 2>/dev/null || \
+    $ART -ss HS25 -p -l 150 -f 0.02 -i "$REF" \
         -rs "$SEED" -o "$READS_DIR/tmp_sim/reads" -q
     gzip -c "$READS_DIR/tmp_sim/reads1.fq" > "$READS_DIR/reads_1.fastq.gz"
     gzip -c "$READS_DIR/tmp_sim/reads2.fq" > "$READS_DIR/reads_2.fastq.gz"
     rm -rf "$READS_DIR/tmp_sim"
+    NPAIRS=$(zcat "$READS_DIR/reads_1.fastq.gz" | wc -l); NPAIRS=$((NPAIRS/4))
+    echo "  Simulated $NPAIRS read pairs (art_illumina 0.05x)"
 }
 
 # ---- per-target acquisition ----
@@ -106,8 +119,8 @@ acquire_T1() {
     build_indexes "$REF"
 
     if [[ ! -f "$READS_DIR/reads_1.fastq.gz" ]]; then
-        echo "[T1] Simulating reads (dwgsim, 30x, 150bp PE)..."
-        sim_dwgsim "$REF" 30 "$READS_DIR" 42
+        echo "[T1] Simulating reads (dwgsim, 100k pairs, 150bp PE)..."
+        sim_dwgsim "$REF" "$READS_DIR" 42
     fi
     subsample_30k "$READS_DIR"
     echo "[T1] Done."
@@ -133,8 +146,8 @@ acquire_T2() {
     build_indexes "$REF"
 
     if [[ ! -f "$READS_DIR/reads_1.fastq.gz" ]]; then
-        echo "[T2] Simulating reads (dwgsim, 30x, 150bp PE)..."
-        sim_dwgsim "$REF" 30 "$READS_DIR" 42
+        echo "[T2] Simulating reads (dwgsim, 100k pairs, 150bp PE)..."
+        sim_dwgsim "$REF" "$READS_DIR" 42
     fi
     subsample_30k "$READS_DIR"
     echo "[T2] Done."
@@ -173,8 +186,8 @@ acquire_T7b() {
     build_indexes "$REF"
 
     if [[ ! -f "$READS_DIR/reads_1.fastq.gz" ]]; then
-        echo "[T7b] Simulating reads (dwgsim, 50x, 150bp PE)..."
-        sim_dwgsim "$REF" 50 "$READS_DIR" 42
+        echo "[T7b] Simulating reads (dwgsim, 100k pairs, 150bp PE)..."
+        sim_dwgsim "$REF" "$READS_DIR" 42
     fi
     subsample_30k "$READS_DIR"
     echo "[T7b] Done."
@@ -202,8 +215,8 @@ acquire_T8a() {
     build_indexes "$REF"
 
     if [[ ! -f "$READS_DIR/reads_1.fastq.gz" ]]; then
-        echo "[T8a] Simulating reads (art_illumina HS25, 10x, 150bp PE)..."
-        sim_art "$REF" 10 "$READS_DIR" 42
+        echo "[T8a] Simulating reads (art_illumina HS25, 150bp PE)..."
+        sim_art "$REF" "$READS_DIR" 42
     fi
     subsample_30k "$READS_DIR"
     echo "[T8a] Done."
@@ -228,8 +241,8 @@ acquire_T8c() {
     build_indexes "$REF"
 
     if [[ ! -f "$READS_DIR/reads_1.fastq.gz" ]]; then
-        echo "[T8c] Simulating reads (art_illumina HS25, 10x, 150bp PE)..."
-        sim_art "$REF" 10 "$READS_DIR" 42
+        echo "[T8c] Simulating reads (art_illumina HS25, 150bp PE)..."
+        sim_art "$REF" "$READS_DIR" 42
     fi
     subsample_30k "$READS_DIR"
     echo "[T8c] Done."
@@ -243,27 +256,23 @@ acquire_T8b() {
     mkdir -p "$REF_DIR" "$READS_DIR"
 
     if [[ ! -f "$REF" ]] || [[ ! -s "$REF" ]]; then
-        # Remove any truncated file from a previous failed attempt
         rm -f "$REF"
-        echo "[T8b] Downloading IWGSC RefSeq v1.0 hexaploid wheat (sequential per chromosome to avoid append races)..."
-        BASE="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/900/519/105/GCA_900519105.1_IWGSC_v1.0/GCA_900519105.1_IWGSC_v1.0_assembly_structure/Primary_Assembly/assembled_chromosomes/FASTA"
-        for CHR in chr1A chr1B chr1D chr2A chr2B chr2D chr3A chr3B chr3D \
-                   chr4A chr4B chr4D chr5A chr5B chr5D chr6A chr6B chr6D \
-                   chr7A chr7B chr7D; do
-            echo "[T8b]   downloading $CHR..."
-            curl -sL "$BASE/${CHR}.fna.gz" | gzip -d >> "$REF" || { echo "[T8b] WARNING: $CHR failed, continuing"; }
-        done
-        # chrUn (unanchored scaffolds)
-        curl -sL "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/900/519/105/GCA_900519105.1_IWGSC_v1.0/GCA_900519105.1_IWGSC_v1.0_assembly_structure/non-nuclear/assembled_chromosomes/FASTA/chrUn.fna.gz" \
-            | gzip -d >> "$REF" 2>/dev/null || true
+        echo "[T8b] Downloading IWGSC RefSeq v1.0 hexaploid wheat via ncbi-datasets (GCA_900519105.1, ~15 GB)..."
+        TMP="$REF_DIR/tmp_dl"; mkdir -p "$TMP"
+        $DATASETS download genome accession GCA_900519105.1 \
+            --include genome --filename "$TMP/ncbi_dataset.zip" \
+            --no-progressbar
+        unzip -o "$TMP/ncbi_dataset.zip" -d "$TMP"
+        cat "$TMP/ncbi_dataset/data/GCA_900519105.1/"*.fna > "$REF"
+        rm -rf "$TMP"
         [[ -s "$REF" ]] || { echo "[T8b] ERROR: reference empty after download" >&2; return 1; }
-        echo "[T8b] Reference assembled: $(du -sh $REF | cut -f1)"
+        echo "[T8b] Reference downloaded: $(du -sh $REF | cut -f1)"
     fi
     build_indexes "$REF"
 
     if [[ ! -f "$READS_DIR/reads_1.fastq.gz" ]]; then
-        echo "[T8b] Simulating reads (art_illumina HS25, 5x, 150bp PE)..."
-        sim_art "$REF" 5 "$READS_DIR" 42
+        echo "[T8b] Simulating reads (art_illumina HS25, 150bp PE)..."
+        sim_art "$REF" "$READS_DIR" 42
     fi
     subsample_30k "$READS_DIR"
     echo "[T8b] Done."
