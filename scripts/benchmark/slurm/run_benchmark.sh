@@ -162,7 +162,7 @@ BENCHMARK_JOB=$(sbatch --parsable \
     --job-name="phraya_benchmark_$RUN_ID" \
     --array="0-$((ARRAY_SIZE - 1))" \
     --output="$RUN_DIR/slurm-%A_%a.log" \
-    --export=ALL,RUN_DIR="$RUN_DIR",TARGETS_FILE="$TARGETS_FILE",NODELIST="$NODELIST",INCLUDE_LARGE="$INCLUDE_LARGE" \
+    --export=ALL,SCRIPT_DIR="$SCRIPT_DIR",RUN_DIR="$RUN_DIR",TARGETS_FILE="$TARGETS_FILE",NODELIST="$NODELIST",INCLUDE_LARGE="$INCLUDE_LARGE" \
     "$SCRIPT_DIR/benchmark.slurm")
 
 echo "  Benchmark job ID: $BENCHMARK_JOB"
@@ -176,7 +176,7 @@ AGGREGATE_JOB=$(sbatch --parsable \
     --job-name="benchmark_aggregate_$RUN_ID" \
     --dependency=afterok:$BENCHMARK_JOB \
     --output="$RUN_DIR/aggregate.log" \
-    --export=ALL,RUN_DIR="$RUN_DIR" \
+    --export=ALL,SCRIPT_DIR="$SCRIPT_DIR",RUN_DIR="$RUN_DIR" \
     "$SCRIPT_DIR/utils/aggregate.slurm")
 
 echo "  Aggregation job ID: $AGGREGATE_JOB (runs after $BENCHMARK_JOB)"
