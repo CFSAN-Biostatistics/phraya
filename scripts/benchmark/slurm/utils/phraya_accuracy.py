@@ -45,10 +45,10 @@ def main():
     parser.add_argument("--total-reads", type=int, default=0)
     args = parser.parse_args()
 
-    with open(args.queries_file, "rb") as f:
-        compressed = f.read()
     dctx = zstandard.ZstdDecompressor()
-    raw = dctx.decompress(compressed)
+    with open(args.queries_file, "rb") as f:
+        with dctx.stream_reader(f) as reader:
+            raw = reader.read()
     # QueryIndex = HashMap<String, Vec<(u32, f64)>>
     # msgpack decodes tuples as lists: [[pos, score], ...]
     data: dict = msgpack.unpackb(raw, raw=False)

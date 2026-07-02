@@ -20,10 +20,10 @@ def main():
 
     path = sys.argv[1]
     try:
-        with open(path, "rb") as f:
-            compressed = f.read()
         dctx = zstandard.ZstdDecompressor()
-        raw = dctx.decompress(compressed)
+        with open(path, "rb") as f:
+            with dctx.stream_reader(f) as reader:
+                raw = reader.read()
         data = msgpack.unpackb(raw, raw=False)
         print(len(data))
     except Exception as e:

@@ -81,9 +81,11 @@ acquire_target() {
 
     # Simulate reads with wgsim if not present
     READS_1="$READS_DIR/reads_1.fastq.gz"
+    READS_2="$READS_DIR/reads_2.fastq.gz"
     READS_1_30K="$READS_DIR/reads_1_30k.fastq.gz"
+    READS_2_30K="$READS_DIR/reads_2_30k.fastq.gz"
 
-    if [[ ! -f "$READS_1_30K" ]]; then
+    if [[ ! -f "$READS_1_30K" ]] || [[ ! -f "$READS_2_30K" ]]; then
         if [[ ! -f "$READS_1" ]]; then
             echo "[$TID] Simulating reads (${COVERAGE}x coverage, wgsim)..."
             GENOME_SIZE=$(awk '/^>/{next}{s+=length($0)}END{print s}' "$REF")
