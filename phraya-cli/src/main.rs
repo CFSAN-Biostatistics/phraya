@@ -405,26 +405,81 @@ fn run_align_worker_with_plan(
     let mut all_query_positions = HashMap::new();
     let mut coverage_track = vec![0u32; target.len()];
 
-    for global_idx in start_idx..end_idx {
-        // Map global_idx to (file_idx, local_idx)
-        let (file_idx, local_idx) = map_global_to_local(&plan, global_idx)?;
+    // Align reads in parallel using rayon, processing in fixed-size batches to bound
+    // peak memory. Each batch of BATCH_SIZE reads is aligned in parallel; WFA state is
+    // freed after each batch. Total in-flight memory ≈ BATCH_SIZE × read_size.
+    use rayon::prelude::*;
+    const BATCH_SIZE: usize = 4096;
 
-        // Extract sequence at byte offset
-        let seq = extract_sequence_at_offset(&plan, file_idx, local_idx)?;
-        let query_id = seq.id().to_string();
+    let has_byte_offsets = plan
+        .read_byte_offsets
+        .iter()
+        .skip(1) // skip reference at index 0
+        .any(|v| !v.is_empty());
 
-        // Align
-        if let Some(result) = align_read(&target_ctx, &seq, &plan, &config) {
-            all_variants.extend(result.variants);
-            all_query_positions.insert(query_id, result.query_positions);
-            // Merge the windowed coverage into the genome accumulator at its offset,
-            // touching only the aligned span instead of scanning the whole genome.
-            let cov = &result.coverage;
-            for (j, &c) in cov.counts.iter().enumerate() {
-                let pos = cov.start + j;
-                if pos < coverage_track.len() {
-                    coverage_track[pos] += c;
-                }
+    // Safety: plan lives for the entire function and rayon completes before we return,
+    // so the raw-pointer reborrow is valid. We avoid plan.clone() because plan.kmer_index
+    // holds one sketch per read (~50 MB for 30k reads) and cloning would double peak RSS.
+    let plan_ptr: *const PhrayaPlan = plan as *const _;
+    let plan_ref = unsafe { &*plan_ptr };
+
+    let merge_result = |all_variants: &mut Vec<_>,
+                        all_query_positions: &mut HashMap<_, _>,
+                        coverage_track: &mut Vec<u32>,
+                        query_id: String,
+                        result: phraya_align::executor::AlignmentResult| {
+        all_variants.extend(result.variants);
+        all_query_positions.insert(query_id, result.query_positions);
+        let cov = &result.coverage;
+        for (j, &c) in cov.counts.iter().enumerate() {
+            let pos = cov.start + j;
+            if pos < coverage_track.len() {
+                coverage_track[pos] += c;
+            }
+        }
+    };
+
+    if !has_byte_offsets {
+        // Gzipped: stream all read files sequentially, slice to worker range, batch-align.
+        let mut all_reads: Vec<Sequence> = Vec::new();
+        for file_path in plan_ref.input_files.iter().skip(1) {
+            let mut parser = SequenceParser::from_path(file_path)?;
+            while let Some(result) = parser.next() {
+                all_reads.push(result?);
+            }
+        }
+        let worker_reads = &all_reads[start_idx..end_idx.min(all_reads.len())];
+
+        for batch in worker_reads.chunks(BATCH_SIZE) {
+            let batch_results: Vec<_> = batch
+                .par_iter()
+                .filter_map(|seq| {
+                    align_read(&target_ctx, seq, plan_ref, &config)
+                        .map(|r| (seq.id().to_string(), r))
+                })
+                .collect();
+            for (query_id, result) in batch_results {
+                merge_result(&mut all_variants, &mut all_query_positions, &mut coverage_track, query_id, result);
+            }
+        }
+    } else {
+        for batch_start in (start_idx..end_idx).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(end_idx);
+            let batch: Result<Vec<_>, _> = (batch_start..batch_end)
+                .map(|global_idx| {
+                    let (file_idx, local_idx) = map_global_to_local(plan_ref, global_idx)?;
+                    extract_sequence_at_offset(plan_ref, file_idx, local_idx)
+                })
+                .collect();
+            let batch_results: Vec<_> = batch?
+                .par_iter()
+                .filter_map(|seq| {
+                    align_read(&target_ctx, seq, plan_ref, &config)
+                        .map(|r| (seq.id().to_string(), r))
+                })
+                .collect();
+            for (query_id, result) in batch_results {
+                merge_result(&mut all_variants, &mut all_query_positions, &mut coverage_track, query_id, result);
             }
         }
     }
@@ -872,6 +927,15 @@ fn configure_batch_mode(
 fn index_file_offsets(path: &std::path::Path) -> Result<(Vec<u64>, usize), Box<dyn std::error::Error>> {
     use std::fs::File;
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    // Gzipped files can't be seeked; byte offsets are meaningless in compressed streams.
+    // Single-worker batch mode doesn't need the offset index, so return a sentinel count
+    // derived by counting records via the decompressing SequenceParser instead.
+    if path.to_string_lossy().ends_with(".gz") {
+        let mut parser = crate::SequenceParser::from_path(path)?;
+        let count = parser.by_ref().count();
+        return Ok((Vec::new(), count));
+    }
 
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
