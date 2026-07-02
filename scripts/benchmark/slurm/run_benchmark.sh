@@ -123,10 +123,14 @@ if [[ $DRY_RUN -eq 1 ]]; then
     exit 0
 fi
 
-# Step 1: Run STREAM Triad characterization (if not already cached)
+# Step 1: STREAM Triad characterization — use cached value if present, else run once
 echo "=== Step 1: STREAM Triad Platform Characterization ==="
-if [[ ! -f "$RUN_DIR/stream_triad.txt" ]]; then
-    echo "Submitting STREAM Triad job..."
+STREAM_CACHE="$SCRIPT_DIR/cache/stream_triad_c064.txt"
+if [[ -f "$STREAM_CACHE" ]]; then
+    cp "$STREAM_CACHE" "$RUN_DIR/stream_triad.txt"
+    echo "  Using cached STREAM Triad: $(cat "$STREAM_CACHE") MB/s"
+elif [[ ! -f "$RUN_DIR/stream_triad.txt" ]]; then
+    echo "  Submitting STREAM Triad job..."
     STREAM_JOB=$(sbatch --parsable \
         --job-name="benchmark_stream_$RUN_ID" \
         --output="$RUN_DIR/stream_%N.log" \
@@ -136,8 +140,8 @@ if [[ ! -f "$RUN_DIR/stream_triad.txt" ]]; then
     echo "  STREAM job ID: $STREAM_JOB"
     echo "  Waiting for completion..."
 
-    # Wait for STREAM to complete
-    while squeue -j "$STREAM_JOB" -h &>/dev/null; do
+    # squeue returns exit 0 even for finished jobs — check for job ID in output
+    while squeue -j "$STREAM_JOB" -h 2>/dev/null | grep -q "$STREAM_JOB"; do
         sleep 5
     done
 
@@ -145,10 +149,9 @@ if [[ ! -f "$RUN_DIR/stream_triad.txt" ]]; then
         echo "ERROR: STREAM job completed but stream_triad.txt not found" >&2
         exit 1
     fi
-
     echo "  STREAM Triad measurement complete"
-else
-    echo "  Using cached STREAM Triad results"
+    cp "$RUN_DIR/stream_triad.txt" "$STREAM_CACHE"
+    echo "  Cached result for future runs"
 fi
 echo
 
