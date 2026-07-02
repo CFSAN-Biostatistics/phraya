@@ -102,7 +102,9 @@ def load_rep_timing(rep_dir: Path) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 PAFTOOLS_CANDIDATES = [
+    os.environ.get("PAFTOOLS_BIN", ""),
     "paftools.js",
+    "/nfs/software/apps/micromamba/1.5.8/envs/quast-v5.2.0/bin/paftools.js",
     "/nfs/software/apps/micromamba/1.5.8/envs/minimap2-v2.28/bin/paftools.js",
 ]
 
@@ -165,7 +167,8 @@ def compute_pa_phraya(queries_file: Path, total_reads: int = 0, tolerance: int =
         print(f"WARNING: {helper} not found — PA will be null for phraya", file=sys.stderr)
         return None
     try:
-        cmd = ["python3", str(helper), str(queries_file), f"--tolerance={tolerance}"]
+        python3 = os.environ.get("PYTHON3_BIN", "python3")
+        cmd = [python3, str(helper), str(queries_file), f"--tolerance={tolerance}"]
         if total_reads > 0:
             cmd.append(f"--total-reads={total_reads}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)

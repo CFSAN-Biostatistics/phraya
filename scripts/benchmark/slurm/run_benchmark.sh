@@ -85,9 +85,9 @@ echo
 
 # Count targets (excluding comments and large if not requested)
 if [[ $INCLUDE_LARGE -eq 0 ]]; then
-    TARGET_COUNT=$(grep -v '^#' "$TARGETS_FILE" | grep -v '|large|' | wc -l)
+    TARGET_COUNT=$(grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | grep -v '|large|' | wc -l)
 else
-    TARGET_COUNT=$(grep -v '^#' "$TARGETS_FILE" | wc -l)
+    TARGET_COUNT=$(grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | wc -l)
 fi
 
 if [[ $TARGET_COUNT -eq 0 ]]; then
@@ -114,7 +114,7 @@ if [[ $DRY_RUN -eq 1 ]]; then
     echo "DRY RUN: Would submit $ARRAY_SIZE array job tasks"
     echo
     echo "Tasks would be:"
-    grep -v '^#' "$TARGETS_FILE" | grep -v '|large|' | while IFS='|' read -r tid tpath tclass tsize; do
+    grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | grep -v '|large|' | while IFS='|' read -r tid tpath tclass tsize; do
         for aligner in "${ALIGNERS[@]}"; do
             for rep in $(seq 0 $((REPLICATES - 1))); do
                 echo "  - $tid / $aligner / rep_$rep (genome: ${tsize}GB)"

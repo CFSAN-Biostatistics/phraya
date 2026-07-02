@@ -5,7 +5,7 @@
 set -euo pipefail
 
 NUM_NODES="${1:-3}"  # Default: 3 nodes for 3 replicates
-PARTITION="${SLURM_PARTITION:-batch}"  # Default partition
+PARTITION="${SLURM_PARTITION:-prod}"  # Default partition (Reedling2 uses prod, not batch)
 
 # Query sinfo for nodes in IDLE or MIX state
 AVAILABLE_NODES=$(sinfo -p "$PARTITION" -t idle,mix -h -o "%N" | head -n "$NUM_NODES")

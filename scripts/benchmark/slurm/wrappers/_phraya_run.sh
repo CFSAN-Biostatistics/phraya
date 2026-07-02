@@ -59,7 +59,8 @@ PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")
 # use .phraya.queries which has one key per query/read that placed ≥1 alignment
 QUERIES_FILE="$OUT_DIR/alignment.phraya.queries"
 if [[ -f "$QUERIES_FILE" ]]; then
-    N_ALIGNED=$(python3 "$SCRIPT_DIR/utils/count_phraya_aligned.py" "$QUERIES_FILE" 2>/dev/null || echo 0)
+    PYTHON="${PYTHON3_BIN:-python3}"
+    N_ALIGNED=$("$PYTHON" "$SCRIPT_DIR/utils/count_phraya_aligned.py" "$QUERIES_FILE" 2>/dev/null || echo 0)
 else
     N_ALIGNED=0
 fi

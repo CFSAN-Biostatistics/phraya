@@ -43,9 +43,9 @@ ALIGNER="${ALIGNERS[$ALIGNER_IDX]}"
 
 # Read target from targets.conf (skip comments, filter large if needed)
 if [[ "${INCLUDE_LARGE:-0}" -eq 0 ]]; then
-    TARGET_LINE=$(grep -v '^#' "$TARGETS_FILE" | grep -v '|large|' | sed -n "$((TARGET_IDX + 1))p")
+    TARGET_LINE=$(grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | grep -v '|large|' | sed -n "$((TARGET_IDX + 1))p")
 else
-    TARGET_LINE=$(grep -v '^#' "$TARGETS_FILE" | sed -n "$((TARGET_IDX + 1))p")
+    TARGET_LINE=$(grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | sed -n "$((TARGET_IDX + 1))p")
 fi
 
 if [[ -z "$TARGET_LINE" ]]; then
