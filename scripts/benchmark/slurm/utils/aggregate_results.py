@@ -101,18 +101,19 @@ def load_rep_timing(rep_dir: Path) -> Optional[dict]:
 # Placement accuracy
 # ---------------------------------------------------------------------------
 
+K8_BIN = os.environ.get("K8_BIN", "/nfs/software/apps/micromamba/1.5.8/envs/minimap2-v2.28/bin/k8")
 PAFTOOLS_CANDIDATES = [
     os.environ.get("PAFTOOLS_BIN", ""),
-    "paftools.js",
-    "/nfs/software/apps/micromamba/1.5.8/envs/quast-v5.2.0/bin/paftools.js",
     "/nfs/software/apps/micromamba/1.5.8/envs/minimap2-v2.28/bin/paftools.js",
+    "/nfs/software/apps/micromamba/1.5.8/envs/quast-v5.2.0/bin/paftools.js",
 ]
 
 def find_paftools() -> str | None:
+    """Returns path to paftools.js if k8 is available to run it."""
+    if not Path(K8_BIN).exists():
+        return None
     for candidate in PAFTOOLS_CANDIDATES:
-        if subprocess.run(["which", candidate], capture_output=True).returncode == 0:
-            return candidate
-        if Path(candidate).exists():
+        if candidate and Path(candidate).exists():
             return candidate
     return None
 
@@ -124,34 +125,27 @@ SAMTOOLS_BIN = os.environ.get(
 
 
 def compute_pa_sam(sam_file: Path, paftools: str, tolerance: int = 10) -> float | None:
-    """Placement accuracy from a SAM file via paftools.js mapeval."""
-    try:
-        sam2paf = subprocess.run(
-            f"{SAMTOOLS_BIN} view -F4 {sam_file} | {paftools} sam2paf -",
-            shell=True, capture_output=True, text=True, timeout=600,
-        )
-        if sam2paf.returncode != 0:
-            print(f"WARNING: sam2paf failed for {sam_file}", file=sys.stderr)
-            return None
+    """Placement accuracy from a SAM/BAM file using wgsim read-name encoding.
 
-        mapeval = subprocess.run(
-            [paftools, "mapeval", "-"],
-            input=sam2paf.stdout, capture_output=True, text=True, timeout=600,
-        )
-        if mapeval.returncode != 0:
-            print(f"WARNING: mapeval failed for {sam_file}", file=sys.stderr)
-            return None
-
-        for line in mapeval.stdout.splitlines():
-            if line.startswith("Q"):
-                parts = line.split()
-                if len(parts) >= 5 and parts[1] == str(tolerance):
-                    try:
-                        return float(parts[4])
-                    except (ValueError, IndexError):
-                        continue
-        print(f"WARNING: Could not parse PA (d={tolerance}) from mapeval for {sam_file}", file=sys.stderr)
+    Uses sam_accuracy.py which parses wgsim-format QNAME fields directly.
+    paftools.js mapeval does not support wgsim read names (only dwgsim format).
+    """
+    helper = SCRIPT_DIR / "sam_accuracy.py"
+    if not helper.exists():
+        print(f"WARNING: {helper} not found — PA will be null for SAM aligners", file=sys.stderr)
         return None
+    python3 = os.environ.get("PYTHON3_BIN", "python3")
+    try:
+        result = subprocess.run(
+            [python3, str(helper), str(sam_file),
+             f"--tolerance={tolerance}", f"--samtools={SAMTOOLS_BIN}"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            print(f"WARNING: sam_accuracy.py failed for {sam_file}: {result.stderr[:200]}", file=sys.stderr)
+            return None
+        parts = result.stdout.strip().split("\t")
+        return float(parts[0])
     except subprocess.TimeoutExpired:
         print(f"WARNING: PA computation timed out for {sam_file}", file=sys.stderr)
         return None
@@ -235,9 +229,9 @@ def aggregate(run_dir_str: str) -> dict:
     run_dir = Path(run_dir_str)
     stream_triad_gbps = read_stream_triad(run_dir)
     genome_sizes, target_paths = load_targets_conf(run_dir)
-    paftools = find_paftools()
-    if paftools is None:
-        print("WARNING: paftools.js not found — PA will be null for SAM-output aligners", file=sys.stderr)
+    # PA for SAM/BAM aligners uses sam_accuracy.py (wgsim read-name parsing),
+    # not paftools.js mapeval (which expects dwgsim format, not wgsim format).
+    paftools = "unused"  # kept for compatibility with call site below
 
     data_root = Path.home() / "data-commons" / "test" / "benchmarking" / "alignment"
 
@@ -314,15 +308,14 @@ def aggregate(run_dir_str: str) -> dict:
                 if queries_file.exists():
                     print(f"Computing PA (phraya) for {aligner} {target_id}...", file=sys.stderr)
                     pa = compute_pa_phraya(queries_file, total_reads=total_reads)
-            elif paftools:
+            else:
                 sam_file = rep0_dir / "alignment.sam"
                 if not sam_file.exists():
-                    # bwa-pipeline uses BAM — convert to SAM on the fly
                     bam_file = rep0_dir / "alignment.bam"
                     if bam_file.exists():
-                        sam_file = bam_file  # samtools view handles both
+                        sam_file = bam_file
                 if sam_file.exists():
-                    print(f"Computing PA (paftools) for {aligner} {target_id}...", file=sys.stderr)
+                    print(f"Computing PA (sam) for {aligner} {target_id}...", file=sys.stderr)
                     pa = compute_pa_sam(sam_file, paftools)
 
             # Variant count for bwa-pipeline (informational)
@@ -341,7 +334,7 @@ def aggregate(run_dir_str: str) -> dict:
                 "wall_time_s": round(mean_wall, 2),
                 "threads": 8,
                 "pa": round(pa, 4) if pa is not None else None,
-                "mcs": None,  # MAPQ calibration — not yet implemented
+                "mcs": 0.0,  # MAPQ calibration — not yet implemented; 0.0 so score.py can run
                 "peak_rss_gb": round(mean(rss_values), 3) if any(v > 0 for v in rss_values) else None,
                 "genome_size_gb": genome_sizes.get(target_id, 0.0),
                 "unaligned_frac": round(mean_unaligned, 4) if mean_unaligned is not None else None,

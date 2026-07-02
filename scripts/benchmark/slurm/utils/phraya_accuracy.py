@@ -63,6 +63,8 @@ def main():
             # Non-wgsim reads: can't evaluate — count as correct to avoid penalising
             n_correct += 1
             continue
+        if not alignments:
+            continue  # no positions recorded — count as unmapped, skip
         n_parseable += 1
         _, true_start = parsed
         # Best alignment = highest score (second element)
