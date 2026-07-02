@@ -8,11 +8,13 @@
 # Main benchmark array job
 # Decodes task ID → (target, aligner, replicate), runs alignment+calling with timing
 #
-# Aligners (4 total):
+# Aligners (6 total):
 #   bwa-mem2      — alignment only (throughput baseline, SAM output)
 #   minimap2      — alignment only (throughput baseline, SAM output)
 #   bwa-pipeline  — bwa mem + sort + mpileup + bcftools call (fair phraya comparison)
-#   phraya        — full alignment + variant observation pipeline
+#   phraya        — phraya --strategy balanced (Myers ≤500bp, WFA fallback, ±50bp)
+#   phraya-exact  — phraya --strategy exact (WFA all-anchors, ±25bp)
+#   phraya-fast   — phraya --strategy fast (seed-vote subsampling, ±150bp)
 
 set -euo pipefail
 
@@ -28,7 +30,7 @@ fi
 
 # Decode array task ID → (target_idx, aligner_idx, replicate_idx)
 TASK_ID=${SLURM_ARRAY_TASK_ID}
-NUM_ALIGNERS=4  # bwa-mem2, minimap2, bwa-pipeline, phraya
+NUM_ALIGNERS=6  # bwa-mem2, minimap2, bwa-pipeline, phraya, phraya-exact, phraya-fast
 NUM_REPLICATES=$REPLICATES
 
 TARGET_IDX=$((TASK_ID / (NUM_ALIGNERS * NUM_REPLICATES)))
@@ -36,7 +38,7 @@ ALIGNER_IDX=$(((TASK_ID / NUM_REPLICATES) % NUM_ALIGNERS))
 REPLICATE_IDX=$((TASK_ID % NUM_REPLICATES))
 
 # Map aligner index to name
-ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya")
+ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-exact" "phraya-fast")
 ALIGNER="${ALIGNERS[$ALIGNER_IDX]}"
 
 # Read target from targets.conf (skip comments, filter large if needed)
@@ -53,11 +55,16 @@ fi
 
 IFS='|' read -r TARGET_ID TARGET_PATH SIZE_CLASS GENOME_SIZE_GB <<< "$TARGET_LINE"
 
-# Construct paths
+# Construct paths (prefer 30k-subsampled reads for speed; fall back to full reads)
 DATA_DIR="$DATA_ROOT/$TARGET_PATH/data"
 REF_FASTA="$DATA_DIR/reference/reference.fasta"
-READS_1="$DATA_DIR/reads/reads_1_30k.fastq.gz"
-READS_2="$DATA_DIR/reads/reads_2_30k.fastq.gz"
+if [[ -f "$DATA_DIR/reads/reads_1_30k.fastq.gz" ]]; then
+    READS_1="$DATA_DIR/reads/reads_1_30k.fastq.gz"
+    READS_2="$DATA_DIR/reads/reads_2_30k.fastq.gz"
+else
+    READS_1="$DATA_DIR/reads/reads_1.fastq.gz"
+    READS_2="$DATA_DIR/reads/reads_2.fastq.gz"
+fi
 
 # Output directory
 OUT_DIR="$RUN_DIR/$TARGET_ID/$ALIGNER/rep_$REPLICATE_IDX"
@@ -81,8 +88,8 @@ for f in "$REF_FASTA" "$READS_1" "$READS_2"; do
     fi
 done
 
-# Pre-flight check for phraya binary
-if [[ "$ALIGNER" == "phraya" ]]; then
+# Pre-flight check for phraya binary (all phraya-* variants share the same binary)
+if [[ "$ALIGNER" == phraya* ]]; then
     PHRAYA="${PHRAYA_ROOT}/target/release/phraya"
     if [[ ! -f "$PHRAYA" ]]; then
         echo "ERROR: phraya binary not found at $PHRAYA" >&2
@@ -100,11 +107,28 @@ fi
 echo "Running $ALIGNER..."
 "$WRAPPER" "$REF_FASTA" "$READS_1" "$READS_2" "$OUT_DIR" "$THREADS"
 
-# Write timing.json (read wall_seconds from timing.txt, add metadata)
+# Write timing.json: parse all fields from timing.txt and add SLURM metadata
 if [[ -f "$OUT_DIR/timing.txt" ]]; then
-    WALL=$(grep 'wall_seconds=' "$OUT_DIR/timing.txt" | head -1 | cut -d= -f2 | tr -d ' ')
+    _get() { grep "^$1=" "$OUT_DIR/timing.txt" | head -1 | cut -d= -f2 | tr -d ' '; }
+    WALL=$(_get wall_seconds)
+    PEAK_RSS=$(_get peak_rss_gb)
+    TOTAL_READS=$(_get total_reads)
+    N_ALIGNED=$(_get n_aligned)
+    UNALIGNED_FRAC=$(_get unaligned_frac)
     cat > "$OUT_DIR/timing.json" <<JSON
-{"aligner":"$ALIGNER","target":"$TARGET_ID","replicate":$REPLICATE_IDX,"wall_seconds":${WALL:-null},"threads":$THREADS,"node":"$SLURM_JOB_NODELIST"}
+{
+  "aligner":         "$ALIGNER",
+  "target":          "$TARGET_ID",
+  "replicate":       $REPLICATE_IDX,
+  "wall_seconds":    ${WALL:-null},
+  "wall_time_s":     ${WALL:-null},
+  "peak_rss_gb":     ${PEAK_RSS:-null},
+  "total_reads":     ${TOTAL_READS:-0},
+  "n_aligned":       ${N_ALIGNED:-0},
+  "unaligned_frac":  ${UNALIGNED_FRAC:-null},
+  "threads":         $THREADS,
+  "node":            "$SLURM_JOB_NODELIST"
+}
 JSON
 else
     echo "ERROR: timing.txt not found after run" >&2

@@ -96,9 +96,10 @@ if [[ $TARGET_COUNT -eq 0 ]]; then
 fi
 
 # Array dimensions: targets × aligners × replicates
-# bwa-mem2 and minimap2 are alignment-only baselines; bwa-pipeline is the fair
-# phraya comparison (alignment + sort + mpileup + bcftools call).
-ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya")
+# bwa-mem2/minimap2: alignment-only throughput baselines
+# bwa-pipeline: full variant-calling pipeline (fair phraya comparison)
+# phraya/phraya-exact/phraya-fast: three Phraya strategy modes
+ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-exact" "phraya-fast")
 NUM_ALIGNERS=${#ALIGNERS[@]}
 ARRAY_SIZE=$((TARGET_COUNT * NUM_ALIGNERS * REPLICATES))
 

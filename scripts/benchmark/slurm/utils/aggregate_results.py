@@ -3,245 +3,350 @@
 Aggregate per-replicate timing results into score.py input format.
 
 Scans results/{run_id}/{target}/{aligner}/rep_*/timing.json
-Computes mean±std across 3 replicates per (target, aligner)
-Computes placement accuracy (PA) from SAM files via paftools.js
-Counts reads from FASTQ files
+Computes mean wall_time_s and peak_rss_gb across replicates
+Computes placement accuracy (PA) from SAM files (paftools.js) or .phraya.queries (wgsim)
+Counts reads from timing.txt (captured at run time) or FASTQ files as fallback
 Outputs JSON matching score.py schema.
 """
+from __future__ import annotations
+
 import json
-import sys
-import subprocess
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from statistics import mean, stdev
+from typing import Optional
+
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 
-def count_fastq_reads(fastq_path):
-    """Count reads in FASTQ file (4 lines per record)."""
-    try:
-        result = subprocess.run(
-            f"zcat {fastq_path} | wc -l",
-            shell=True, capture_output=True, text=True, timeout=300
-        )
-        if result.returncode != 0:
-            return None
-        line_count = int(result.stdout.strip())
-        return line_count // 4
-    except (subprocess.TimeoutExpired, ValueError) as e:
-        print(f"WARNING: Failed to count reads in {fastq_path}: {e}", file=sys.stderr)
+# ---------------------------------------------------------------------------
+# Stream Triad
+# ---------------------------------------------------------------------------
+
+def read_stream_triad(run_dir: Path) -> float:
+    stream_file = run_dir / "stream_triad.txt"
+    if not stream_file.exists():
+        sys.exit(f"ERROR: {stream_file} not found — run STREAM Triad characterisation first")
+
+    values = []
+    for line in stream_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Accept either single float ("125385.6") or "<label> <float>" format
+        parts = line.split()
+        for part in reversed(parts):  # last token most likely to be the number
+            try:
+                values.append(float(part))
+                break
+            except ValueError:
+                continue
+
+    if not values:
+        sys.exit(f"ERROR: No valid Triad values in {stream_file}")
+    return mean(values)
+
+
+# ---------------------------------------------------------------------------
+# Timing.txt / timing.json parsing
+# ---------------------------------------------------------------------------
+
+def parse_timing_txt(path: Path) -> dict:
+    """Parse key=value pairs from timing.txt into a dict."""
+    result = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if "=" in line:
+            k, _, v = line.partition("=")
+            result[k.strip()] = v.strip()
+    return result
+
+
+def load_rep_timing(rep_dir: Path) -> Optional[dict]:
+    """Load timing data from rep_dir, returning a unified dict or None."""
+    # Prefer timing.json (written by benchmark.slurm); fall back to timing.txt
+    json_file = rep_dir / "timing.json"
+    txt_file = rep_dir / "timing.txt"
+
+    raw = {}
+    if json_file.exists():
+        try:
+            raw = json.loads(json_file.read_text())
+        except json.JSONDecodeError as e:
+            print(f"WARNING: {json_file}: {e}", file=sys.stderr)
+    elif txt_file.exists():
+        raw = parse_timing_txt(txt_file)
+    else:
         return None
 
+    if "error" in raw:
+        print(f"WARNING: {rep_dir} has error: {raw['error']}", file=sys.stderr)
+        return None
 
-def compute_placement_accuracy(sam_file, target_id):
-    """
-    Compute placement accuracy from SAM file using paftools.js.
+    # Normalise field names (wrappers write wall_seconds; score.py wants wall_time_s)
+    out = {}
+    out["wall_time_s"] = float(raw.get("wall_time_s") or raw.get("wall_seconds") or 0)
+    out["peak_rss_gb"] = float(raw.get("peak_rss_gb") or 0)
+    out["total_reads"] = int(raw.get("total_reads") or 0)
+    out["n_aligned"] = int(raw.get("n_aligned") or 0)
+    out["unaligned_frac"] = float(raw.get("unaligned_frac") or 0)
+    out["n_variants"] = raw.get("n_variants")
+    return out
 
-    Returns PA at d=10bp, or None if computation fails.
-    """
+
+# ---------------------------------------------------------------------------
+# Placement accuracy
+# ---------------------------------------------------------------------------
+
+PAFTOOLS_CANDIDATES = [
+    "paftools.js",
+    "/nfs/software/apps/micromamba/1.5.8/envs/minimap2-v2.28/bin/paftools.js",
+]
+
+def find_paftools() -> str | None:
+    for candidate in PAFTOOLS_CANDIDATES:
+        if subprocess.run(["which", candidate], capture_output=True).returncode == 0:
+            return candidate
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+SAMTOOLS_BIN = os.environ.get(
+    "SAMTOOLS_BIN",
+    "/nfs/software/apps/micromamba/1.5.8/envs/samtools-v1.20/bin/samtools",
+)
+
+
+def compute_pa_sam(sam_file: Path, paftools: str, tolerance: int = 10) -> float | None:
+    """Placement accuracy from a SAM file via paftools.js mapeval."""
     try:
-        # Convert SAM → PAF
         sam2paf = subprocess.run(
-            f"samtools view -F4 {sam_file} | paftools.js sam2paf -",
-            shell=True, capture_output=True, text=True, timeout=300
+            f"{SAMTOOLS_BIN} view -F4 {sam_file} | {paftools} sam2paf -",
+            shell=True, capture_output=True, text=True, timeout=600,
         )
         if sam2paf.returncode != 0:
             print(f"WARNING: sam2paf failed for {sam_file}", file=sys.stderr)
             return None
 
-        # Run mapeval
         mapeval = subprocess.run(
-            ["paftools.js", "mapeval", "-"],
-            input=sam2paf.stdout, capture_output=True, text=True, timeout=300
+            [paftools, "mapeval", "-"],
+            input=sam2paf.stdout, capture_output=True, text=True, timeout=600,
         )
         if mapeval.returncode != 0:
             print(f"WARNING: mapeval failed for {sam_file}", file=sys.stderr)
             return None
 
-        # Parse mapeval output for PA at d=10bp
-        # Expected format: lines like "Q 10    12345   11234   0.9123"
-        # Where columns are: type, distance, total, correct, accuracy
         for line in mapeval.stdout.splitlines():
-            if line.startswith("Q") and "10" in line:
+            if line.startswith("Q"):
                 parts = line.split()
-                if len(parts) >= 5 and parts[1] == "10":
+                if len(parts) >= 5 and parts[1] == str(tolerance):
                     try:
-                        accuracy = float(parts[4])
-                        return accuracy
+                        return float(parts[4])
                     except (ValueError, IndexError):
                         continue
-
-        print(f"WARNING: Could not parse PA from mapeval output for {sam_file}", file=sys.stderr)
+        print(f"WARNING: Could not parse PA (d={tolerance}) from mapeval for {sam_file}", file=sys.stderr)
         return None
-
     except subprocess.TimeoutExpired:
         print(f"WARNING: PA computation timed out for {sam_file}", file=sys.stderr)
         return None
     except Exception as e:
-        print(f"WARNING: PA computation failed for {sam_file}: {e}", file=sys.stderr)
+        print(f"WARNING: PA failed for {sam_file}: {e}", file=sys.stderr)
         return None
 
 
-def aggregate(run_dir):
-    """Aggregate timing results from run directory."""
-    run_dir = Path(run_dir)
+def compute_pa_phraya(queries_file: Path, total_reads: int = 0, tolerance: int = 10) -> float | None:
+    """Placement accuracy from .phraya.queries using wgsim read-name encoding."""
+    helper = SCRIPT_DIR / "phraya_accuracy.py"
+    if not helper.exists():
+        print(f"WARNING: {helper} not found — PA will be null for phraya", file=sys.stderr)
+        return None
+    try:
+        cmd = ["python3", str(helper), str(queries_file), f"--tolerance={tolerance}"]
+        if total_reads > 0:
+            cmd.append(f"--total-reads={total_reads}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            print(f"WARNING: phraya_accuracy.py failed: {result.stderr[:200]}", file=sys.stderr)
+            return None
+        parts = result.stdout.strip().split("\t")
+        return float(parts[0])
+    except Exception as e:
+        print(f"WARNING: PA (phraya) failed for {queries_file}: {e}", file=sys.stderr)
+        return None
 
-    # Read STREAM Triad (average across nodes)
-    stream_file = run_dir / "stream_triad.txt"
-    if not stream_file.exists():
-        print(f"ERROR: {stream_file} not found", file=sys.stderr)
-        print("Run STREAM Triad characterization first", file=sys.stderr)
-        sys.exit(1)
 
-    triad_values = []
-    for line in stream_file.read_text().splitlines():
-        if line.strip():
-            parts = line.split()
-            if len(parts) >= 2:
-                try:
-                    triad_values.append(float(parts[1]))
-                except ValueError:
-                    continue
+# ---------------------------------------------------------------------------
+# Read counting
+# ---------------------------------------------------------------------------
 
-    if not triad_values:
-        print(f"ERROR: No valid Triad values in {stream_file}", file=sys.stderr)
-        sys.exit(1)
+def count_fastq_reads(path: Path) -> int | None:
+    try:
+        result = subprocess.run(
+            f"zcat {path} | wc -l",
+            shell=True, capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode != 0:
+            return None
+        return int(result.stdout.strip()) // 4
+    except Exception:
+        return None
 
-    stream_triad_gbps = mean(triad_values)
 
-    # Scan results directory for timing.json files
-    results = {}  # aligner → {target_id → [timing_data]}
+# ---------------------------------------------------------------------------
+# targets.conf loader
+# ---------------------------------------------------------------------------
 
-    for target_dir in run_dir.iterdir():
-        if not target_dir.is_dir() or target_dir.name.startswith('.') or target_dir.name == 'stream_triad.txt':
+def load_targets_conf(run_dir: Path) -> tuple[dict, dict]:
+    """Returns (genome_sizes, target_paths) dicts keyed by target id."""
+    candidates = [
+        run_dir.parent.parent / "scripts" / "benchmark" / "slurm" / "config" / "targets.conf",
+        SCRIPT_DIR.parent / "config" / "targets.conf",
+    ]
+    conf_path = next((p for p in candidates if p.exists()), None)
+    genome_sizes: dict[str, float] = {}
+    target_paths: dict[str, str] = {}
+    if conf_path is None:
+        print("WARNING: targets.conf not found — genome sizes will be 0", file=sys.stderr)
+        return genome_sizes, target_paths
+    for line in conf_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("|")
+        if len(parts) >= 4:
+            tid = parts[0].strip()
+            genome_sizes[tid] = float(parts[3].strip())
+            target_paths[tid] = parts[1].strip()
+    return genome_sizes, target_paths
+
+
+# ---------------------------------------------------------------------------
+# Main aggregation
+# ---------------------------------------------------------------------------
+
+def aggregate(run_dir_str: str) -> dict:
+    run_dir = Path(run_dir_str)
+    stream_triad_gbps = read_stream_triad(run_dir)
+    genome_sizes, target_paths = load_targets_conf(run_dir)
+    paftools = find_paftools()
+    if paftools is None:
+        print("WARNING: paftools.js not found — PA will be null for SAM-output aligners", file=sys.stderr)
+
+    data_root = Path.home() / "data-commons" / "test" / "benchmarking" / "alignment"
+
+    # results[aligner][target_id] = list of per-rep dicts
+    results: dict[str, dict[str, list]] = {}
+
+    for target_dir in sorted(run_dir.iterdir()):
+        if not target_dir.is_dir() or target_dir.name.startswith("."):
             continue
         target_id = target_dir.name
 
-        for aligner_dir in target_dir.iterdir():
+        for aligner_dir in sorted(target_dir.iterdir()):
             if not aligner_dir.is_dir():
                 continue
             aligner = aligner_dir.name
+            results.setdefault(aligner, {}).setdefault(target_id, [])
 
-            if aligner not in results:
-                results[aligner] = {}
-            if target_id not in results[aligner]:
-                results[aligner][target_id] = []
-
-            for rep_dir in aligner_dir.iterdir():
-                if not rep_dir.is_dir() or not rep_dir.name.startswith('rep_'):
+            for rep_dir in sorted(aligner_dir.iterdir()):
+                if not rep_dir.is_dir() or not rep_dir.name.startswith("rep_"):
                     continue
+                timing = load_rep_timing(rep_dir)
+                if timing is not None:
+                    results[aligner][target_id].append(timing)
+                else:
+                    print(f"WARNING: No timing in {rep_dir}", file=sys.stderr)
 
-                timing_file = rep_dir / "timing.json"
-                if not timing_file.exists():
-                    print(f"WARNING: {timing_file} not found", file=sys.stderr)
-                    continue
-
-                try:
-                    timing = json.loads(timing_file.read_text())
-                    if "error" not in timing:
-                        results[aligner][target_id].append(timing)
-                    else:
-                        print(f"WARNING: {timing_file} contains error: {timing['error']}", file=sys.stderr)
-                except (json.JSONDecodeError, KeyError) as e:
-                    print(f"WARNING: Failed to parse {timing_file}: {e}", file=sys.stderr)
-                    continue
-
-    # Load targets.conf to get genome sizes
-    # Assume targets.conf is in ../config/ relative to run_dir
-    targets_conf_path = run_dir.parent.parent / "scripts" / "benchmark" / "slurm" / "config" / "targets.conf"
-    genome_sizes = {}
-    if targets_conf_path.exists():
-        for line in targets_conf_path.read_text().splitlines():
-            if line.strip() and not line.startswith('#'):
-                parts = line.split('|')
-                if len(parts) >= 4:
-                    target_id = parts[0].strip()
-                    genome_size_gb = float(parts[3].strip())
-                    genome_sizes[target_id] = genome_size_gb
-    else:
-        print(f"WARNING: targets.conf not found at {targets_conf_path}", file=sys.stderr)
-
-    # Aggregate: compute mean wall_time_s and peak_rss_gb per aligner per target
     output = {
         "platform": {
-            "stream_triad_gbps": round(stream_triad_gbps, 1),
-            "threads": 8,  # From global.json
-            "cpu_model": "unknown",  # TODO: capture from SLURM or /proc/cpuinfo
+            "stream_triad_gbps": round(stream_triad_gbps / 1000, 2),  # MB/s → GB/s
+            "threads": 8,
+            "cpu_model": "unknown",
         },
-        "aligners": []
+        "aligners": [],
     }
 
     for aligner, targets in results.items():
-        aligner_entry = {
-            "name": aligner,
-            "version": "unknown",  # TODO: capture from module show or --version
-            "targets": []
-        }
+        aligner_entry = {"name": aligner, "version": "unknown", "targets": []}
 
-        for target_id, timings in targets.items():
-            if not timings:
-                print(f"WARNING: No valid timings for {aligner} {target_id}", file=sys.stderr)
+        for target_id, reps in targets.items():
+            if not reps:
+                print(f"WARNING: No valid reps for {aligner} {target_id}", file=sys.stderr)
                 continue
 
-            wall_times = [t["wall_time_s"] for t in timings]
-            rss_values = [t["peak_rss_gb"] for t in timings]
-
-            # Compute mean and warn if CV > 5%
+            wall_times = [r["wall_time_s"] for r in reps]
+            rss_values = [r["peak_rss_gb"] for r in reps]
             mean_wall = mean(wall_times)
             if len(wall_times) > 1:
                 cv = (stdev(wall_times) / mean_wall * 100) if mean_wall > 0 else 0.0
                 if cv > 5.0:
-                    print(f"WARNING: {aligner} {target_id} has CV={cv:.1f}% (>5%)", file=sys.stderr)
+                    print(f"WARNING: {aligner} {target_id} CV={cv:.1f}% (>5%)", file=sys.stderr)
 
-            # Compute PA from first replicate's SAM file
-            pa = 0.0
-            first_rep_dir = run_dir / target_id / aligner / "rep_0"
-            sam_file = first_rep_dir / "alignment.sam"
-            if sam_file.exists():
-                print(f"Computing PA for {aligner} {target_id}...", file=sys.stderr)
-                pa_result = compute_placement_accuracy(str(sam_file), target_id)
-                if pa_result is not None:
-                    pa = pa_result
-
-            # Count reads from FASTQ (once per target, not per aligner)
-            read_count = "unknown"
-            # Try to infer data path from run_dir structure
-            # This is fragile - better approach would be to pass DATA_ROOT as arg
-            # For now, assume standard layout
-            data_root = Path.home() / "data-commons" / "test" / "benchmarking" / "alignment"
-
-            # Find target path from targets.conf
-            target_path = None
-            if targets_conf_path.exists():
-                for line in targets_conf_path.read_text().splitlines():
-                    if line.strip() and not line.startswith('#'):
-                        parts = line.split('|')
-                        if len(parts) >= 2 and parts[0].strip() == target_id:
-                            target_path = parts[1].strip()
-                            break
-
-            if target_path:
-                fastq_path = data_root / target_path / "data" / "reads" / "reads_1.fastq.gz"
-                if fastq_path.exists():
-                    print(f"Counting reads for {target_id}...", file=sys.stderr)
-                    count = count_fastq_reads(str(fastq_path))
+            # Read count: prefer what wrappers captured, fall back to FASTQ
+            total_reads = max((r["total_reads"] for r in reps), default=0)
+            if total_reads == 0 and target_id in target_paths:
+                fastq = data_root / target_paths[target_id] / "data" / "reads" / "reads_1_30k.fastq.gz"
+                if not fastq.exists():
+                    fastq = data_root / target_paths[target_id] / "data" / "reads" / "reads_1.fastq.gz"
+                if fastq.exists():
+                    count = count_fastq_reads(fastq)
                     if count is not None:
-                        read_count = count
+                        total_reads = count
 
-            # Get genome size from targets.conf
-            genome_size_gb = genome_sizes.get(target_id, 0.0)
-            if genome_size_gb == 0.0:
-                print(f"WARNING: genome_size_gb not set for {target_id} in targets.conf", file=sys.stderr)
+            # Unaligned fraction: mean across reps
+            unaligned_fracs = [r["unaligned_frac"] for r in reps if r["unaligned_frac"] > 0]
+            mean_unaligned = mean(unaligned_fracs) if unaligned_fracs else None
 
-            aligner_entry["targets"].append({
+            # Placement accuracy (use rep_0)
+            rep0_dir = run_dir / target_id / aligner / "rep_0"
+            pa = None
+            is_phraya = aligner.startswith("phraya")
+
+            if is_phraya:
+                queries_file = rep0_dir / "alignment.phraya.queries"
+                if queries_file.exists():
+                    print(f"Computing PA (phraya) for {aligner} {target_id}...", file=sys.stderr)
+                    pa = compute_pa_phraya(queries_file, total_reads=total_reads)
+            elif paftools:
+                sam_file = rep0_dir / "alignment.sam"
+                if not sam_file.exists():
+                    # bwa-pipeline uses BAM — convert to SAM on the fly
+                    bam_file = rep0_dir / "alignment.bam"
+                    if bam_file.exists():
+                        sam_file = bam_file  # samtools view handles both
+                if sam_file.exists():
+                    print(f"Computing PA (paftools) for {aligner} {target_id}...", file=sys.stderr)
+                    pa = compute_pa_sam(sam_file, paftools)
+
+            # Variant count for bwa-pipeline (informational)
+            n_variants = None
+            for r in reps:
+                if r.get("n_variants"):
+                    try:
+                        n_variants = int(r["n_variants"])
+                    except (ValueError, TypeError):
+                        pass
+                    break
+
+            entry = {
                 "id": target_id,
-                "reads": read_count,
+                "reads": total_reads,
                 "wall_time_s": round(mean_wall, 2),
                 "threads": 8,
-                "pa": round(pa, 4) if isinstance(pa, float) else 0.0,
-                "mcs": 0.0,  # TODO: MAPQ calibration score (requires MAPQ-stratified PA)
-                "peak_rss_gb": round(mean(rss_values), 2),
-                "genome_size_gb": genome_size_gb,
-            })
+                "pa": round(pa, 4) if pa is not None else None,
+                "mcs": None,  # MAPQ calibration — not yet implemented
+                "peak_rss_gb": round(mean(rss_values), 3) if any(v > 0 for v in rss_values) else None,
+                "genome_size_gb": genome_sizes.get(target_id, 0.0),
+                "unaligned_frac": round(mean_unaligned, 4) if mean_unaligned is not None else None,
+            }
+            if n_variants is not None:
+                entry["n_variants"] = n_variants
+
+            aligner_entry["targets"].append(entry)
 
         if aligner_entry["targets"]:
             output["aligners"].append(aligner_entry)
@@ -253,6 +358,5 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: aggregate_results.py <run_dir>", file=sys.stderr)
         sys.exit(1)
-
     result = aggregate(sys.argv[1])
     print(json.dumps(result, indent=2))
