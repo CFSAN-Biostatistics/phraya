@@ -28,8 +28,8 @@ T_ALIGN=$((SECONDS - START))
 # Step 2: index BAM
 $SAMTOOLS_BIN index "$OUT_DIR/alignment.bam"
 
-# Step 3: pileup → VCF (bcftools call -mv: variant sites only, multiallelic)
-$SAMTOOLS_BIN mpileup -f "$REF" -d 10000 -q 20 -Q 20 \
+# Step 3: pileup → VCF (bcftools mpileup | call pipeline; -Ou passes BCF through pipe)
+$BCFTOOLS_BIN mpileup -f "$REF" -d 10000 -q 20 -Q 20 -Ou \
     "$OUT_DIR/alignment.bam" \
     | $BCFTOOLS_BIN call -mv -Oz -o "$OUT_DIR/variants.vcf.gz"
 $BCFTOOLS_BIN index "$OUT_DIR/variants.vcf.gz"
