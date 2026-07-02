@@ -17,7 +17,9 @@ if [[ -z "${RUN_DIR:-}" ]]; then
 fi
 
 echo "Aggregating results from $RUN_DIR..."
-python3 "$SCRIPT_DIR/utils/aggregate_results.py" "$RUN_DIR" > "$RUN_DIR/results.json"
+PYTHON="${PYTHON3_BIN:-python3}"
+PYTHON3_BIN="$PYTHON" PAFTOOLS_BIN="${PAFTOOLS_BIN:-}" \
+    "$PYTHON" "$SCRIPT_DIR/utils/aggregate_results.py" "$RUN_DIR" > "$RUN_DIR/results.json"
 
 if [[ -f "$RUN_DIR/results.json" ]]; then
     echo "Results aggregated to $RUN_DIR/results.json"

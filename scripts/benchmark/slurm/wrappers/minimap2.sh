@@ -18,10 +18,11 @@ if [[ ! -f "$INDEX" ]]; then
     (flock -x 200; [[ -f "$INDEX" ]] || $MINIMAP2_BIN -d "$INDEX" "$REF") 200>"${REF}.mmi.lock"
 fi
 
+PYTHON="${PYTHON3_BIN:-python3}"
+MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
 START=$SECONDS
-{ /usr/bin/time -v \
-    bash -c "$MINIMAP2_BIN -ax sr -t $THREADS $INDEX $READS_1 $READS_2 > $OUT_DIR/alignment.sam 2>$OUT_DIR/minimap2.log" \
-  ; } 2> "$OUT_DIR/time_verbose.txt"
+"$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
+    bash -c "$MINIMAP2_BIN -ax sr -t $THREADS $INDEX $READS_1 $READS_2 > $OUT_DIR/alignment.sam 2>$OUT_DIR/minimap2.log"
 ELAPSED=$((SECONDS - START))
 
 PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" | grep -oP '\d+' | tail -1)

@@ -20,11 +20,12 @@ fi
 
 START=$SECONDS
 
-# Step 1: align + sort to BAM; capture RSS from /usr/bin/time -v
-{ /usr/bin/time -v \
+# Step 1: align + sort to BAM; capture peak RSS via measure_rss.py
+PYTHON="${PYTHON3_BIN:-python3}"
+MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
+"$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
     bash -c "$BWA_BIN mem -t $THREADS $REF $READS_1 $READS_2 2>$OUT_DIR/bwa.log \
-        | $SAMTOOLS_BIN sort -@ $THREADS -o $OUT_DIR/alignment.bam -" \
-  ; } 2> "$OUT_DIR/time_verbose.txt"
+        | $SAMTOOLS_BIN sort -@ $THREADS -o $OUT_DIR/alignment.bam -"
 
 T_ALIGN=$((SECONDS - START))
 

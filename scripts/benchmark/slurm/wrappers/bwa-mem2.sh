@@ -17,10 +17,11 @@ if [[ ! -f "${REF}.bwt" ]]; then
     (flock -x 200; [[ -f "${REF}.bwt" ]] || $BWA_BIN index "$REF") 200>"${REF}.bwa_index.lock"
 fi
 
+PYTHON="${PYTHON3_BIN:-python3}"
+MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
 START=$SECONDS
-{ /usr/bin/time -v \
-    bash -c "$BWA_BIN mem -t $THREADS $REF $READS_1 $READS_2 > $OUT_DIR/alignment.sam 2>$OUT_DIR/bwa.log" \
-  ; } 2> "$OUT_DIR/time_verbose.txt"
+"$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
+    bash -c "$BWA_BIN mem -t $THREADS $REF $READS_1 $READS_2 > $OUT_DIR/alignment.sam 2>$OUT_DIR/bwa.log"
 ELAPSED=$((SECONDS - START))
 
 PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" | grep -oP '\d+' | tail -1)

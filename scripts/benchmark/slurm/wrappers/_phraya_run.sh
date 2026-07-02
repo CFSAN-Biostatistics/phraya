@@ -36,11 +36,11 @@ TOTAL_READS=$(( $(zcat "$READS_1" | wc -l) / 4 + $(zcat "$READS_2" | wc -l) / 4 
 
 START_SECS=$SECONDS
 
-# /usr/bin/time -v writes its report to its own stderr (fd 3 trick to separate from phraya stderr)
-# phraya stdout+stderr → align.log; time report → time_verbose.txt
-{ /usr/bin/time -v \
-    bash -c "RAYON_NUM_THREADS=$THREADS \"$PHRAYA\" align --strategy \"$STRATEGY\" --worker 0 \"$PLAN_FILE\" >\"$OUT_DIR/align.log\" 2>&1" \
-  ; } 2> "$OUT_DIR/time_verbose.txt"
+# measure_rss.py polls /proc/PID/status for peak RSS; phraya stdout+stderr → align.log
+PYTHON="${PYTHON3_BIN:-python3}"
+MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
+"$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
+    bash -c "RAYON_NUM_THREADS=$THREADS \"$PHRAYA\" align --strategy \"$STRATEGY\" --worker 0 \"$PLAN_FILE\" >\"$OUT_DIR/align.log\" 2>&1"
 
 ALIGN_EXIT=$?
 ELAPSED=$((SECONDS - START_SECS))
