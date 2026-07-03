@@ -1,6 +1,6 @@
 # 3. Alignment strategy ladder and Myers fitting default
 
-- **Status**: Accepted
+- **Status**: Superseded by ADR-0008
 - **Date**: 2026-06-19
 
 ## Context

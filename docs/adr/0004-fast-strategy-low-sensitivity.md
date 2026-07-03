@@ -1,6 +1,6 @@
 # 4. Fast strategy: seed subsampling + divergence cutoff
 
-- **Status**: Accepted
+- **Status**: Accepted (top-K resolution extended by ADR-0008)
 - **Date**: 2026-06-19
 
 ## Context
