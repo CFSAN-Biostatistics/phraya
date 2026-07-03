@@ -25,16 +25,20 @@ import zstandard
 import msgpack
 
 
-WGSIM_RE = re.compile(r"^(.+)_(\d+)_(\d+)_")
+# Matches wgsim and dwgsim read names. dwgsim uses start>end for rev-strand reads.
+WGSIM_RE = re.compile(r"^(.+?)_(\d+)_(\d+)_")
 
 
 def parse_true_pos(read_name: str):
-    """Return (chrom, start) from a wgsim-style read name, or None."""
+    """Return (chrom, left_pos) from a wgsim/dwgsim read name, or None."""
     # Strip /1 /2 suffix if present
     name = read_name.rsplit("/", 1)[0] if "/" in read_name else read_name
+    if name.startswith("rand_"):  # dwgsim random/unplaceable reads
+        return None
     m = WGSIM_RE.match(name)
     if m:
-        return m.group(1), int(m.group(2))
+        pos1, pos2 = int(m.group(2)), int(m.group(3))
+        return m.group(1), min(pos1, pos2)  # leftmost genomic position
     return None
 
 
@@ -60,8 +64,7 @@ def main():
     for read_name, alignments in data.items():
         parsed = parse_true_pos(read_name)
         if parsed is None:
-            # Non-wgsim reads: can't evaluate — count as correct to avoid penalising
-            n_correct += 1
+            # rand_ reads or unparseable names — skip entirely (can't evaluate)
             continue
         if not alignments:
             continue  # no positions recorded — count as unmapped, skip
@@ -72,7 +75,7 @@ def main():
         if abs(int(best_pos) - true_start) <= args.tolerance:
             n_correct += 1
 
-    pa = n_correct / n_mapped if n_mapped > 0 else 0.0
+    pa = n_correct / n_parseable if n_parseable > 0 else 0.0
 
     total = args.total_reads if args.total_reads > 0 else n_mapped
     n_unaligned = max(0, total - n_mapped)

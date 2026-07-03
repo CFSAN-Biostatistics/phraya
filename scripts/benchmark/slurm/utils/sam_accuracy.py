@@ -20,14 +20,21 @@ import subprocess
 import sys
 
 SAMTOOLS = "/nfs/software/apps/micromamba/1.5.8/envs/samtools-v1.20/bin/samtools"
-WGSIM_RE = re.compile(r"^(.+)_(\d+)_(\d+)_")
+# Matches both wgsim (chr_start_end_...) and dwgsim (chr_start_end_strand_...) read names.
+# dwgsim uses start>end for reverse-strand reads; true left pos = min(start,end).
+# "rand_..." names are dwgsim's randomly-placed reads — exclude from PA evaluation.
+WGSIM_RE = re.compile(r"^(.+?)_(\d+)_(\d+)_")
 
 
 def parse_true_pos(qname):
     name = qname.rsplit("/", 1)[0] if "/" in qname else qname
+    # dwgsim random reads: name starts with "rand_"
+    if name.startswith("rand_"):
+        return None
     m = WGSIM_RE.match(name)
     if m:
-        return m.group(1), int(m.group(2))
+        pos1, pos2 = int(m.group(2)), int(m.group(3))
+        return m.group(1), min(pos1, pos2)  # leftmost genomic position
     return None
 
 
@@ -63,16 +70,15 @@ def main():
 
         parsed = parse_true_pos(qname)
         if parsed is None:
-            n_correct += 1  # non-wgsim: can't evaluate, don't penalise
-            continue
+            continue  # rand_/unparseable: skip (can't evaluate)
         n_parseable += 1
         _, true_start = parsed
-        # wgsim start is 1-based; aln_pos is 1-based
+        # Both positions are 1-based leftmost; compare directly
         if abs(aln_pos - true_start) <= args.tolerance:
             n_correct += 1
 
     proc.wait()
-    pa = n_correct / n_mapped if n_mapped > 0 else 0.0
+    pa = n_correct / n_parseable if n_parseable > 0 else 0.0
     print(f"{pa:.4f}\t{n_mapped}\t{n_correct}\t{n_mapped}")
 
 
