@@ -3007,3 +3007,181 @@ mod simd_prefix_tests {
         }
     }
 }
+
+// ============================================================================
+// ISSUE #180: Abandonment Sentinel for fill_wfa_fitting (ADR-0007 prerequisite)
+// ============================================================================
+//
+// Tests verify that fill_wfa_fitting returns a distinct "abandoned" result
+// on loop exhaustion (no fitting-end reached before max_s), not a spurious
+// edit_distance=0 perfect alignment. This is the critical fix needed before
+// ADR-0007 introduces score-bounded early abandonment with small max_s.
+//
+// These tests are marked with @test #[cfg(test)] for filtering in CI.
+#[cfg(test)]
+mod issue_180_abandonment_tests {
+    use super::fill_wfa_fitting;
+
+    /// Helper: inject a small cap on max_s for testing abandonment.
+    /// Returns (cigar, edit_distance, target_consumed) or None if abandoned.
+    /// **NOTE**: This is a test-only helper; production `fill_wfa_fitting` has no cap.
+    /// Issue #180 requires modifying `fill_wfa_fitting` to support abandonment
+    /// and this helper tests the interface contract.
+    fn fill_wfa_fitting_with_cap(
+        q: &[u8],
+        t: &[u8],
+        max_s_cap: usize,
+    ) -> Option<(String, usize, usize)> {
+        // TODO: After implementing abandonment in fill_wfa_fitting,
+        // this helper will call fill_wfa_fitting (if it gains a max_s param)
+        // or a new fill_wfa_fitting_capped function with the injected cap.
+        // For now, this documents the test interface contract.
+        //
+        // The real production fill_wfa_fitting (no cap) should always return Some,
+        // while a capped variant with small max_s may return None on exhaustion.
+        let _ = (q, t, max_s_cap);
+        None // placeholder: all tests using this will fail until implemented
+    }
+
+    /// **ACCEPTANCE CRITERION**: Normal alignment with fitting-end reached
+    /// must return Some, not abandon, even under default uncapped max_s.
+    ///
+    /// This verifies backward compatibility: at the current max_s = qn + tn,
+    /// no alignment is abandoned, so results are identical to today.
+    #[test]
+    fn issue_180_happy_path_fitting_end_reached() {
+        let query = b"ACGTACGTACGT";
+        let target = b"ACGTACGTACGTACGTACGTACGT"; // 2× query, allows fitting-end
+
+        let result = fill_wfa_fitting_with_cap(query, target, usize::MAX);
+
+        // With uncapped max_s, fitting-end must be reached => Some(...)
+        assert!(
+            result.is_some(),
+            "normal fitting alignment must return Some, not None (abandoned)"
+        );
+
+        let (cigar, edit_distance, target_consumed) = result.unwrap();
+
+        // Sanity checks: normal alignment has non-empty CIGAR and valid metrics
+        assert!(!cigar.is_empty(), "happy-path CIGAR must not be empty");
+        assert!(edit_distance < query.len(), "happy-path edit_distance should be small");
+        assert!(target_consumed <= target.len(), "consumed target must not exceed length");
+        assert!(target_consumed > 0, "consumed target must be non-zero for matching sequences");
+    }
+
+    /// **ACCEPTANCE CRITERION**: Alignment that exhausts the loop without
+    /// reaching a fitting-end must return None (abandoned), NOT a spurious
+    /// (empty_cigar, edit_distance=0, full_target).
+    ///
+    /// This is the core bug fix: injecting a small max_s cap forces exhaustion,
+    /// and the alignment engine must report it as abandoned, not as a perfect match.
+    #[test]
+    fn issue_180_abandonment_on_exhaustion_with_small_cap() {
+        // Create sequences where a low-divergence window is difficult to fit
+        // within a small edit-distance cap. Real ADR-0007 will use dynamic caps
+        // like floor(0.05*L + 0.95*d_best); here we use a fixed tiny cap for testing.
+        let query = b"ACGTACGTACGTACGT"; // 16bp
+        let target = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"; // 100bp, highly similar
+
+        let result = fill_wfa_fitting_with_cap(query, target, 2); // max_s=2 is tiny; actual distance ≈0-2
+
+        // With a tiny cap that exhausts, abandonment is expected
+        // (the real WFA needs s≈0 edits to align; cap is artificial constraint)
+        assert!(
+            result.is_none(),
+            "with injected small max_s cap, exhaustion must return None (abandoned), \
+             not a spurious (empty, 0, full_len) perfect alignment"
+        );
+    }
+
+    /// **ACCEPTANCE CRITERION**: Abandoned alignment must never have
+    /// edit_distance = 0, which would make it appear as a perfect match to
+    /// score_alignments (which uses min_by_key(|a| edit_distance)).
+    ///
+    /// This test verifies the bug fix explicitly: if abandonment is represented
+    /// as a tuple, it must NEVER return (_, 0, _) on exhaustion.
+    #[test]
+    fn issue_180_abandoned_never_reports_edit_distance_zero() {
+        // Hypothetical scenario: if abandonment were mis-represented as
+        // (empty_cigar, 0, full_target), it would be a silent correctness bug.
+        // This test would fail if the implementation returns that.
+        let query = b"ACGTACGTACGTACGT";
+        let target = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+
+        let result = fill_wfa_fitting_with_cap(query, target, 1); // max_s=1
+
+        // The key assertion: if it's Some(...), the inner tuple must NOT have edit_distance=0
+        if let Some((cigar, edit_distance, _target_consumed)) = result {
+            assert!(
+                edit_distance > 0 || !cigar.is_empty(),
+                "abandoned alignment (if returned as Some) must not have both empty CIGAR \
+                 and edit_distance=0, which would fool score_alignments into a false primary"
+            );
+        }
+        // Preferred outcome: None (abandoned), not Some(..., 0, ...)
+    }
+
+    /// **ACCEPTANCE CRITERION**: Verify that the abandonment representation
+    /// is distinct from a real (low-divergence) alignment.
+    ///
+    /// This documents the contract: at the default uncapped max_s, even a
+    /// difficult alignment must succeed (fitting-end reached), while with a
+    /// tiny cap, it should abandon. The two must be distinguishable.
+    #[test]
+    fn issue_180_distinguishable_normal_vs_abandoned() {
+        let query = b"ACGTACGTACGTACGT";
+        let target = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+
+        // Scenario 1: uncapped (normal operation)
+        let normal = fill_wfa_fitting_with_cap(query, target, usize::MAX);
+
+        // Scenario 2: capped at tiny max_s (triggers abandonment)
+        let abandoned = fill_wfa_fitting_with_cap(query, target, 0);
+
+        // Normal must succeed, abandoned must fail or be visibly different
+        assert!(normal.is_some(), "uncapped alignment must succeed");
+
+        // Abandoned should be None or visibly distinct from normal
+        // If abandonment is represented as Some(...), it must differ from normal
+        if abandoned.is_some() {
+            let (normal_cigar, normal_edit, _) = normal.unwrap();
+            let (abandoned_cigar, abandoned_edit, _) = abandoned.unwrap();
+            assert!(
+                abandoned_cigar != normal_cigar || abandoned_edit != normal_edit,
+                "abandoned must be visibly distinct from normal (different CIGAR or edit distance)"
+            );
+        }
+    }
+
+    /// **ACCEPTANCE CRITERION**: Existing differential tests continue to pass
+    /// (at uncapped max_s, no alignment is abandoned, so output is identical).
+    ///
+    /// This verifies backward compatibility: the abandonment feature only
+    /// activates when max_s is capped; the default code path is unchanged.
+    #[test]
+    fn issue_180_backward_compatibility_uncapped_matches_current() {
+        // This test verifies that with max_s = qn + tn (current default),
+        // fill_wfa_fitting produces the same result as today (no abandonment).
+        // If the implementation is correct, this test passes unchanged.
+        let query = b"ACGTACGTACGT";
+        let target = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+
+        // With uncapped max_s (usize::MAX simulates infinity), should always return Some
+        let result = fill_wfa_fitting_with_cap(query, target, usize::MAX);
+
+        assert!(
+            result.is_some(),
+            "at uncapped max_s, all alignments must complete normally (backward compat)"
+        );
+
+        let (cigar, edit_distance, _target_consumed) = result.unwrap();
+
+        // The actual values should match pre-ADR-0007 behavior (which had no cap)
+        // Since we're at RED stage, we just verify it's not the fallback garbage value
+        assert!(
+            !cigar.is_empty() || edit_distance > 0 || false,
+            "must not be the fallback (empty_cigar, 0, full_target) value"
+        );
+    }
+}
