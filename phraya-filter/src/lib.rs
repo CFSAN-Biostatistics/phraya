@@ -655,6 +655,149 @@ mod tests {
         assert!(filter.apply(&obs), "sensitive must not exclude tandem repeat variants");
     }
 
+    /// Issue #181: strict preset exists and rejects low-quality observations
+    #[test]
+    fn issue_181_strict_preset_rejects_low_quality() {
+        // obs with coverage=5, mapq=25, allele_freq=0.05 — below all strict thresholds
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 5u32); // 5/100 = 5% alt freq — below 10%
+        alleles.insert(b'A', 95u32);
+        let low_quality = VariantObservation::new(
+            100, b'A', alleles, 0.5, "10M".to_string(), 25, 1, vec![100], 30.0, "s:r".to_string(),
+        );
+
+        let filter = FilterPreset::Strict.builder().build();
+        assert!(!filter.apply(&low_quality), "strict must reject low-quality obs");
+    }
+
+    /// Issue #181: strict preset exists and passes high-quality observations
+    #[test]
+    fn issue_181_strict_preset_passes_high_quality() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 20u32); // 20/100 = 20% alt freq — above 10%
+        alleles.insert(b'A', 80u32);
+        let high_quality = VariantObservation::new(
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![100], 35.0, "s:r".to_string(),
+        );
+
+        let filter = FilterPreset::Strict.builder().build();
+        assert!(filter.apply(&high_quality), "strict must pass high-quality obs");
+    }
+
+    /// Issue #181: tolerant preset exists and passes low-coverage variants
+    #[test]
+    fn issue_181_tolerant_preset_passes_low_coverage_variant() {
+        // coverage=3, mapq=20, allele_freq=0.03 — just at tolerant thresholds
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 3u32);
+        alleles.insert(b'A', 97u32); // 3% alt freq
+        let obs = VariantObservation::new(
+            100, b'A', alleles, 0.9, "10M".to_string(), 20, 1, vec![3], 30.0, "s:r".to_string(),
+        );
+
+        let filter = FilterPreset::Tolerant.builder().build();
+        assert!(filter.apply(&obs), "tolerant must pass low-coverage variants");
+    }
+
+    /// Issue #181: tolerant preset rejects below its thresholds
+    #[test]
+    fn issue_181_tolerant_preset_rejects_below_its_thresholds() {
+        // mapq=19 — below tolerant's min_mapq=20
+        let obs = create_observation(100, 19, 5, 30.0);
+        let filter = FilterPreset::Tolerant.builder().build();
+        assert!(!filter.apply(&obs), "tolerant must still reject mapq<20");
+    }
+
+    /// Issue #181: strict preset excludes tandem repeats by default
+    #[test]
+    fn issue_181_strict_excludes_tandem_repeats_by_default() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 20u32);
+        alleles.insert(b'A', 80u32);
+        let obs = VariantObservation::new(
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![100], 35.0, "s:r".to_string(),
+        ).with_tandem_repeat(true);
+
+        let filter = FilterPreset::Strict.builder().build();
+        assert!(!filter.apply(&obs), "strict must exclude tandem repeat variants");
+    }
+
+    /// Issue #181: tolerant does not exclude tandem repeats by default
+    #[test]
+    fn issue_181_tolerant_does_not_exclude_tandem_repeats_by_default() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 5u32);
+        alleles.insert(b'A', 95u32);
+        let obs = VariantObservation::new(
+            100, b'A', alleles, 0.9, "10M".to_string(), 25, 0, vec![10], 30.0, "s:r".to_string(),
+        ).with_tandem_repeat(true);
+
+        let filter = FilterPreset::Tolerant.builder().build();
+        assert!(filter.apply(&obs), "tolerant must not exclude tandem repeat variants");
+    }
+
+    /// Issue #181: strict preset threshold values match old conservative
+    #[test]
+    fn issue_181_strict_has_correct_thresholds() {
+        // Verify strict preset has: min_coverage=10, min_mapq=30, min_allele_frequency=0.10, exclude_tandem_repeats=true
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 10u32); // 10/100 = 10% alt freq — exactly at threshold
+        alleles.insert(b'A', 90u32);
+        let obs_at_boundary = VariantObservation::new(
+            100, b'A', alleles, 0.95, "10M".to_string(), 30, 0, vec![10], 35.0, "s:r".to_string(),
+        );
+
+        let filter = FilterPreset::Strict.builder().build();
+        assert!(filter.apply(&obs_at_boundary), "strict must pass obs at coverage=10, mapq=30, allele_freq=10%");
+
+        // Just below coverage
+        let mut alleles2 = HashMap::new();
+        alleles2.insert(b'T', 10u32);
+        alleles2.insert(b'A', 90u32);
+        let obs_below_cov = VariantObservation::new(
+            100, b'A', alleles2, 0.95, "10M".to_string(), 30, 0, vec![9], 35.0, "s:r".to_string(),
+        );
+        assert!(!filter.apply(&obs_below_cov), "strict must reject coverage<10");
+    }
+
+    /// Issue #181: tolerant preset threshold values match old sensitive
+    #[test]
+    fn issue_181_tolerant_has_correct_thresholds() {
+        // Verify tolerant preset has: min_coverage=3, min_mapq=20, min_allele_frequency=0.02, no exclude_tandem_repeats
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 2u32); // 2/100 = 2% alt freq — exactly at threshold
+        alleles.insert(b'A', 98u32);
+        let obs_at_boundary = VariantObservation::new(
+            100, b'A', alleles, 0.9, "10M".to_string(), 20, 0, vec![3], 30.0, "s:r".to_string(),
+        );
+
+        let filter = FilterPreset::Tolerant.builder().build();
+        assert!(filter.apply(&obs_at_boundary), "tolerant must pass obs at coverage=3, mapq=20, allele_freq=2%");
+
+        // Just below allele frequency
+        let mut alleles2 = HashMap::new();
+        alleles2.insert(b'T', 1u32); // 1/100 = 1% alt freq — below 2%
+        alleles2.insert(b'A', 99u32);
+        let obs_below_freq = VariantObservation::new(
+            100, b'A', alleles2, 0.9, "10M".to_string(), 20, 0, vec![3], 30.0, "s:r".to_string(),
+        );
+        assert!(!filter.apply(&obs_below_freq), "tolerant must reject allele_freq<2%");
+    }
+
+    /// Issue #181: FilterPreset::Strict and FilterPreset::Tolerant variants exist
+    #[test]
+    fn issue_181_enum_variants_exist() {
+        // This test verifies that the enum variants can be constructed
+        let _strict = FilterPreset::Strict;
+        let _tolerant = FilterPreset::Tolerant;
+
+        // Test that they can be used in pattern matching
+        let presets = vec![FilterPreset::Strict, FilterPreset::Tolerant];
+        for preset in presets {
+            let _builder = preset.builder();
+        }
+    }
+
     fn obs_with_insert_stats(insert_size_sum: i64, insert_size_count: u32, total_paired: u32) -> VariantObservation {
         create_observation(100, 60, 10, 35.0)
             .with_pair_counts(total_paired, total_paired) // all properly paired for simplicity
