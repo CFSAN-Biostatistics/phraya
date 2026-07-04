@@ -373,6 +373,15 @@ pub fn fill_wfa_fitting_impl(
     // and avoids spurious early termination that under-counts edits.
     if tn <= qn + qn / 2 + 10 {
         let (cigar, edit_dist) = fill_wfa(q, t);
+        // This branch bypasses the wavefront cap loop entirely, so max_s_cap must be
+        // enforced explicitly here too -- otherwise a capped caller (ADR-0007 / #183)
+        // silently gets an uncapped alignment for any query/target pair in this length
+        // ratio, defeating the early-abandonment guarantee.
+        if let Some(cap) = max_s_cap {
+            if edit_dist > cap {
+                return None;
+            }
+        }
         return Some((cigar, edit_dist, t.len()));
     }
 
@@ -400,21 +409,17 @@ pub fn fill_wfa_fitting_impl(
 
     let max_s = qn + tn;
 
-    // Check if we're in capped mode
-    let is_capped = max_s_cap.is_some() && max_s_cap != Some(usize::MAX);
     let max_s_to_explore = if let Some(cap) = max_s_cap {
         (cap as i32).min(max_s)
     } else {
         max_s
     };
 
-    // Check initial state for fitting-end
+    // Check initial state for fitting-end (s=0, i.e. a perfect match). This is always the
+    // best possible result, so it must be accepted regardless of any cap (0 <= max_s_cap
+    // always holds) -- rejecting it here would let a cap prune a better-than-incumbent
+    // alignment, violating the score-bound safety invariant (ADR-0007 / #183).
     if let Some((t_end, k_win)) = fitting_end_k(&wf_cur, qn, tn) {
-        // If we found a fitting-end but we're in capped mode, return None (abandoned)
-        // because this is a truncated search context (used only for ADR-0007 testing)
-        if is_capped {
-            return None;
-        }
         wf_hist.push((wf_cur, ops_cur));
         let (cigar, _) = traceback_wfa_with_tend(&wf_hist, q, t, 0, t_end, k_win);
         return Some((cigar, 0, t_end));
@@ -3101,20 +3106,24 @@ mod issue_180_abandonment_tests {
     /// and the alignment engine must report it as abandoned, not as a perfect match.
     #[test]
     fn issue_180_abandonment_on_exhaustion_with_small_cap() {
-        // Create sequences where a low-divergence window is difficult to fit
-        // within a small edit-distance cap. Real ADR-0007 will use dynamic caps
-        // like floor(0.05*L + 0.95*d_best); here we use a fixed tiny cap for testing.
-        let query = b"ACGTACGTACGTACGT"; // 16bp
-        let target = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"; // 100bp, highly similar
+        // A query/target pair with a real, known-large edit distance: query is all 'A',
+        // target has a substitution every 3rd base, so the true edit distance is far
+        // above the tiny cap below. (The original fixture here reused a repeated "ACGT"
+        // query embedded verbatim in the target -- true edit distance 0 -- which
+        // trivially fits under any cap and can never demonstrate real abandonment.)
+        let query = vec![b'A'; 100];
+        let mut target = query.clone();
+        for i in (0..100).step_by(3) {
+            target[i] = b'T';
+        }
 
-        let result = fill_wfa_fitting_with_cap(query, target, 2); // max_s=2 is tiny; actual distance ≈0-2
+        let result = fill_wfa_fitting_with_cap(&query, &target, 2); // true distance ~33, cap=2
 
-        // With a tiny cap that exhausts, abandonment is expected
-        // (the real WFA needs s≈0 edits to align; cap is artificial constraint)
+        // With a tiny cap far below the true edit distance, exhaustion is expected.
         assert!(
             result.is_none(),
-            "with injected small max_s cap, exhaustion must return None (abandoned), \
-             not a spurious (empty, 0, full_len) perfect alignment"
+            "with injected small max_s cap far below the true edit distance, exhaustion \
+             must return None (abandoned), not a spurious (empty, 0, full_len) perfect alignment"
         );
     }
 
@@ -3153,14 +3162,21 @@ mod issue_180_abandonment_tests {
     /// tiny cap, it should abandon. The two must be distinguishable.
     #[test]
     fn issue_180_distinguishable_normal_vs_abandoned() {
-        let query = b"ACGTACGTACGTACGT";
-        let target = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+        // Same real-divergence fixture as issue_180_abandonment_on_exhaustion_with_small_cap:
+        // true edit distance ~33 (a repeated "ACGT" query embedded verbatim in the target
+        // has true edit distance 0, which trivially "succeeds" under any cap including 0,
+        // so it can never be visibly distinct from the uncapped result).
+        let query = vec![b'A'; 100];
+        let mut target = query.clone();
+        for i in (0..100).step_by(3) {
+            target[i] = b'T';
+        }
 
         // Scenario 1: uncapped (normal operation)
-        let normal = fill_wfa_fitting_with_cap(query, target, usize::MAX);
+        let normal = fill_wfa_fitting_with_cap(&query, &target, usize::MAX);
 
-        // Scenario 2: capped at tiny max_s (triggers abandonment)
-        let abandoned = fill_wfa_fitting_with_cap(query, target, 0);
+        // Scenario 2: capped well below the true edit distance (triggers abandonment)
+        let abandoned = fill_wfa_fitting_with_cap(&query, &target, 2);
 
         // Normal must succeed, abandoned must fail or be visibly different
         assert!(normal.is_some(), "uncapped alignment must succeed");

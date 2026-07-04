@@ -1,5 +1,5 @@
 use crate::seeding::{build_minimizer_index, find_seeds_indexed, MinimizerIndex};
-use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
+use crate::{myers_extend, score_alignments, wfa_extend, wfa_simd, Alignment, SeedAnchor, WfaError, WfaResult};
 use phraya_core::types::{sketch_sequence_default, Sequence, VariantObservation};
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
@@ -211,6 +211,162 @@ fn extend_anchor(
             }
         }
     }
+}
+
+/// ADR-0007 / issue #183: score-bounded branch-and-bound alternate extension.
+///
+/// Compute the score-bounded `max_s` cap for extending an *alternate* anchor, given the
+/// incumbent primary's edit distance `d_best` and query length `query_len`.
+///
+/// `max_s = floor(0.05 * query_len + 0.95 * d_best)` is the exact edit distance at which
+/// the multi-mapping score ratio `(1 - d_alt/query_len) / (1 - d_best/query_len)` drops
+/// to the 0.95 reporting threshold — so an alternate needing more than `max_s` edits could
+/// never pass the existing 0.95 filter and is safe to abandon early.
+///
+/// Safety invariant: `max_s >= d_best` always (`max_s - d_best = floor(0.05 * (query_len -
+/// d_best)) >= 0` for `d_best <= query_len`), so an anchor that could beat the incumbent
+/// and become the new primary is never pruned.
+pub fn score_bound_max_s(query_len: usize, d_best: usize) -> usize {
+    // ADR-0007 / issue #183: score-bounded early abandonment.
+    //
+    // The 0.95 reporting threshold is load-bearing for BOTH speed and correctness:
+    // it defines the score ratio (1 - d_alt/L) / (1 - d_best/L) below which an alternate
+    // cannot pass the existing filter in `score_alignments`. This bound allows us to
+    // abandon alternates early during extension that could never contribute to output.
+    //
+    // Solving for d_alt at which the ratio hits 0.95:
+    //   (1 - d_alt/L) / (1 - d_best/L) = 0.95
+    //   1 - d_alt/L = 0.95 * (1 - d_best/L)
+    //   1 - d_alt/L = 0.95 - 0.95*d_best/L
+    //   d_alt/L = 1 - 0.95 + 0.95*d_best/L
+    //   d_alt/L = 0.05 + 0.95*d_best/L
+    //   d_alt = 0.05*L + 0.95*d_best
+    //
+    // Safety invariant: max_s >= d_best always (the cap is never tighter than the incumbent),
+    // because max_s - d_best = 0.05*(L - d_best) >= 0 for d_best <= L, so an anchor that
+    // could beat the incumbent is never pruned.
+    ((0.05 * query_len as f64 + 0.95 * d_best as f64).floor()) as usize
+}
+
+/// ADR-0007 / issue #183: extend an alternate anchor with WFA under a score-bound cap.
+///
+/// Like [`wfa_extend`], but abandons (returns `Err(WfaError::AlignmentFailed)`) if no
+/// fitting-end is reached within `max_s_cap` edits, instead of running to completion.
+/// Built on the `max_s_cap`-aware primitive introduced in #180
+/// (`wfa_simd::fill_wfa_fitting_impl`).
+pub fn wfa_extend_capped(
+    query: &[u8],
+    target: &[u8],
+    seed: SeedAnchor,
+    max_s_cap: usize,
+) -> WfaResult {
+    // ADR-0007 / issue #183: score-capped WFA extension for alternates.
+    //
+    // For production use, we call the uncapped WFA and then validate the result
+    // against the cap. This avoids issues with test-only behavior in
+    // fill_wfa_fitting_impl's capped mode.
+
+    // Validate seed position
+    if seed.query_pos > query.len() || seed.target_pos > target.len() {
+        return Err(WfaError::InvalidInput(
+            "Seed position beyond sequence length".to_string(),
+        ));
+    }
+
+    // Extract suffix sequences
+    let query_suffix = &query[seed.query_pos..];
+    let target_suffix = &target[seed.target_pos..];
+
+    let query_len = query_suffix.len();
+    let target_len = target_suffix.len();
+
+    // Handle empty suffixes
+    if query_len == 0 && target_len == 0 {
+        return Ok(Alignment {
+            cigar: String::new(),
+            edit_distance: 0,
+            query_start: seed.query_pos,
+            query_end: seed.query_pos,
+            target_start: seed.target_pos,
+            target_end: seed.target_pos,
+        });
+    }
+
+    // Pass the cap into the wavefront loop itself (the #180 primitive) so a hopeless
+    // anchor's s-loop actually stops at max_s_cap instead of running to completion and
+    // being rejected afterwards — that early exit is the entire point of this function
+    // and of issue #183 (a junk anchor must not pay for a full extension it can never
+    // report). A `Some(cigar, edit_distance, ..)` result is guaranteed to have
+    // edit_distance <= max_s_cap by construction (the s-loop never explores beyond the
+    // cap), so no further validation is needed.
+    match wfa_simd::fill_wfa_fitting_impl(query_suffix, target_suffix, Some(max_s_cap)) {
+        Some((cigar, edit_distance, target_consumed)) => Ok(Alignment {
+            cigar,
+            edit_distance,
+            query_start: seed.query_pos,
+            query_end: seed.query_pos + query_len,
+            target_start: seed.target_pos,
+            target_end: seed.target_pos + target_consumed,
+        }),
+        None => Err(WfaError::AlignmentFailed(
+            "alignment abandoned: edit distance exceeded score-bound cap".to_string(),
+        )),
+    }
+}
+
+/// ADR-0007 / issue #183: branch-and-bound extension of alternate anchors.
+///
+/// `primary_edit_distance` seeds the incumbent bound `d_best`. Each alternate is extended
+/// via [`wfa_extend_capped`] at `max_s = score_bound_max_s(query.len(), d_best)`; whenever
+/// an alternate's edit distance beats the current `d_best`, the bound tightens
+/// (monotonically non-increasing) for subsequent alternates. Abandoned alternates are
+/// dropped from the returned list — they never reach `score_alignments`, so reported
+/// variants and multi-mapping output are unchanged versus extending every alternate to
+/// completion; only the *work* to get there is reduced.
+pub fn extend_alternates_bounded(
+    query: &[u8],
+    target: &[u8],
+    primary_edit_distance: usize,
+    alternates: &[SeedAnchor],
+) -> Vec<Alignment> {
+    // ADR-0007 / issue #183: branch-and-bound extension of alternate anchors.
+    //
+    // The primary anchor has already been extended, giving us an incumbent edit distance
+    // `d_best`. For each alternate, we compute a score-bounded cap `max_s` from the 0.95
+    // reporting threshold. Alternates whose true edit distance exceeds `max_s` could never
+    // pass the filter, so we abandon them early via WFA's capped mode (issue #180).
+    //
+    // As we discover better alternates (smaller edit distance), we tighten the cap for
+    // subsequent anchors — this is the "branch-and-bound" optimization that pulls away from
+    // junk anchors quickly.
+    //
+    // The alternates returned here are exactly those that survive the score bound and will
+    // later pass through `score_alignments` at the 0.95 threshold. Output is unchanged
+    // versus extending every alternate to completion; only the *work* to get there is reduced.
+
+    let query_len = query.len();
+    let mut d_best = primary_edit_distance;
+    let mut retained = Vec::new();
+
+    for &anchor in alternates {
+        let max_s = score_bound_max_s(query_len, d_best);
+        match wfa_extend_capped(query, target, anchor, max_s) {
+            Ok(aln) => {
+                // Successfully extended within the cap.
+                if aln.edit_distance < d_best {
+                    // Found a better alternate; tighten the bound for subsequent alternates.
+                    d_best = aln.edit_distance;
+                }
+                retained.push(aln);
+            }
+            Err(_) => {
+                // Abandoned: edit distance exceeded the cap. Drop this alternate.
+                // It couldn't pass the 0.95 filter anyway, so nothing is lost.
+            }
+        }
+    }
+
+    retained
 }
 
 /// Precomputed, read-only per-target data shared across every query aligned to one
