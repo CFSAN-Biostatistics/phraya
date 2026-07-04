@@ -1,5 +1,5 @@
 use crate::seeding::{build_minimizer_index, find_seeds_indexed, MinimizerIndex};
-use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
+use crate::{myers_extend, score_alignments, wfa_extend, Alignment, SeedAnchor, WfaError, WfaResult};
 use phraya_core::types::{sketch_sequence_default, Sequence, VariantObservation};
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
@@ -211,6 +211,56 @@ fn extend_anchor(
             }
         }
     }
+}
+
+/// ADR-0007 / issue #183: score-bounded branch-and-bound alternate extension.
+///
+/// Compute the score-bounded `max_s` cap for extending an *alternate* anchor, given the
+/// incumbent primary's edit distance `d_best` and query length `query_len`.
+///
+/// `max_s = floor(0.05 * query_len + 0.95 * d_best)` is the exact edit distance at which
+/// the multi-mapping score ratio `(1 - d_alt/query_len) / (1 - d_best/query_len)` drops
+/// to the 0.95 reporting threshold — so an alternate needing more than `max_s` edits could
+/// never pass the existing 0.95 filter and is safe to abandon early.
+///
+/// Safety invariant: `max_s >= d_best` always (`max_s - d_best = floor(0.05 * (query_len -
+/// d_best)) >= 0` for `d_best <= query_len`), so an anchor that could beat the incumbent
+/// and become the new primary is never pruned.
+pub fn score_bound_max_s(query_len: usize, d_best: usize) -> usize {
+    todo!("ADR-0007 (issue #183): score-bounded branch-and-bound max_s formula")
+}
+
+/// ADR-0007 / issue #183: extend an alternate anchor with WFA under a score-bound cap.
+///
+/// Like [`wfa_extend`], but abandons (returns `Err(WfaError::AlignmentFailed)`) if no
+/// fitting-end is reached within `max_s_cap` edits, instead of running to completion.
+/// Built on the `max_s_cap`-aware primitive introduced in #180
+/// (`wfa_simd::fill_wfa_fitting_impl`).
+pub fn wfa_extend_capped(
+    query: &[u8],
+    target: &[u8],
+    seed: SeedAnchor,
+    max_s_cap: usize,
+) -> WfaResult {
+    todo!("ADR-0007 (issue #183): score-capped WFA extension for alternates")
+}
+
+/// ADR-0007 / issue #183: branch-and-bound extension of alternate anchors.
+///
+/// `primary_edit_distance` seeds the incumbent bound `d_best`. Each alternate is extended
+/// via [`wfa_extend_capped`] at `max_s = score_bound_max_s(query.len(), d_best)`; whenever
+/// an alternate's edit distance beats the current `d_best`, the bound tightens
+/// (monotonically non-increasing) for subsequent alternates. Abandoned alternates are
+/// dropped from the returned list — they never reach `score_alignments`, so reported
+/// variants and multi-mapping output are unchanged versus extending every alternate to
+/// completion; only the *work* to get there is reduced.
+pub fn extend_alternates_bounded(
+    query: &[u8],
+    target: &[u8],
+    primary_edit_distance: usize,
+    alternates: &[SeedAnchor],
+) -> Vec<Alignment> {
+    todo!("ADR-0007 (issue #183): branch-and-bound loop over alternate anchors")
 }
 
 /// Precomputed, read-only per-target data shared across every query aligned to one
