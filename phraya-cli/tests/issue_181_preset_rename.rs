@@ -113,10 +113,10 @@ fn issue_181_cli_preset_strict_accepts_high_quality() {
         record_lines.len()
     );
 
-    // Verify position is 100
+    // Verify position is 100 (VCF is 1-indexed, so observation pos 100 -> VCF pos 101)
     assert!(
-        vcf_output.contains("100\t"),
-        "VCF should contain position 100"
+        vcf_output.contains("101\t"),
+        "VCF should contain position 101"
     );
 }
 
@@ -182,10 +182,10 @@ fn issue_181_cli_preset_tolerant_accepts_low_quality() {
         record_lines.len()
     );
 
-    // Verify position is 100
+    // Verify position is 100 (VCF is 1-indexed, so observation pos 100 -> VCF pos 101)
     assert!(
-        vcf_output.contains("100\t"),
-        "VCF should contain position 100"
+        vcf_output.contains("101\t"),
+        "VCF should contain position 101"
     );
 }
 
