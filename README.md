@@ -208,7 +208,7 @@ Phraya differentiates on:
 **Phase 2+:**
 - Case 1 (read MSA without reference)
 - Expression-based filters (`--expr`)
-- Named presets (`--preset conservative`)
+- Named presets (`--preset strict|tolerant`)
 - Variation hotspot estimation
 - Python/R bindings
 - GPU acceleration

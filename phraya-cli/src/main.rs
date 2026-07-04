@@ -142,7 +142,7 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         output: Option<PathBuf>,
 
-        /// Named filter preset (conservative or sensitive). Individual threshold flags override preset values.
+        /// Named filter preset (strict or tolerant). Individual threshold flags override preset values.
         #[arg(long, value_name = "PRESET")]
         preset: Option<String>,
 
@@ -1167,11 +1167,11 @@ fn run_filter(
 
     // Start from preset defaults if specified, then apply explicit overrides on top.
     let mut filter_builder = match preset {
-        Some("conservative") => FilterPreset::Conservative.builder(),
-        Some("sensitive") => FilterPreset::Sensitive.builder(),
+        Some("strict") => FilterPreset::Strict.builder(),
+        Some("tolerant") => FilterPreset::Tolerant.builder(),
         Some(other) => {
             return Err(format!(
-                "Unknown preset '{}'. Valid presets: conservative, sensitive",
+                "Unknown preset '{}'. Valid presets: strict, tolerant",
                 other
             )
             .into())
