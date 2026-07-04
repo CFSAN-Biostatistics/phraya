@@ -292,28 +292,24 @@ pub fn wfa_extend_capped(
         });
     }
 
-    // Call uncapped WFA. We validate the result against max_s_cap afterwards.
-    // This approach avoids test-only behavior in fill_wfa_fitting_impl's capped mode
-    // while still enforcing the score bound for production use.
-    match wfa_simd::fill_wfa_fitting_impl(query_suffix, target_suffix, None) {
-        Some((cigar, edit_distance, target_consumed)) => {
-            // Enforce the score-bound cap: abandon if edit distance exceeds it.
-            if edit_distance > max_s_cap {
-                return Err(WfaError::AlignmentFailed(
-                    "alignment abandoned: edit distance exceeded score-bound cap".to_string(),
-                ));
-            }
-            Ok(Alignment {
-                cigar,
-                edit_distance,
-                query_start: seed.query_pos,
-                query_end: seed.query_pos + query_len,
-                target_start: seed.target_pos,
-                target_end: seed.target_pos + target_consumed,
-            })
-        }
+    // Pass the cap into the wavefront loop itself (the #180 primitive) so a hopeless
+    // anchor's s-loop actually stops at max_s_cap instead of running to completion and
+    // being rejected afterwards — that early exit is the entire point of this function
+    // and of issue #183 (a junk anchor must not pay for a full extension it can never
+    // report). A `Some(cigar, edit_distance, ..)` result is guaranteed to have
+    // edit_distance <= max_s_cap by construction (the s-loop never explores beyond the
+    // cap), so no further validation is needed.
+    match wfa_simd::fill_wfa_fitting_impl(query_suffix, target_suffix, Some(max_s_cap)) {
+        Some((cigar, edit_distance, target_consumed)) => Ok(Alignment {
+            cigar,
+            edit_distance,
+            query_start: seed.query_pos,
+            query_end: seed.query_pos + query_len,
+            target_start: seed.target_pos,
+            target_end: seed.target_pos + target_consumed,
+        }),
         None => Err(WfaError::AlignmentFailed(
-            "alignment abandoned: WFA could not find fitting end".to_string(),
+            "alignment abandoned: edit distance exceeded score-bound cap".to_string(),
         )),
     }
 }
