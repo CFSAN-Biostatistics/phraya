@@ -5,7 +5,15 @@ use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::Sequence;
 use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tempfile::TempDir;
+
+/// Helper to get phraya-cli manifest path for cargo run commands (same pattern as
+/// issue_181_preset_rename.rs).
+fn get_manifest_path() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    std::path::Path::new(&manifest_dir).join("Cargo.toml")
+}
 
 fn make_plan_with_fasta(fasta_path: &str) -> PhrayaPlan {
     PhrayaPlan::new(
@@ -55,51 +63,105 @@ fn issue_184_cli_align_accepts_strategy_fast() {
     assert_eq!(config.coverage_window_radius, 150);
 }
 
-/// issue #184: --strategy exact is rejected (no longer a valid strategy).
-/// Simulates the CLI parsing after the rename.
+/// issue #184: `phraya align --strategy exact` is rejected by the real CLI parser
+/// (no longer a valid strategy). Spawns the actual binary (pattern from
+/// issue_181_preset_rename.rs) rather than simulating the match locally -- a local
+/// simulation would pass whether or not phraya-cli/src/main.rs was ever updated.
 #[test]
 fn issue_184_cli_align_rejects_exact_strategy() {
-    // Simulate the CLI parsing: "exact" should no longer parse
-    let result: Result<Strategy, String> = match "exact" {
-        "fast" => Ok(Strategy::Fast),
-        "balanced" => Ok(Strategy::Balanced),
-        "sensitive" => Ok(Strategy::Sensitive),
-        other => Err(format!(
-            "unknown strategy: {other}; expected fast, balanced, or sensitive"
-        )),
-    };
-    assert!(result.is_err(), "exact strategy must be rejected");
-    let err = result.unwrap_err();
+    let output = std::process::Command::new("cargo")
+        .args(&[
+            "run",
+            "--manifest-path",
+            get_manifest_path().to_str().unwrap(),
+            "--",
+            "align",
+            "nonexistent.phrayaplan",
+            "--strategy",
+            "exact",
+        ])
+        .output()
+        .expect("Failed to execute phraya align");
+
     assert!(
-        err.contains("unknown strategy"),
-        "error must mention 'unknown strategy': {err}"
+        !output.status.success(),
+        "phraya align --strategy exact must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown strategy"),
+        "stderr must mention 'unknown strategy': {stderr}"
+    );
+    assert!(
+        stderr.contains("sensitive"),
+        "stderr must list 'sensitive' as a valid option: {stderr}"
+    );
+    assert!(
+        !stderr.contains("expected fast, balanced, or exact"),
+        "stderr must not still advertise 'exact' as valid: {stderr}"
     );
 }
 
-/// issue #184: invalid strategy string returns error with updated message
+/// issue #184: an invalid --strategy value returns the updated error message via the
+/// real CLI parser.
 #[test]
 fn issue_184_cli_align_rejects_invalid_strategy_with_sensitive_option() {
-    let result: Result<Strategy, String> = match "invalid_strategy" {
-        "fast" => Ok(Strategy::Fast),
-        "balanced" => Ok(Strategy::Balanced),
-        "sensitive" => Ok(Strategy::Sensitive),
-        other => Err(format!(
-            "unknown strategy: {other}; expected fast, balanced, or sensitive"
-        )),
-    };
-    assert!(result.is_err(), "invalid strategy must be rejected");
-    let err = result.unwrap_err();
+    let output = std::process::Command::new("cargo")
+        .args(&[
+            "run",
+            "--manifest-path",
+            get_manifest_path().to_str().unwrap(),
+            "--",
+            "align",
+            "nonexistent.phrayaplan",
+            "--strategy",
+            "invalid_strategy",
+        ])
+        .output()
+        .expect("Failed to execute phraya align");
+
     assert!(
-        err.contains("unknown strategy"),
-        "error must mention 'unknown strategy': {err}"
+        !output.status.success(),
+        "phraya align --strategy invalid_strategy must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown strategy"),
+        "stderr must mention 'unknown strategy': {stderr}"
     );
     assert!(
-        err.contains("sensitive"),
-        "error must list 'sensitive' as valid option: {err}"
+        stderr.contains("sensitive"),
+        "stderr must list 'sensitive' as valid option: {stderr}"
     );
     assert!(
-        !err.contains("exact"),
-        "error must not list 'exact' as valid option: {err}"
+        !stderr.contains("expected fast, balanced, or exact"),
+        "stderr must not still advertise 'exact' as valid: {stderr}"
+    );
+}
+
+/// issue #184: `phraya align --strategy sensitive` is accepted by the real CLI parser.
+#[test]
+fn issue_184_cli_align_accepts_sensitive_strategy_string() {
+    let output = std::process::Command::new("cargo")
+        .args(&[
+            "run",
+            "--manifest-path",
+            get_manifest_path().to_str().unwrap(),
+            "--",
+            "align",
+            "nonexistent.phrayaplan",
+            "--strategy",
+            "sensitive",
+        ])
+        .output()
+        .expect("Failed to execute phraya align");
+
+    // The strategy parses fine; the run still fails, but for a *different* reason
+    // (missing plan file), never "unknown strategy".
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unknown strategy"),
+        "stderr must not reject 'sensitive' as an unknown strategy: {stderr}"
     );
 }
 
@@ -354,15 +416,7 @@ fn issue_184_cli_config_factory_sensitive() {
 }
 
 // ============================================================================
-// NOMENCLATURE: Verify "exact" is completely removed from public API
+// NOMENCLATURE: real "exact" removal is exercised by
+// issue_184_cli_align_rejects_exact_strategy above (subprocess-based -- the CLI
+// genuinely refuses "exact" at runtime, not just a type-level presence check).
 // ============================================================================
-
-/// issue #184: No remaining Strategy::Exact in codebase (compile-time check)
-/// NOTE: This test demonstrates that Strategy::Exact no longer exists.
-/// If it still exists, the test will not compile.
-#[test]
-fn issue_184_cli_strategy_exact_enum_removed() {
-    // This test passes if Strategy::Sensitive exists and exact() is removed.
-    // The enum change is verified by the type system.
-    let _ = Strategy::Sensitive; // Must exist
-}

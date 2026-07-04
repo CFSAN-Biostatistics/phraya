@@ -72,20 +72,6 @@ fn issue_184_align_config_has_sensitive_method() {
     );
 }
 
-/// Test that AlignConfig::exact() no longer exists (hard rename, no alias).
-/// Acceptance criterion: exact() method is removed entirely.
-/// NOTE: This test will not compile if AlignConfig::exact() still exists.
-///       Intentionally left as a compile-time check in the form of this comment.
-///       If exact() is not removed, this test file itself will fail to compile.
-/// We verify this indirectly by testing that sensitive() exists and exact() is gone.
-#[test]
-fn issue_184_align_config_exact_method_is_removed() {
-    // Try to call sensitive() to ensure it exists
-    let _ = AlignConfig::sensitive();
-    // If AlignConfig::exact() still exists, the implementation is not complete.
-    // This is implicitly tested by the type system.
-}
-
 /// Test that Strategy::Sensitive has the expected coverage window radius (±25bp, unchanged).
 /// Acceptance criterion: Sensitive uses ±25bp coverage window, same as old Exact.
 #[test]
@@ -121,80 +107,15 @@ fn issue_184_coverage_windows_unchanged() {
 }
 
 // ============================================================================
-// CLI PARSING TESTS: Verify --strategy flag accepts/rejects correct values
+// CLI PARSING TESTS: moved to phraya-cli/tests/issue_184_cli_strategy_tests.rs
 // ============================================================================
-
-/// Test that --strategy sensitive would parse correctly (simulation, not subprocess).
-/// Acceptance criterion: Strategy::Sensitive can be constructed from "sensitive" string.
-#[test]
-fn issue_184_cli_strategy_sensitive_parses() {
-    // Simulate CLI parsing
-    let result: Result<Strategy, String> = match "sensitive" {
-        "fast" => Ok(Strategy::Fast),
-        "balanced" => Ok(Strategy::Balanced),
-        "sensitive" => Ok(Strategy::Sensitive),
-        other => Err(format!(
-            "unknown strategy: {other}; expected fast, balanced, or sensitive"
-        )),
-    };
-    assert!(
-        result.is_ok(),
-        "strategy 'sensitive' must parse successfully"
-    );
-    assert_eq!(
-        result.unwrap(),
-        Strategy::Sensitive,
-        "parsing 'sensitive' must produce Strategy::Sensitive"
-    );
-}
-
-/// Test that --strategy exact is rejected with an updated error message.
-/// Acceptance criterion: "exact" no longer parses; error message mentions "sensitive" not "exact".
-#[test]
-fn issue_184_cli_strategy_exact_is_rejected() {
-    // Simulate CLI parsing after renaming
-    let result: Result<Strategy, String> = match "exact" {
-        "fast" => Ok(Strategy::Fast),
-        "balanced" => Ok(Strategy::Balanced),
-        "sensitive" => Ok(Strategy::Sensitive),
-        other => Err(format!(
-            "unknown strategy: {other}; expected fast, balanced, or sensitive"
-        )),
-    };
-    assert!(result.is_err(), "strategy 'exact' must be rejected");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains("unknown strategy"),
-        "error must mention 'unknown strategy': {err}"
-    );
-    assert!(
-        err.contains("sensitive"),
-        "error message must mention 'sensitive' as valid option: {err}"
-    );
-    assert!(
-        !err.contains("exact"),
-        "error message must not suggest 'exact' as valid option: {err}"
-    );
-}
-
-/// Test that the CLI error message mentions valid strategies without "exact".
-/// Acceptance criterion: Error text lists (fast, balanced, sensitive) not (fast, balanced, exact).
-#[test]
-fn issue_184_cli_error_message_uses_sensitive_not_exact() {
-    let result: Result<Strategy, String> = match "invalid" {
-        "fast" => Ok(Strategy::Fast),
-        "balanced" => Ok(Strategy::Balanced),
-        "sensitive" => Ok(Strategy::Sensitive),
-        other => Err(format!(
-            "unknown strategy: {other}; expected fast, balanced, or sensitive"
-        )),
-    };
-    let err = result.unwrap_err();
-    assert!(err.contains("fast"), "error must list 'fast'");
-    assert!(err.contains("balanced"), "error must list 'balanced'");
-    assert!(err.contains("sensitive"), "error must list 'sensitive'");
-    assert!(!err.contains("exact"), "error must not list 'exact'");
-}
+//
+// The tests originally here simulated CLI parsing with a local, hand-rolled
+// `match "exact" { ... }` statement instead of calling the real parser in
+// phraya-cli/src/main.rs -- they would pass regardless of whether that parser
+// was ever updated. Real subprocess-based tests (spawning the `phraya` binary,
+// matching the pattern in issue_181_preset_rename.rs) now live in
+// phraya-cli/tests/issue_184_cli_strategy_tests.rs.
 
 // ============================================================================
 // ANCHOR CAP K TESTS: Verify strategies implement K=1/5/∞ behavior
@@ -461,25 +382,10 @@ fn issue_184_multimapping_threshold_unchanged() {
 }
 
 // ============================================================================
-// CODE CLEANUP TESTS: Verify no remaining "exact" references in public API
+// CODE CLEANUP TESTS: real error-message check lives in
+// phraya-cli/tests/issue_184_cli_strategy_tests.rs (subprocess-based, exercises
+// the actual CLI parser rather than a locally-built string).
 // ============================================================================
-
-/// Test that the error message for invalid strategy uses "sensitive", not "exact".
-/// Acceptance criterion: If an invalid strategy is parsed, the error mentions "sensitive".
-#[test]
-fn issue_184_no_exact_in_error_messages() {
-    // Simulate the error message that would be produced by CLI parsing.
-    let invalid = "foobar";
-    let msg = format!("unknown strategy: {invalid}; expected fast, balanced, or sensitive");
-    assert!(
-        msg.contains("sensitive"),
-        "error message must reference 'sensitive'"
-    );
-    assert!(
-        !msg.contains("exact"),
-        "error message must not reference 'exact'"
-    );
-}
 
 /// Test that AlignConfig builder methods only provide fast, balanced, sensitive.
 /// Acceptance criterion: factory methods are fast(), balanced(), sensitive() (no exact()).
