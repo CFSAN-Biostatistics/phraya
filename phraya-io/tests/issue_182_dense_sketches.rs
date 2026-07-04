@@ -83,13 +83,23 @@ fn issue_182_plan_has_new_version() {
 /// It will pass once dense sketches are stored in the plan.
 #[test]
 fn issue_182_dense_sketch_has_more_minimizers_than_w11() {
+    use phraya_core::types::sketch_sequence;
+
     let seq = test_sequence_longer();
     let w11_sketch = sketch_sequence_default(&seq);
+    // Dense sketch computed directly from the original sequence at a smaller window
+    // (w=5, k=21 -> l=25, odd, satisfies simd-minimizers canonicality) — this mirrors
+    // how `phraya plan` would compute it; a dense sketch cannot be derived from an
+    // already-computed w=11 sketch alone (it lacks the original sequence bases).
+    let dense_sketch_computed = sketch_sequence(&seq, 21, 5);
 
     let mut plan = minimal_plan();
     let mut sketches = HashMap::new();
     sketches.insert(seq.id().to_string(), w11_sketch.clone());
     plan.kmer_index = sketches;
+    let mut dense_sketches = HashMap::new();
+    dense_sketches.insert(seq.id().to_string(), dense_sketch_computed);
+    plan.dense_kmer_index = dense_sketches;
 
     // After implementation, the plan should provide access to dense sketches:
     let dense_sketch = plan.get_dense_sketch(&seq.id())
@@ -114,13 +124,34 @@ fn issue_182_dense_sketch_has_more_minimizers_than_w11() {
 /// It will pass once w=11 tags are stored with dense sketches.
 #[test]
 fn issue_182_w11_subset_of_dense_is_byte_identical_to_default() {
+    use phraya_core::types::sketch_sequence;
+    use std::collections::HashSet;
+
     let seq = test_sequence_longer();
     let w11_sketch = sketch_sequence_default(&seq);
+    // Dense sketch computed directly from the original sequence (see comment in
+    // issue_182_dense_sketch_has_more_minimizers_than_w11 for why this can't be
+    // derived from the stored w=11 sketch alone).
+    let dense_sketch_computed = sketch_sequence(&seq, 21, 5);
+    // Tag each dense minimizer with whether it's also a member of the canonical w=11
+    // set. This is the plan-time tagging step; membership is by exact minimizer match.
+    let w11_set: HashSet<(u64, u32)> = w11_sketch.minimizers.iter().copied().collect();
+    let w11_membership_computed: Vec<bool> = dense_sketch_computed
+        .minimizers
+        .iter()
+        .map(|m| w11_set.contains(m))
+        .collect();
 
     let mut plan = minimal_plan();
     let mut sketches = HashMap::new();
     sketches.insert(seq.id().to_string(), w11_sketch.clone());
     plan.kmer_index = sketches;
+    let mut dense_sketches = HashMap::new();
+    dense_sketches.insert(seq.id().to_string(), dense_sketch_computed);
+    plan.dense_kmer_index = dense_sketches;
+    let mut membership = HashMap::new();
+    membership.insert(seq.id().to_string(), w11_membership_computed);
+    plan.w11_membership = membership;
 
     // After implementation, the plan should provide w=11 membership tags:
     let w11_membership = plan.get_w11_membership(&seq.id())
@@ -246,6 +277,8 @@ fn issue_182_sparse_plan_omits_dense_sketches() {
     let mut sketches = HashMap::new();
     sketches.insert(seq.id().to_string(), w11_sketch);
     plan.kmer_index = sketches;
+    // Simulate `phraya plan --sparse`: no dense sketches computed/stored.
+    plan.sparse_mode = true;
 
     // After implementation, a sparse plan should:
     // 1. Have sparse_mode == true
@@ -268,13 +301,19 @@ fn issue_182_sparse_plan_omits_dense_sketches() {
 /// It will pass once dense sketches are computed by default.
 #[test]
 fn issue_182_dense_mode_stores_dense_sketches() {
+    use phraya_core::types::sketch_sequence;
+
     let seq = test_sequence();
     let w11_sketch = sketch_sequence_default(&seq);
+    let dense_sketch_computed = sketch_sequence(&seq, 21, 5);
 
     let mut plan = minimal_plan();
     let mut sketches = HashMap::new();
     sketches.insert(seq.id().to_string(), w11_sketch);
     plan.kmer_index = sketches;
+    let mut dense_sketches = HashMap::new();
+    dense_sketches.insert(seq.id().to_string(), dense_sketch_computed);
+    plan.dense_kmer_index = dense_sketches;
 
     // By default (not --sparse), the plan should store dense sketches
     assert!(!plan.is_sparse(), "default plan should not have sparse mode");
