@@ -262,8 +262,10 @@ impl PhrayaPlan {
                 continue; // Skip sequences not in kmer_index
             }
 
-            // Compute dense sketch with w=5 (denser than w=11)
-            let dense_sketch = sketch_sequence(seq, 21, 5);
+            // Compute dense sketch with w=5 (denser than w=11), deduplicated so a
+            // minimizer repeated across overlapping windows is stored once (matches
+            // the w=11 sketch's dedup below, keeping membership counts meaningful).
+            let dense_sketch = deduplicate_sketch(&sketch_sequence(seq, 21, 5));
 
             // Get the w=11 sketch and deduplicate it
             let w11_sketch_original = &self.kmer_index[seq_id];
@@ -539,7 +541,7 @@ mod tests {
         write_plan(temp.path(), &plan).unwrap();
         let read_plan = read_plan(temp.path()).unwrap();
 
-        assert_eq!(read_plan.version, 4);
+        assert_eq!(read_plan.version, PHRAYAPLAN_VERSION);
         assert_eq!(read_plan.reads_per_file, vec![1000, 1000]);
         assert_eq!(read_plan.total_read_count, 2000);
         assert_eq!(read_plan.kmer_params.k, 21);

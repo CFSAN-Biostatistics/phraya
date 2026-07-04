@@ -296,7 +296,10 @@ fn issue_182_sparse_plan_omits_dense_sketches() {
 /// It will pass once dense sketches are computed by default.
 #[test]
 fn issue_182_dense_mode_stores_dense_sketches() {
-    let seq = test_sequence();
+    // test_sequence() is a single ~100bp block — too short/repetitive to guarantee
+    // strictly more distinct minimizers at w=5 after dedup. Use the longer fixture
+    // (same one issue_182_dense_sketch_has_more_minimizers_than_w11 relies on).
+    let seq = test_sequence_longer();
     let w11_sketch = sketch_sequence_default(&seq);
 
     let mut plan = minimal_plan();
