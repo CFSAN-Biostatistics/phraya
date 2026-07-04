@@ -127,7 +127,7 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 ### Supported Styles (all chainable)
 1. **Threshold-based**: `--min-coverage 10 --min-mapq 30 --max-multi-map-fraction 0.3`
 2. **Expression-based**: `--expr "coverage >= 10 && mapq > 30"` [Phase 2+]
-3. **Named presets**: `--preset conservative|sensitive` [Phase 2+]
+3. **Named presets**: `--preset strict|tolerant`
 
 ### Output Formats
 - Filtered `.phraya` (subset of records, same format for chaining)
@@ -151,7 +151,7 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 - Real local coverage (±50bp window from alignment, not stubbed)
 - mapq, avg_base_quality, confidence derived from input data (BAM records / alignment score)
 - Tandem repeat detection wired end-to-end: annotation on variants, `exclude_tandem_repeats` filter option
-- `phraya filter` threshold-based + named presets (conservative / sensitive), outputs VCF/TSV/phraya
+- `phraya filter` threshold-based + named presets (strict / tolerant), outputs VCF/TSV/phraya
 - `phraya-filter` crate library API with feature extractors (cigar_ops, allele_frequency, multi_map_fraction)
 
 **Deferred to Phase 2+:**

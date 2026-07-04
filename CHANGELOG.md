@@ -7,6 +7,9 @@ Phraya uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Breaking**: Filter presets renamed: `conservative` → `strict`, `sensitive` → `tolerant` (ADR-0010). Threshold values unchanged; this is a pure rename to avoid overloading "sensitive" with the alignment strategy layer.
+
 ## [v0.1.0] - 2026-06-06
 
 ### Added
@@ -19,7 +22,7 @@ Phraya uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - `.phraya` position index: VariantObservation with CIGAR, mapq, coverage track, multi-mapping
 - `.phraya.queries` query index: multi-mapping alternatives per read
 - BAM/CRAM input via `noodles` (pure Rust, no htslib)
-- `phraya filter`: threshold-based filtering + named presets (conservative/sensitive)
+- `phraya filter`: threshold-based filtering + named presets (strict/tolerant)
 - VCF, TSV, and `.phraya` output formats
 - Tandem repeat detection and annotation on variants
 - Local coverage computed from alignment (±50bp window)
