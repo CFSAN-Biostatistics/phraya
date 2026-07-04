@@ -86,9 +86,9 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         output: Option<PathBuf>,
 
-        /// Alignment strategy preset (selects algorithm + default coverage window):
-        /// exact (seeded WFA, ±25bp), balanced (Myers fitting + WFA fallback, ±50bp,
-        /// default), fast (seed subsampling + divergence cutoff, ±150bp, low sensitivity)
+        /// Alignment strategy preset (selects algorithm + default coverage window + anchor subsampling):
+        /// sensitive (K=∞, seeded WFA, ±25bp), balanced (K=5, Myers fitting + WFA fallback, ±50bp,
+        /// default), fast (K=1, seed subsampling + divergence cutoff, ±150bp, low sensitivity)
         #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
         strategy: String,
 
@@ -210,8 +210,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let strat = match strategy.as_str() {
                 "fast" => Strategy::Fast,
                 "balanced" => Strategy::Balanced,
-                "exact" => Strategy::Exact,
-                other => return Err(format!("unknown strategy: {other}; expected fast, balanced, or exact").into()),
+                "sensitive" => Strategy::Sensitive,
+                other => return Err(format!("unknown strategy: {other}; expected fast, balanced, or sensitive").into()),
             };
 
             // Strategy sets the default coverage-window radius; --coverage-window overrides it.

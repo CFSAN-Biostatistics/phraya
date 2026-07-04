@@ -5,15 +5,15 @@ use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
 use std::collections::{HashMap, HashSet};
 
-/// Alignment strategy affecting coverage window size.
+/// Alignment strategy affecting coverage window size and anchor selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
-    /// Fast strategy: wide ±150bp coverage window for context in complex regions
+    /// Fast strategy: K=1 anchor cap (best-voted seed target-start only), wide ±150bp coverage window
     Fast,
-    /// Balanced strategy: moderate ±50bp coverage window (default, current behavior)
+    /// Balanced strategy: K=5 anchor cap (top 5 seed targets by vote count), moderate ±50bp coverage window (default)
     Balanced,
-    /// Exact strategy: narrow ±25bp coverage window for precision
-    Exact,
+    /// Sensitive strategy: K=∞ anchor cap (all distinct seed target-starts), narrow ±25bp coverage window for precision
+    Sensitive,
 }
 
 impl Default for Strategy {
@@ -38,7 +38,7 @@ impl AlignConfig {
         let coverage_window_radius = match strategy {
             Strategy::Fast => 150,
             Strategy::Balanced => 50,
-            Strategy::Exact => 25,
+            Strategy::Sensitive => 25,
         };
         AlignConfig {
             strategy,
@@ -56,9 +56,9 @@ impl AlignConfig {
         Self::new(Strategy::Balanced)
     }
 
-    /// Create an Exact strategy config (±25bp window).
-    pub fn exact() -> Self {
-        Self::new(Strategy::Exact)
+    /// Create a Sensitive strategy config (±25bp window).
+    pub fn sensitive() -> Self {
+        Self::new(Strategy::Sensitive)
     }
 
     /// Override the coverage-window radius independently of the strategy preset.
@@ -149,11 +149,13 @@ const FAST_MAX_DIVERGENCE: f64 = 0.20;
 /// Build the list of WFA/Myers anchors (each `query_pos = 0`) from minimizer seeds,
 /// according to the strategy.
 ///
-/// - `Exact` / `Balanced`: every distinct seed-derived target start, plus a `(0,0)`
-///   fallback that wins ties in degenerate/repetitive sequences. Highest sensitivity.
-/// - `Fast`: a single anchor at the best-supported target start (minimizer vote),
+/// - `Fast`: K=1 — a single anchor at the best-supported target start (minimizer vote),
 ///   collapsing the per-read anchor count to O(1) even when a repeat sprays thousands
 ///   of seeds. Falls back to `(0,0)` when no seeds are shared.
+/// - `Balanced`: K=5 — top 5 target starts ranked by seed vote count (with fallback `(0,0)`).
+///   Balances between Fast's O(1) speed and Sensitive's O(n) sensitivity.
+/// - `Sensitive`: K=∞ — every distinct seed-derived target start, plus a `(0,0)` fallback
+///   that wins ties in degenerate/repetitive sequences. Highest sensitivity.
 fn build_anchors(strategy: Strategy, seeds: &[crate::Seed]) -> Vec<SeedAnchor> {
     let target_start_of = |s: &crate::Seed| (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
 
@@ -172,7 +174,27 @@ fn build_anchors(strategy: Strategy, seeds: &[crate::Seed]) -> Vec<SeedAnchor> {
                 None => vec![SeedAnchor { query_pos: 0, target_pos: 0 }],
             }
         }
-        Strategy::Balanced | Strategy::Exact => {
+        Strategy::Balanced => {
+            // K=5: top 5 target starts by vote count
+            let mut votes: HashMap<usize, usize> = HashMap::new();
+            for s in seeds {
+                *votes.entry(target_start_of(s)).or_insert(0) += 1;
+            }
+            // Sort by vote count (descending), ties broken toward earliest position
+            let mut sorted: Vec<_> = votes.into_iter().collect();
+            sorted.sort_by(|&(pos_a, cnt_a), &(pos_b, cnt_b)| {
+                // Primary sort: count descending; ties: position ascending
+                (std::cmp::Reverse(cnt_a), pos_a).cmp(&(std::cmp::Reverse(cnt_b), pos_b))
+            });
+            // Keep the top 5 by vote count, plus the (0,0) fallback
+            let mut result = vec![SeedAnchor { query_pos: 0, target_pos: 0 }];
+            for (start, _count) in sorted.iter().take(5) {
+                result.push(SeedAnchor { query_pos: 0, target_pos: *start });
+            }
+            result
+        }
+        Strategy::Sensitive => {
+            // K=∞: all distinct seed target-starts
             let mut seen = HashSet::new();
             let mut result = vec![SeedAnchor { query_pos: 0, target_pos: 0 }];
             seen.insert(0usize);
@@ -189,12 +211,13 @@ fn build_anchors(strategy: Strategy, seeds: &[crate::Seed]) -> Vec<SeedAnchor> {
 
 /// Extend a single anchor with the engine selected by `strategy`.
 ///
-/// - `Exact`: canonical seeded WFA on every anchor — the reference path.
+/// - `Sensitive`: canonical seeded WFA on every anchor — the reference path.
 /// - `Balanced` / `Fast`: Myers fitting for short reads (identical results to WFA, but
 ///   faster), falling back to WFA for reads longer than [`MYERS_MAX_QUERY_LEN`].
 ///
-/// Fast's distinction from Balanced is in *which* anchors it extends (seed subsampling)
-/// and a post-hoc divergence cutoff, handled by the caller — not the extension engine.
+/// Fast and Balanced differ from Sensitive in *which* anchors they extend (K=1 and K=5
+/// subsampling vs K=∞) and Fast adds a post-hoc divergence cutoff, handled by the caller
+/// — not the extension engine.
 fn extend_anchor(
     strategy: Strategy,
     query: &[u8],
@@ -202,7 +225,7 @@ fn extend_anchor(
     anchor: SeedAnchor,
 ) -> crate::WfaResult {
     match strategy {
-        Strategy::Exact => wfa_extend(query, target_window, anchor),
+        Strategy::Sensitive => wfa_extend(query, target_window, anchor),
         Strategy::Balanced | Strategy::Fast => {
             if query.len() <= MYERS_MAX_QUERY_LEN {
                 myers_extend(query, target_window, anchor)
