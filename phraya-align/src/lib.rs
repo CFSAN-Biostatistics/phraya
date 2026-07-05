@@ -264,4 +264,36 @@ mod tests {
         let scored_long = score_alignments(&[primary_long, alt_long], 100);
         assert_eq!(scored_long.alternatives.len(), 1);
     }
+
+    #[test]
+    #[should_panic(expected = "At least one alignment required")]
+    fn score_alignments_panics_on_empty_slice() {
+        score_alignments(&[], 100);
+    }
+
+    #[test]
+    fn myers_extend_rejects_seed_beyond_query_length() {
+        let query = b"ACGT";
+        let target = b"ACGTACGT";
+        let seed = SeedAnchor {
+            query_pos: 5, // beyond query.len() == 4
+            target_pos: 0,
+        };
+
+        let result = myers_extend(query, target, seed);
+        assert!(matches!(result, Err(WfaError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn myers_extend_rejects_seed_beyond_target_length() {
+        let query = b"ACGT";
+        let target = b"ACGT";
+        let seed = SeedAnchor {
+            query_pos: 0,
+            target_pos: 10, // beyond target.len() == 4
+        };
+
+        let result = myers_extend(query, target, seed);
+        assert!(matches!(result, Err(WfaError::InvalidInput(_))));
+    }
 }

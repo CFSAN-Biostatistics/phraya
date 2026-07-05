@@ -346,6 +346,25 @@ mod tests {
     }
 
     #[test]
+    fn min_coverage_rejects_observation_with_no_coverage_data() {
+        let obs = VariantObservation::new(
+            100,
+            b'A',
+            HashMap::from([(b'A', 10)]),
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![], // no local_coverage window data
+            35.0,
+            "test:read".to_string(),
+        );
+
+        let filter = FilterBuilder::new().min_coverage(10).build();
+        assert!(!filter.apply(&obs));
+    }
+
+    #[test]
     fn max_coverage_filter() {
         let obs_low = create_observation(100, 60, 5, 35.0);
         let obs_high = create_observation(100, 60, 25, 35.0);
@@ -357,6 +376,27 @@ mod tests {
     }
 
     #[test]
+    fn max_coverage_passes_observation_with_no_coverage_data() {
+        // max_coverage only rejects when coverage data IS available and exceeds
+        // the threshold; missing coverage data is not itself a rejection reason.
+        let obs = VariantObservation::new(
+            100,
+            b'A',
+            HashMap::from([(b'A', 10)]),
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![], // no local_coverage window data
+            35.0,
+            "test:read".to_string(),
+        );
+
+        let filter = FilterBuilder::new().max_coverage(20).build();
+        assert!(filter.apply(&obs));
+    }
+
+    #[test]
     fn min_mapq_filter() {
         let obs_low = create_observation(100, 30, 10, 35.0);
         let obs_high = create_observation(100, 50, 10, 35.0);
@@ -365,6 +405,17 @@ mod tests {
 
         assert!(!filter.apply(&obs_low));
         assert!(filter.apply(&obs_high));
+    }
+
+    #[test]
+    fn max_mapq_filter() {
+        let obs_low = create_observation(100, 30, 10, 35.0);
+        let obs_high = create_observation(100, 50, 10, 35.0);
+
+        let filter = FilterBuilder::new().max_mapq(40).build();
+
+        assert!(filter.apply(&obs_low));
+        assert!(!filter.apply(&obs_high));
     }
 
     #[test]
@@ -440,6 +491,14 @@ mod tests {
     }
 
     #[test]
+    fn threshold_filter_default_matches_new() {
+        let obs = create_observation(100, 60, 10, 35.0);
+        let filter = ThresholdFilter::default();
+
+        assert!(filter.apply(&obs));
+    }
+
+    #[test]
     fn multiple_thresholds() {
         let obs = create_observation(100, 50, 15, 33.0);
 
@@ -508,6 +567,75 @@ mod tests {
 
         let strict_filter = FilterBuilder::new().min_allele_frequency(0.15).build();
         assert!(!strict_filter.apply(&obs)); // 10% fails 15% threshold
+    }
+
+    #[test]
+    fn min_allele_frequency_rejects_zero_total_alleles() {
+        let obs = VariantObservation::new(
+            100,
+            b'A',
+            HashMap::new(), // no alleles at all → total count is 0
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![100],
+            35.0,
+            "test:read".to_string(),
+        );
+
+        let filter = FilterBuilder::new().min_allele_frequency(0.05).build();
+        assert!(!filter.apply(&obs));
+    }
+
+    #[test]
+    fn require_both_mates_mapped_rejects_when_mate_unmapped() {
+        use phraya_core::types::MateInfo;
+
+        let obs = create_observation(100, 60, 10, 35.0).with_mate_info(MateInfo::new(
+            "read/2".to_string(),
+            true,
+            300,
+            true,
+            false,
+            false, // mate not mapped
+        ));
+
+        let filter = FilterBuilder::new().require_both_mates_mapped(true).build();
+        assert!(!filter.apply(&obs));
+    }
+
+    #[test]
+    fn require_both_mates_mapped_accepts_when_mate_mapped() {
+        use phraya_core::types::MateInfo;
+
+        let obs = create_observation(100, 60, 10, 35.0).with_mate_info(MateInfo::new(
+            "read/2".to_string(),
+            true,
+            300,
+            true,
+            false,
+            true, // mate mapped
+        ));
+
+        let filter = FilterBuilder::new().require_both_mates_mapped(true).build();
+        assert!(filter.apply(&obs));
+    }
+
+    #[test]
+    fn require_both_mates_mapped_rejects_when_no_mate_info() {
+        let obs = create_observation(100, 60, 10, 35.0);
+
+        let filter = FilterBuilder::new().require_both_mates_mapped(true).build();
+        assert!(!filter.apply(&obs));
+    }
+
+    #[test]
+    fn require_both_mates_mapped_false_ignores_missing_mate_info() {
+        let obs = create_observation(100, 60, 10, 35.0);
+
+        let filter = FilterBuilder::new().require_both_mates_mapped(false).build();
+        assert!(filter.apply(&obs));
     }
 
     #[test]
@@ -1394,6 +1522,19 @@ mod expr_filter_tests {
             result.is_err(),
             "expression with unclosed paren should produce error"
         );
+        assert!(result.unwrap_err().to_string().contains("parenthesis"));
+    }
+
+    #[test]
+    fn expr_parse_error_display_variants() {
+        assert!(ExprParseError::UnmatchedParen.to_string().contains("parenthesis"));
+        assert!(ExprParseError::MissingOperand.to_string().contains("missing operand"));
+        assert!(ExprParseError::MalformedExpression("bad token".to_string())
+            .to_string()
+            .contains("bad token"));
+        assert!(ExprParseError::UnknownField("foo".to_string())
+            .to_string()
+            .contains("foo"));
     }
 
     /// Issue #150: Malformed expression — missing operand
@@ -1405,6 +1546,74 @@ mod expr_filter_tests {
             result.is_err(),
             "expression with missing operand should produce error"
         );
+    }
+
+    #[test]
+    fn expr_trailing_garbage_after_expression_is_malformed() {
+        let result = ExprFilter::new("coverage >= 10 extra");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unexpected characters"));
+    }
+
+    #[test]
+    fn expr_missing_field_name_is_missing_operand() {
+        let result = ExprFilter::new(">= 10");
+        assert!(matches!(result, Err(ExprParseError::MissingOperand)));
+    }
+
+    #[test]
+    fn expr_unrecognized_operator_is_malformed() {
+        let result = ExprFilter::new("coverage ~ 10");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("comparison operator"));
+    }
+
+    #[test]
+    fn expr_negative_number_literal_parses() {
+        let filter = ExprFilter::new("edit_distance >= -5").expect("valid expr");
+        let obs = create_obs(100, 40, 15, 35.0, 0.95, 2, false);
+        assert!(filter.apply(&obs), "edit_distance=2 should satisfy >= -5");
+    }
+
+    #[test]
+    fn expr_allele_frequency_zero_when_no_alleles() {
+        let obs = VariantObservation::new(
+            100,
+            b'A',
+            HashMap::new(),
+            0.95,
+            "10M".to_string(),
+            40,
+            0,
+            vec![10],
+            35.0,
+            "test:read".to_string(),
+        );
+        let filter = ExprFilter::new("allele_frequency == 0").expect("valid expr");
+        assert!(filter.apply(&obs));
+    }
+
+    #[test]
+    fn extract_field_unknown_field_errs_directly() {
+        // extract_field's own field validation is a defensive fallback behind the
+        // parser's identical validation in parse_field; exercise it directly since
+        // ExprFilter::new can never reach it through normal parsing.
+        let obs = create_obs(100, 40, 15, 35.0, 0.95, 0, false);
+        let result = super::extract_field("not_a_real_field", &obs);
+        assert!(matches!(result, Err(ExprParseError::UnknownField(_))));
+    }
+
+    #[test]
+    fn evaluate_expr_false_when_field_extraction_fails() {
+        // Mirrors extract_field's own defensive fallback: evaluate_expr treats an
+        // extraction error as a non-match rather than panicking.
+        let obs = create_obs(100, 40, 15, 35.0, 0.95, 0, false);
+        let expr = super::Expr::Comparison {
+            field: "not_a_real_field".to_string(),
+            op: super::CompOp::GreaterEq,
+            value: 0.0,
+        };
+        assert!(!super::evaluate_expr(&expr, &obs));
     }
 
     /// Issue #150: Both expr and threshold filters can be composed

@@ -7,7 +7,7 @@ use phraya_core::types::{
 };
 use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
-    bam_cram::{BamCramParser, ParsedReads},
+    bam_cram::BamCramParser,
     phraya,
     plan::{self, write_plan, InsertSizeDistribution, PhrayaPlan, UseCase},
     queries,
@@ -949,7 +949,6 @@ fn index_file_offsets(path: &std::path::Path) -> Result<(Vec<u64>, usize), Box<d
     let is_fastq = line.starts_with('@');
 
     reader.seek(SeekFrom::Start(0))?;
-    position = 0;
     line.clear();
 
     if is_fasta {

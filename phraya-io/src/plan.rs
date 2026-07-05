@@ -331,7 +331,42 @@ pub fn read_plan(path: &Path) -> Result<PhrayaPlan, PlanError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phraya_core::types::Sequence;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn populate_dense_sketches_skips_sequences_absent_from_kmer_index() {
+        // Only "known" is in kmer_index; "unknown" is present in `sequences` but
+        // must be skipped rather than gaining a dense sketch of its own.
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec![],
+            "2026-05-31T12:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+        plan.kmer_index.insert(
+            "known".to_string(),
+            phraya_core::types::sketch(b"ACGTACGTACGTACGTACGTACGTACGTACGT", 21, 11),
+        );
+
+        let mut sequences = HashMap::new();
+        sequences.insert(
+            "known".to_string(),
+            Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "known".to_string(), None),
+        );
+        sequences.insert(
+            "unknown".to_string(),
+            Sequence::new(b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT".to_vec(), None, "unknown".to_string(), None),
+        );
+
+        plan.populate_dense_sketches(&sequences);
+
+        assert!(plan.dense_kmer_index.contains_key("known"));
+        assert!(!plan.dense_kmer_index.contains_key("unknown"));
+        assert!(!plan.w11_membership.contains_key("unknown"));
+    }
 
     #[test]
     fn round_trip_empty_plan() {

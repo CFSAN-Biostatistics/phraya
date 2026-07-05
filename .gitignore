@@ -3,6 +3,7 @@
 Cargo.lock
 **/*.rs.bk
 *.pdb
+*.profraw
 
 # IDE
 .idea/

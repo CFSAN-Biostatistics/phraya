@@ -25,10 +25,6 @@ fn make_plan_with_hotspots(hotspot_intervals: Vec<(u32, u32)>) -> PhrayaPlan {
     plan
 }
 
-fn make_plan() -> PhrayaPlan {
-    make_plan_with_hotspots(vec![])
-}
-
 /// Test that VariantObservation has kmer_uniqueness field
 /// The field should be accessible via getter and initialized correctly
 #[test]

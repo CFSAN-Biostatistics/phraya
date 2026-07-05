@@ -755,4 +755,10 @@ mod tests {
         let result = merge_phraya_files(&[temp1.path(), temp2.path()]);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn merge_empty_paths_returns_io_error() {
+        let result = merge_phraya_files(&[]);
+        assert!(matches!(result, Err(PhrayaError::IoError(_))));
+    }
 }

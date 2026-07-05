@@ -97,4 +97,20 @@ mod tests {
             Err(UseCaseError::IoError(_))
         ));
     }
+
+    #[test]
+    fn classify_invalid_utf8_body_returns_io_error() {
+        // Header line is valid so the format detects as FASTA, but the sequence
+        // body line contains invalid UTF-8, which BufRead::lines() surfaces as
+        // an io::Error when the iterator advances past the header.
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(b">seq1\n").unwrap();
+        f.write_all(&[b'A', 0xFF, 0xFE, b'\n']).unwrap();
+        f.flush().unwrap();
+
+        assert!(matches!(
+            classify_input(f.path()),
+            Err(UseCaseError::IoError(_))
+        ));
+    }
 }

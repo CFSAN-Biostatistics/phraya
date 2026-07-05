@@ -639,6 +639,19 @@ mod tests {
         let seq = Sequence::new(b"".to_vec(), None, "empty".to_string(), None);
         assert_eq!(seq.len(), 0);
         assert_eq!(seq.avg_quality(), None);
+        assert!(seq.is_empty());
+    }
+
+    #[test]
+    fn sequence_is_empty_false_for_nonempty_bases() {
+        let seq = Sequence::new(b"ACGT".to_vec(), None, "seq5".to_string(), None);
+        assert!(!seq.is_empty());
+    }
+
+    #[test]
+    fn sequence_avg_quality_with_present_but_empty_scores() {
+        let seq = Sequence::new(b"".to_vec(), Some(vec![]), "seq6".to_string(), None);
+        assert_eq!(seq.avg_quality(), Some(0.0));
     }
 
     #[test]
@@ -726,6 +739,122 @@ mod tests {
 
         let total: u32 = all_alleles.values().sum();
         assert_eq!(total, 17);
+    }
+
+    #[test]
+    fn proper_pair_fraction_none_with_no_paired_reads() {
+        let obs = VariantObservation::new(
+            10,
+            b'A',
+            std::collections::HashMap::new(),
+            0.9,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
+        );
+        assert_eq!(obs.proper_pair_fraction(), None);
+        assert_eq!(obs.pair_counts(), (0, 0));
+    }
+
+    #[test]
+    fn proper_pair_fraction_computed_from_pair_counts() {
+        let obs = VariantObservation::new(
+            10,
+            b'A',
+            std::collections::HashMap::new(),
+            0.9,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
+        )
+        .with_pair_counts(10, 8);
+
+        assert_eq!(obs.pair_counts(), (10, 8));
+        assert_eq!(obs.proper_pair_fraction(), Some(0.8));
+    }
+
+    #[test]
+    fn add_pair_counts_accumulates() {
+        let mut obs = VariantObservation::new(
+            10,
+            b'A',
+            std::collections::HashMap::new(),
+            0.9,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
+        )
+        .with_pair_counts(10, 8);
+
+        obs.add_pair_counts(5, 4);
+        assert_eq!(obs.pair_counts(), (15, 12));
+    }
+
+    #[test]
+    fn mean_insert_size_none_with_no_contributing_reads() {
+        let obs = VariantObservation::new(
+            10,
+            b'A',
+            std::collections::HashMap::new(),
+            0.9,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
+        );
+        assert_eq!(obs.mean_insert_size(), None);
+        assert_eq!(obs.insert_stats(), (0, 0));
+    }
+
+    #[test]
+    fn mean_insert_size_computed_from_insert_stats() {
+        let obs = VariantObservation::new(
+            10,
+            b'A',
+            std::collections::HashMap::new(),
+            0.9,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
+        )
+        .with_insert_stats(900, 3);
+
+        assert_eq!(obs.insert_stats(), (900, 3));
+        assert_eq!(obs.mean_insert_size(), Some(300.0));
+    }
+
+    #[test]
+    fn add_insert_stats_accumulates() {
+        let mut obs = VariantObservation::new(
+            10,
+            b'A',
+            std::collections::HashMap::new(),
+            0.9,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample:read".to_string(),
+        )
+        .with_insert_stats(900, 3);
+
+        obs.add_insert_stats(300, 1);
+        assert_eq!(obs.insert_stats(), (1200, 4));
     }
 
     #[test]
@@ -993,6 +1122,21 @@ mod tests {
     }
 
     #[test]
+    fn coverage_at_returns_none_when_runs_undershoot_total_length() {
+        // Defensive fallback: guards against a deserialized CoverageTrack whose
+        // `runs` don't fully cover `total_length` (e.g. malformed/foreign data).
+        // This can't happen via CoverageTrack::new, so build it directly.
+        let track = CoverageTrack {
+            runs: vec![(10, 2)],
+            total_length: 5,
+        };
+
+        assert_eq!(track.coverage_at(0), Some(10));
+        assert_eq!(track.coverage_at(1), Some(10));
+        assert_eq!(track.coverage_at(4), None);
+    }
+
+    #[test]
     fn coverage_track_serialization() {
         let coverage = vec![10, 10, 5, 5];
         let track = CoverageTrack::new(coverage);
@@ -1229,6 +1373,105 @@ mod tests {
                 "multi-map fraction must be in range [0.0, 1.0]"
             );
         }
+    }
+
+    // ===== MinimizerSketch / centroid / uniqueness tests =====
+
+    fn make_sketch(minimizers: Vec<(u64, u32)>) -> MinimizerSketch {
+        MinimizerSketch {
+            minimizers,
+            k: 21,
+            w: 11,
+        }
+    }
+
+    #[test]
+    fn find_shared_minimizers_returns_matches_sorted_by_query_pos() {
+        let a = make_sketch(vec![(1, 10), (2, 5), (3, 20)]);
+        let b = make_sketch(vec![(2, 50), (3, 60), (4, 70)]);
+
+        let shared = a.find_shared_minimizers(&b);
+
+        assert_eq!(shared, vec![(2, 5, 50), (3, 20, 60)]);
+    }
+
+    #[test]
+    fn find_shared_minimizers_duplicate_hash_in_other_yields_multiple_pairs() {
+        let a = make_sketch(vec![(1, 10)]);
+        let b = make_sketch(vec![(1, 30), (1, 40)]);
+
+        let mut shared = a.find_shared_minimizers(&b);
+        shared.sort();
+
+        assert_eq!(shared, vec![(1, 10, 30), (1, 10, 40)]);
+    }
+
+    #[test]
+    fn find_shared_minimizers_no_overlap_is_empty() {
+        let a = make_sketch(vec![(1, 10)]);
+        let b = make_sketch(vec![(2, 20)]);
+
+        assert!(a.find_shared_minimizers(&b).is_empty());
+    }
+
+    #[test]
+    fn minimizer_sketch_is_empty() {
+        let empty = make_sketch(vec![]);
+        let nonempty = make_sketch(vec![(1, 0)]);
+
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        assert!(!nonempty.is_empty());
+        assert_eq!(nonempty.len(), 1);
+    }
+
+    #[test]
+    fn select_centroid_empty_returns_none() {
+        assert_eq!(select_centroid(&[]), None);
+    }
+
+    #[test]
+    fn select_centroid_single_sketch_returns_zero() {
+        let sketches = vec![make_sketch(vec![(1, 0)])];
+        assert_eq!(select_centroid(&sketches), Some(0));
+    }
+
+    #[test]
+    fn select_centroid_picks_most_similar_to_others() {
+        // sketch 0 and 1 are identical; sketch 2 is disjoint from both.
+        // The median-Jaccard centroid should be one of the two identical sketches.
+        let s0 = make_sketch(vec![(1, 0), (2, 1), (3, 2)]);
+        let s1 = make_sketch(vec![(1, 0), (2, 1), (3, 2)]);
+        let s2 = make_sketch(vec![(9, 0), (10, 1)]);
+
+        let centroid = select_centroid(&[s0, s1, s2]).unwrap();
+        assert!(centroid == 0 || centroid == 1);
+    }
+
+    #[test]
+    fn select_centroid_all_empty_sketches_uses_jaccard_identity() {
+        // Two sketches with zero minimizers are treated as fully similar (Jaccard 1.0
+        // for the empty/empty case), so centroid selection still terminates cleanly.
+        let sketches = vec![make_sketch(vec![]), make_sketch(vec![]), make_sketch(vec![])];
+        let centroid = select_centroid(&sketches);
+        assert!(centroid.is_some());
+    }
+
+    #[test]
+    fn compute_kmer_uniqueness_empty_sketches_returns_empty_map() {
+        assert!(compute_kmer_uniqueness(&[]).is_empty());
+    }
+
+    #[test]
+    fn compute_kmer_uniqueness_unique_minimizer_scores_high() {
+        // Minimizer (1, pos=0) appears in only one of two sketches → high uniqueness.
+        // Minimizer (2, pos=1) appears in both → low uniqueness.
+        let s0 = make_sketch(vec![(1, 0), (2, 1)]);
+        let s1 = make_sketch(vec![(2, 1)]);
+
+        let uniqueness = compute_kmer_uniqueness(&[s0, s1]);
+
+        assert!(uniqueness.get(&0).copied().unwrap_or(0.0) > uniqueness.get(&1).copied().unwrap_or(0.0));
     }
 }
 

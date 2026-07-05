@@ -541,13 +541,10 @@ fn traceback_wfa_with_tend(
             break;
         }
 
-        let (wf, wf_ops) = &hist[s as usize];
+        let (_wf, wf_ops) = &hist[s as usize];
         let op = if ki < wf_ops.len() { wf_ops[ki] } else { 0 };
-        #[allow(unused_variables)]
-        let cur_pos = if ki < wf.len() { wf[ki] } else { 0 };
 
         let prev_wf = &hist[s as usize - 1].0;
-        let prev_op = &hist[s as usize - 1].1;
         let (pred_pos, pred_k) = match op {
             1 => {
                 let pk = ki;
@@ -566,8 +563,6 @@ fn traceback_wfa_with_tend(
                 (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k)
             }
         };
-        let _ = prev_op;
-        let _ = cur_pos;
 
         let edit_start = match op {
             1 | 2 => pred_pos + 1,
@@ -631,15 +626,10 @@ fn traceback_wfa(
             break;
         }
 
-        let (wf, wf_ops) = &hist[s as usize];
+        let (_wf, wf_ops) = &hist[s as usize];
         let op = if ki < wf_ops.len() { wf_ops[ki] } else { 0 };
-        #[allow(unused_variables)]
-        let cur_pos = if ki < wf.len() { wf[ki] } else { 0 };
 
-        // How many match steps were taken in extend for this diagonal at this s?
-        // The extend brought us from best_pos to cur_pos; those are all matches.
         let prev_wf = &hist[s as usize - 1].0;
-        let prev_op = &hist[s as usize - 1].1;
         let (pred_pos, pred_k) = match op {
             1 => { // mismatch: pred on same diagonal, s-1
                 let pk = ki;
@@ -658,11 +648,9 @@ fn traceback_wfa(
                 (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k)
             }
         };
-        let _ = prev_op;
 
-        // Matches from extend: positions pred_pos+1..=cur_pos on this diagonal (after the edit op)
-        // But we're going backward: cur_pos is the extended end; the edit op happened at pred_pos.
-        // Matches = cur_pos - (pred_pos + 1) for X/I, or cur_pos - pred_pos for D
+        // Matches from extend: positions pred_pos+1..=qi on this diagonal (after the edit op)
+        // Matches = qi - (pred_pos + 1) for X/I, or qi - pred_pos for D
         let edit_start = match op {
             1 | 2 => pred_pos + 1, // after mismatch/insert, both or q advanced
             3 => pred_pos,         // delete: q didn't advance, t did
@@ -759,13 +747,6 @@ fn traceback_with<F: Fn(usize, usize) -> i32>(get: F, q: &[u8], t: &[u8]) -> (St
     }
     ops.reverse();
     (compact_cigar(&ops), edit_distance)
-}
-
-/// Row-major convenience wrapper over [`traceback_with`] for [`fill_scalar`] (test-only).
-#[cfg(test)]
-fn traceback(dp: &[i32], q: &[u8], t: &[u8]) -> (String, usize) {
-    let stride = t.len() + 1;
-    traceback_with(|i, j| dp[i * stride + j], q, t)
 }
 
 /// Compact CIGAR operations into a standard CIGAR string.
@@ -2511,7 +2492,7 @@ mod tests {
 /// The final test (`wfa_is_faster_than_on2`) cannot be satisfied by an O(n×m) delegate.
 #[cfg(test)]
 mod wfa_algorithm_tests {
-    use super::{fill_scalar, fill_wfa, traceback};
+    use super::{fill_scalar, fill_wfa};
 
     // ── Behavior 1 (tracer bullet): perfect match ─────────────────────────────
 

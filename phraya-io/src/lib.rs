@@ -338,7 +338,7 @@ mod tests {
         let mut parser = SequenceParser::from_path(temp.path()).unwrap();
         let result = parser.next().unwrap();
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(ParseError::InvalidFormat(ref msg)) if msg.contains("missing quality")));
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod tests {
         use flate2::Compression;
         use std::io::Write;
 
-        let mut temp = NamedTempFile::new().unwrap();
+        let temp = NamedTempFile::new().unwrap();
         let mut encoder = GzEncoder::new(temp.as_file(), Compression::default());
         writeln!(encoder, ">seq1 description").unwrap();
         writeln!(encoder, "ACGT").unwrap();
@@ -372,7 +372,7 @@ mod tests {
         use flate2::Compression;
         use std::io::Write;
 
-        let mut temp = NamedTempFile::new().unwrap();
+        let temp = NamedTempFile::new().unwrap();
         let mut encoder = GzEncoder::new(temp.as_file(), Compression::default());
         writeln!(encoder, "@seq1 description").unwrap();
         writeln!(encoder, "ACGT").unwrap();
@@ -392,4 +392,95 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
     }
+
+    #[test]
+    fn first_line_invalid_utf8_returns_io_error() {
+        let mut temp = NamedTempFile::new().unwrap();
+        temp.write_all(&[0xFF, 0xFE, b'\n']).unwrap();
+        temp.flush().unwrap();
+
+        let result = SequenceParser::from_path(temp.path());
+        assert!(matches!(result, Err(ParseError::InvalidFormat(_))));
+    }
+
+    #[test]
+    fn fasta_trailing_header_with_no_body_returns_none() {
+        // A FASTA file ending in a header line with nothing after it: that
+        // dangling header has no bases and no further header follows it, so it
+        // must be dropped (None) rather than emitted as an empty-bases Sequence.
+        let mut temp = NamedTempFile::new().unwrap();
+        writeln!(temp, ">seq1").unwrap();
+        writeln!(temp, "ACGT").unwrap();
+        writeln!(temp, ">seq2").unwrap();
+        temp.flush().unwrap();
+
+        let mut parser = SequenceParser::from_path(temp.path()).unwrap();
+        let seq1 = parser.next().unwrap().unwrap();
+        assert_eq!(seq1.id(), "seq1");
+
+        assert!(parser.next().is_none());
+    }
+
+    #[test]
+    fn fastq_invalid_utf8_sequence_line_returns_io_error() {
+        let mut temp = NamedTempFile::new().unwrap();
+        writeln!(temp, "@seq1").unwrap();
+        temp.write_all(&[0xFF, 0xFE, b'\n']).unwrap();
+        temp.flush().unwrap();
+
+        let mut parser = SequenceParser::from_path(temp.path()).unwrap();
+        let result = parser.next().unwrap();
+        assert!(matches!(result, Err(ParseError::InvalidFormat(_))));
+    }
+
+    #[test]
+    fn fastq_missing_sequence_line_returns_eof_error() {
+        let mut temp = NamedTempFile::new().unwrap();
+        writeln!(temp, "@seq1").unwrap();
+        temp.flush().unwrap();
+
+        let mut parser = SequenceParser::from_path(temp.path()).unwrap();
+        let result = parser.next().unwrap();
+        assert!(matches!(result, Err(ParseError::InvalidFormat(msg)) if msg.contains("missing sequence")));
+    }
+
+    #[test]
+    fn fastq_invalid_utf8_plus_line_returns_io_error() {
+        let mut temp = NamedTempFile::new().unwrap();
+        writeln!(temp, "@seq1").unwrap();
+        writeln!(temp, "ACGT").unwrap();
+        temp.write_all(&[0xFF, 0xFE, b'\n']).unwrap();
+        temp.flush().unwrap();
+
+        let mut parser = SequenceParser::from_path(temp.path()).unwrap();
+        let result = parser.next().unwrap();
+        assert!(matches!(result, Err(ParseError::InvalidFormat(_))));
+    }
+
+    #[test]
+    fn fastq_missing_plus_line_returns_eof_error() {
+        let mut temp = NamedTempFile::new().unwrap();
+        writeln!(temp, "@seq1").unwrap();
+        writeln!(temp, "ACGT").unwrap();
+        temp.flush().unwrap();
+
+        let mut parser = SequenceParser::from_path(temp.path()).unwrap();
+        let result = parser.next().unwrap();
+        assert!(matches!(result, Err(ParseError::InvalidFormat(msg)) if msg.contains("missing plus")));
+    }
+
+    #[test]
+    fn fastq_invalid_utf8_quality_line_returns_io_error() {
+        let mut temp = NamedTempFile::new().unwrap();
+        writeln!(temp, "@seq1").unwrap();
+        writeln!(temp, "ACGT").unwrap();
+        writeln!(temp, "+").unwrap();
+        temp.write_all(&[0xFF, 0xFE, b'\n']).unwrap();
+        temp.flush().unwrap();
+
+        let mut parser = SequenceParser::from_path(temp.path()).unwrap();
+        let result = parser.next().unwrap();
+        assert!(matches!(result, Err(ParseError::InvalidFormat(_))));
+    }
+
 }

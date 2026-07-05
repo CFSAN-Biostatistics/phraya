@@ -358,6 +358,75 @@ mod tests {
         assert!(matches!(result, Err(ParseError::InvalidFormat(_))));
     }
 
+    #[test]
+    fn test_issue_61_parse_bam_paired_read_builds_mate_info() {
+        use noodles_bam as bam;
+        use noodles_sam as sam;
+        use noodles_sam::alignment::record::Flags;
+        use noodles_sam::alignment::io::Write as _;
+        use noodles_sam::alignment::record_buf::{RecordBuf, Sequence};
+
+        let tmp = NamedTempFile::new().unwrap();
+        let bam_path = tmp.path().with_extension("bam");
+
+        let mut writer = bam::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+        let header = sam::Header::builder().build();
+        writer.write_header(&header).unwrap();
+
+        let record = RecordBuf::builder()
+            .set_name("read1")
+            .set_sequence(Sequence::from(b"ACGT".to_vec()))
+            .set_flags(Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::FIRST_SEGMENT)
+            .set_template_length(300)
+            .build();
+        writer.write_alignment_record(&header, &record).unwrap();
+        writer.try_finish().unwrap();
+        drop(writer);
+
+        let parsed = BamCramParser::from_bam_path(&bam_path).unwrap();
+        assert_eq!(parsed.sequences.len(), 1);
+
+        let mate = parsed.mate_info.get("read1").expect("mate info for paired read");
+        assert_eq!(mate.mate_id, "read1/2");
+        assert!(mate.proper_pair);
+        assert_eq!(mate.insert_size, 300);
+        assert!(mate.is_first_in_pair);
+        assert!(!mate.is_second_in_pair);
+        assert!(mate.mate_mapped);
+    }
+
+    #[test]
+    fn test_issue_61_parse_bam_second_in_pair_mate_id_uses_slash_one() {
+        use noodles_bam as bam;
+        use noodles_sam as sam;
+        use noodles_sam::alignment::record::Flags;
+        use noodles_sam::alignment::io::Write as _;
+        use noodles_sam::alignment::record_buf::{RecordBuf, Sequence};
+
+        let tmp = NamedTempFile::new().unwrap();
+        let bam_path = tmp.path().with_extension("bam");
+
+        let mut writer = bam::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+        let header = sam::Header::builder().build();
+        writer.write_header(&header).unwrap();
+
+        let record = RecordBuf::builder()
+            .set_name("read2")
+            .set_sequence(Sequence::from(b"ACGT".to_vec()))
+            .set_flags(Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::LAST_SEGMENT)
+            .set_template_length(-300)
+            .build();
+        writer.write_alignment_record(&header, &record).unwrap();
+        writer.try_finish().unwrap();
+        drop(writer);
+
+        let parsed = BamCramParser::from_bam_path(&bam_path).unwrap();
+        let mate = parsed.mate_info.get("read2").expect("mate info for paired read");
+        assert_eq!(mate.mate_id, "read2/1");
+        assert!(!mate.is_first_in_pair);
+        assert!(mate.is_second_in_pair);
+    }
+
     // ===== CRAM File Tests =====
 
     #[test]
@@ -423,6 +492,73 @@ mod tests {
         temp.flush().unwrap();
         let result = BamCramParser::from_cram_path(temp.path());
         assert!(matches!(result, Err(ParseError::InvalidFormat(_))));
+    }
+
+    #[test]
+    fn test_issue_61_parse_cram_paired_read_builds_mate_info() {
+        use noodles_cram as cram;
+        use noodles_sam as sam;
+        use noodles_sam::alignment::record::Flags;
+
+        let tmp = NamedTempFile::new().unwrap();
+        let cram_path = tmp.path().with_extension("cram");
+
+        let mut writer = cram::io::Writer::new(std::fs::File::create(&cram_path).unwrap());
+        let header = sam::Header::builder().build();
+        writer.write_header(&header).unwrap();
+
+        let record = cram::Record::builder()
+            .set_name("read1")
+            .set_bam_flags(
+                Flags::UNMAPPED | Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::FIRST_SEGMENT,
+            )
+            .set_template_size(300)
+            .build();
+        writer.write_record(&header, record).unwrap();
+        writer.try_finish(&header).unwrap();
+        drop(writer);
+
+        let parsed = BamCramParser::from_cram_path(&cram_path).unwrap();
+        assert_eq!(parsed.sequences.len(), 1);
+
+        let mate = parsed.mate_info.get("read1").expect("mate info for paired read");
+        assert_eq!(mate.mate_id, "read1/2");
+        assert!(mate.proper_pair);
+        assert_eq!(mate.insert_size, 300);
+        assert!(mate.is_first_in_pair);
+        assert!(!mate.is_second_in_pair);
+        assert!(mate.mate_mapped);
+    }
+
+    #[test]
+    fn test_issue_61_parse_cram_second_in_pair_mate_id_uses_slash_one() {
+        use noodles_cram as cram;
+        use noodles_sam as sam;
+        use noodles_sam::alignment::record::Flags;
+
+        let tmp = NamedTempFile::new().unwrap();
+        let cram_path = tmp.path().with_extension("cram");
+
+        let mut writer = cram::io::Writer::new(std::fs::File::create(&cram_path).unwrap());
+        let header = sam::Header::builder().build();
+        writer.write_header(&header).unwrap();
+
+        let record = cram::Record::builder()
+            .set_name("read2")
+            .set_bam_flags(
+                Flags::UNMAPPED | Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::LAST_SEGMENT,
+            )
+            .set_template_size(-300)
+            .build();
+        writer.write_record(&header, record).unwrap();
+        writer.try_finish(&header).unwrap();
+        drop(writer);
+
+        let parsed = BamCramParser::from_cram_path(&cram_path).unwrap();
+        let mate = parsed.mate_info.get("read2").expect("mate info for paired read");
+        assert_eq!(mate.mate_id, "read2/1");
+        assert!(!mate.is_first_in_pair);
+        assert!(mate.is_second_in_pair);
     }
 
     // ===== Format Auto-detection Tests =====

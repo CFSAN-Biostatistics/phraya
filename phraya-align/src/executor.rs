@@ -848,6 +848,59 @@ mod tests {
     }
 
     #[test]
+    fn align_config_convenience_constructors_match_new() {
+        let fast = AlignConfig::fast();
+        let fast_via_new = AlignConfig::new(Strategy::Fast);
+        assert_eq!(fast.strategy, fast_via_new.strategy);
+        assert_eq!(fast.coverage_window_radius, fast_via_new.coverage_window_radius);
+
+        let sensitive = AlignConfig::sensitive();
+        let sensitive_via_new = AlignConfig::new(Strategy::Sensitive);
+        assert_eq!(sensitive.strategy, sensitive_via_new.strategy);
+        assert_eq!(sensitive.coverage_window_radius, sensitive_via_new.coverage_window_radius);
+    }
+
+    #[test]
+    fn wfa_extend_capped_rejects_seed_beyond_sequence_length() {
+        let query = b"ACGT";
+        let target = b"ACGT";
+        let seed = SeedAnchor { query_pos: 10, target_pos: 0 };
+        let result = wfa_extend_capped(query, target, seed, 5);
+        assert!(matches!(result, Err(WfaError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn wfa_extend_capped_handles_fully_consumed_suffixes() {
+        let query = b"ACGT";
+        let target = b"ACGT";
+        let seed = SeedAnchor { query_pos: 4, target_pos: 4 }; // both suffixes empty
+        let result = wfa_extend_capped(query, target, seed, 5).expect("empty suffixes align trivially");
+        assert_eq!(result.edit_distance, 0);
+        assert_eq!(result.cigar, "");
+        assert_eq!(result.query_start, 4);
+        assert_eq!(result.query_end, 4);
+    }
+
+    #[test]
+    fn build_anchors_fast_strategy_falls_back_to_origin_when_no_seeds() {
+        let anchors = build_anchors(Strategy::Fast, &[]);
+        assert_eq!(anchors, vec![SeedAnchor { query_pos: 0, target_pos: 0 }]);
+    }
+
+    #[test]
+    fn build_anchors_fast_strategy_picks_most_voted_target_start() {
+        // target_start = target_pos - query_pos: seeds 1 and 2 both vote for
+        // start=10 (majority); seed 3 votes for start=12.
+        let seeds = vec![
+            crate::Seed { query_pos: 0, target_pos: 10, minimizer: 1 },
+            crate::Seed { query_pos: 5, target_pos: 15, minimizer: 2 },
+            crate::Seed { query_pos: 8, target_pos: 20, minimizer: 3 },
+        ];
+        let anchors = build_anchors(Strategy::Fast, &seeds);
+        assert_eq!(anchors, vec![SeedAnchor { query_pos: 0, target_pos: 10 }]);
+    }
+
+    #[test]
     fn test_align_task_handles_indel() {
         // Query has a deletion relative to target: target has 'T' at position 4 that query lacks.
         // Currently returns None due to equal-length guard — must use WFA instead.
@@ -1320,7 +1373,7 @@ mod tests {
         // This is a sanity check: the result must be from a real alignment,
         // not the abandoned fallback.
         assert!(
-            !result.variants.is_empty() || result.coverage.start >= 0,
+            !result.variants.is_empty() || !result.coverage.counts.is_empty(),
             "result must be from a real alignment (extracted variants or coverage), \
              not from a spurious abandoned fallback"
         );

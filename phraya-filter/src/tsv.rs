@@ -290,12 +290,8 @@ mod tests {
 
     #[test]
     fn issue_84_zero_coverage_when_empty() {
-        let mut alleles = HashMap::new();
-        alleles.insert(b'A', 5);
-
-        let mut obs = create_observation(100, b'A', alleles, 60, "sample:read");
         // Manually create observation with empty local_coverage
-        obs = VariantObservation::new(
+        let obs = VariantObservation::new(
             100,
             b'A',
             [(b'A', 5)].into_iter().collect(),

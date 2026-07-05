@@ -40,8 +40,8 @@ fn issue_146_filter_builder_has_min_kmer_uniqueness() {
         .min_kmer_uniqueness(0.5)
         .build();
 
-    // The filter should be built without panicking
-    assert!(true, "filter builder should accept min_kmer_uniqueness");
+    let obs = create_observation_with_kmer_uniqueness(100, 0.8);
+    assert!(filter.apply(&obs), "filter builder should apply min_kmer_uniqueness");
 }
 
 /// Test that FilterBuilder method is chainable

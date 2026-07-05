@@ -39,10 +39,6 @@ pub fn format_vcf(
 
     // Convert grouped observations to VCF records
     for (position, obs_list) in by_position {
-        if obs_list.is_empty() {
-            continue;
-        }
-
         let primary = &obs_list[0];
         let chrom = reference_name;
         let variant_type = primary.variant_type();
@@ -308,5 +304,49 @@ mod tests {
 
         let record_count = vcf.lines().filter(|l| l.starts_with("chr1")).count();
         assert_eq!(record_count, 2);
+    }
+
+    #[test]
+    fn deletion_variant_encoding() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'A', 10);
+
+        let obs = create_observation(99, b'A', alleles, 60).with_variant_type(VariantType::Deletion);
+        let vcf = format_vcf(std::iter::once(obs), "chr1", 1000);
+
+        let record_line = vcf.lines().find(|l| l.starts_with("chr1\t100\t")).unwrap();
+        let parts: Vec<&str> = record_line.split('\t').collect();
+        // REF carries the deleted base(s), ALT is "."
+        assert_eq!(parts[3], "A");
+        assert_eq!(parts[4], ".");
+    }
+
+    #[test]
+    fn insertion_variant_encoding() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'T', 10);
+
+        let obs = create_observation(99, b'.', alleles, 60).with_variant_type(VariantType::Insertion);
+        let vcf = format_vcf(std::iter::once(obs), "chr1", 1000);
+
+        let record_line = vcf.lines().find(|l| l.starts_with("chr1\t100\t")).unwrap();
+        let parts: Vec<&str> = record_line.split('\t').collect();
+        // REF is ".", ALT carries the inserted base(s)
+        assert_eq!(parts[3], ".");
+        assert_eq!(parts[4], "T");
+    }
+
+    #[test]
+    fn insertion_with_all_dot_alleles_yields_dot_alt() {
+        let mut alleles = HashMap::new();
+        alleles.insert(b'.', 10);
+
+        let obs = create_observation(99, b'.', alleles, 60).with_variant_type(VariantType::Insertion);
+        let vcf = format_vcf(std::iter::once(obs), "chr1", 1000);
+
+        let record_line = vcf.lines().find(|l| l.starts_with("chr1\t100\t")).unwrap();
+        let parts: Vec<&str> = record_line.split('\t').collect();
+        assert_eq!(parts[3], ".");
+        assert_eq!(parts[4], ".");
     }
 }
