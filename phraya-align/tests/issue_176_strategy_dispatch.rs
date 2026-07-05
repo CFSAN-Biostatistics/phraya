@@ -1,11 +1,11 @@
-//! Issue #176: alignment strategy ladder (Exact / Balanced / Fast).
+//! Issue #176: alignment strategy ladder (Sensitive / Balanced / Fast).
 //!
 //! New semantics:
-//!   - Exact:    seeded WFA, all anchors — the canonical reference path.
-//!   - Balanced: Myers fitting (≤500bp) with WFA fallback — exact results, faster engine.
-//!   - Fast:     low-sensitivity (seed subsampling + divergence cutoff).
+//!   - Sensitive: seeded WFA, all anchors (K=∞) — the canonical reference path.
+//!   - Balanced: Myers fitting (≤500bp) with WFA fallback, top 5 anchors (K=5) — exact results, faster engine.
+//!   - Fast:     low-sensitivity (seed subsampling + divergence cutoff, K=1).
 //!
-//! Because Myers and WFA compute identical edit distances, Exact and Balanced must agree
+//! Because Myers and WFA compute identical edit distances, Sensitive and Balanced must agree
 //! on the variants they call for a uniquely-mapping read. This file pins that invariant.
 
 use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
@@ -24,10 +24,10 @@ fn make_plan() -> PhrayaPlan {
     )
 }
 
-/// A 150bp read with two SNPs against a 300bp reference window. Exact (WFA) and Balanced
+/// A 150bp read with two SNPs against a 300bp reference window. Sensitive (WFA) and Balanced
 /// (Myers) must report the same variant positions and reference/alt bases.
 #[test]
-fn issue_176_exact_and_balanced_call_identical_variants() {
+fn issue_176_sensitive_and_balanced_call_identical_variants() {
     // Deterministic pseudo-random reference so seeds actually anchor the read.
     let mut state: u64 = 0xD1B54A32D192ED03;
     let mut next = || {
@@ -49,8 +49,8 @@ fn issue_176_exact_and_balanced_call_identical_variants() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let exact = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Exact))
-        .expect("exact alignment should succeed");
+    let sensitive = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Sensitive))
+        .expect("sensitive alignment should succeed");
     let balanced =
         align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Balanced))
             .expect("balanced alignment should succeed");
@@ -63,14 +63,14 @@ fn issue_176_exact_and_balanced_call_identical_variants() {
             alleles
         })
     };
-    let mut exact_vars: Vec<_> = exact.variants.iter().map(key).collect();
+    let mut sensitive_vars: Vec<_> = sensitive.variants.iter().map(key).collect();
     let mut balanced_vars: Vec<_> = balanced.variants.iter().map(key).collect();
-    exact_vars.sort();
+    sensitive_vars.sort();
     balanced_vars.sort();
 
     assert_eq!(
-        exact_vars, balanced_vars,
-        "Exact (WFA) and Balanced (Myers) must call identical variants for a uniquely-mapping read"
+        sensitive_vars, balanced_vars,
+        "Sensitive (WFA) and Balanced (Myers) must call identical variants for a uniquely-mapping read"
     );
 }
 
@@ -80,7 +80,7 @@ fn issue_176_exact_and_balanced_call_identical_variants() {
 fn issue_176_coverage_window_radius_override_is_orthogonal() {
     // Preset default still applies when not overridden.
     assert_eq!(AlignConfig::new(Strategy::Fast).coverage_window_radius, 150);
-    assert_eq!(AlignConfig::new(Strategy::Exact).coverage_window_radius, 25);
+    assert_eq!(AlignConfig::new(Strategy::Sensitive).coverage_window_radius, 25);
 
     // Override decouples the radius from the strategy.
     let cfg = AlignConfig::new(Strategy::Fast).with_coverage_window_radius(10);
@@ -179,10 +179,10 @@ fn issue_176_fast_matches_balanced_on_clean_read() {
 }
 
 /// Fast's seed subsampling under-reports multi-mapping: against a tandem-duplicated
-/// target, Exact records both equally-good positions while Fast keeps only the best
+/// target, Sensitive records both equally-good positions while Fast keeps only the best
 /// single anchor. This pins the documented sensitivity tradeoff.
 #[test]
-fn issue_176_fast_underreports_multimapping_vs_exact() {
+fn issue_176_fast_underreports_multimapping_vs_sensitive() {
     let unit = random_dna(0x0FAC_E001, 80);
     // Tandem duplication: the read matches at target offset 0 and offset 80 equally well.
     let mut target_bases = unit.clone();
@@ -193,15 +193,15 @@ fn issue_176_fast_underreports_multimapping_vs_exact() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let exact = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Exact))
-        .expect("exact should align");
+    let sensitive = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Sensitive))
+        .expect("sensitive should align");
     let fast = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Fast))
         .expect("fast should align");
 
     assert!(
-        exact.query_positions.len() >= 2,
-        "Exact should record both copies of the tandem duplication (multi-mapping), got {}",
-        exact.query_positions.len()
+        sensitive.query_positions.len() >= 2,
+        "Sensitive should record both copies of the tandem duplication (multi-mapping), got {}",
+        sensitive.query_positions.len()
     );
     assert_eq!(
         fast.query_positions.len(),

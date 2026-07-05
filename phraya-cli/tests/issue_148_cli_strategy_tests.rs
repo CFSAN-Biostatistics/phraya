@@ -43,10 +43,10 @@ fn issue_148_align_accepts_strategy_balanced() {
     assert_eq!(config.coverage_window_radius, 50);
 }
 
-/// issue #148: AlignConfig accepts exact strategy and has correct radius
+/// issue #148: AlignConfig accepts sensitive strategy and has correct radius
 #[test]
-fn issue_148_align_accepts_strategy_exact() {
-    let config = AlignConfig::new(Strategy::Exact);
+fn issue_148_align_accepts_strategy_sensitive() {
+    let config = AlignConfig::new(Strategy::Sensitive);
     assert_eq!(config.coverage_window_radius, 25);
 }
 
@@ -57,8 +57,8 @@ fn issue_148_align_rejects_invalid_strategy() {
     let result: Result<Strategy, String> = match "invalid_strategy" {
         "fast" => Ok(Strategy::Fast),
         "balanced" => Ok(Strategy::Balanced),
-        "exact" => Ok(Strategy::Exact),
-        other => Err(format!("unknown strategy: {other}; expected fast, balanced, or exact")),
+        "sensitive" => Ok(Strategy::Sensitive),
+        other => Err(format!("unknown strategy: {other}; expected fast, balanced, or sensitive")),
     };
     assert!(result.is_err(), "invalid strategy must be rejected");
     let err = result.unwrap_err();

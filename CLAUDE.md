@@ -60,14 +60,14 @@ phraya filter → VCF | TSV | filtered .phraya
 
 Each preset selects an algorithm **and** a default coverage-window radius; `--coverage-window N` (or `AlignConfig::with_coverage_window_radius`) overrides the radius orthogonally.
 
-| Strategy | Algorithm | Anchors | Coverage radius | Role |
-|----------|-----------|---------|-----------------|------|
-| `exact` | seeded WFA, all anchors | all distinct seed target-starts + (0,0) | ±25bp | canonical reference path |
-| `balanced` (default) | Myers fitting ≤500bp, WFA fallback | same as exact | ±50bp | exact results, faster engine |
-| `fast` | Myers/WFA + divergence cutoff | single best-voted target-start (seed subsampling) | ±150bp | low-sensitivity survey |
+| Strategy | K | Algorithm | Anchors | Coverage radius | Role |
+|----------|---|-----------|---------|-----------------|------|
+| `sensitive` | ∞ | seeded WFA, all anchors | all distinct seed target-starts + (0,0) | ±25bp | canonical reference path |
+| `balanced` (default) | 5 | Myers fitting ≤500bp, WFA fallback | top 5 anchors by seed vote count | ±50bp | recall-balanced, faster engine |
+| `fast` | 1 | Myers/WFA + divergence cutoff | single best-voted anchor | ±150bp | low-recall survey |
 
-- Myers ↔ WFA give identical edit distances (proven by differential sweep), so `balanced` is safe as the default; `exact` remains the trusted WFA reference.
-- `fast` trades sensitivity for speed: seed-vote subsampling collapses per-read anchor count to O(1) in repeats (under-reports multi-mapping), and reads whose best alignment exceeds `FAST_MAX_DIVERGENCE` (0.20, hard-coded opinion) are dropped.
+- The anchor cap K controls recall and ambiguity preservation: `sensitive` (K=∞) reports all seeds, `balanced` (K=5) reports top 5 by vote count, `fast` (K=1) reports only the best. Myers and WFA give identical edit distances (proven by differential sweep), so `balanced` is safe as the default; `sensitive` remains the trusted reference.
+- `fast` trades recall for speed: K=1 anchor capping collapses per-read anchor count to O(1) in repeats (under-reports multi-mapping), and reads whose best alignment exceeds `FAST_MAX_DIVERGENCE` (0.20, hard-coded opinion) are dropped.
 - Myers/WFA both run in **fitting** mode (query fully consumed, target end free) above the `n ≤ m + m/2 + 10` threshold; below it both fall back to global, so they stay consistent.
 
 ## File Formats

@@ -5,13 +5,12 @@
 /// window radii in the resulting variant observations.
 ///
 /// Expected API after implementation:
-/// - Strategy enum: fast|balanced|exact
+/// - Strategy enum: fast|balanced|sensitive
 /// - AlignConfig struct carrying strategy and coverage_window_radius
 /// - align_task(&query, &target, &plan, &config) instead of align_task(&query, &target, &plan)
-/// - Window radii: fast: ±150bp, balanced: ±50bp (default), exact: ±25bp
+/// - Window radii: fast: ±150bp, balanced: ±50bp (default), sensitive: ±25bp
 
 use std::collections::HashMap;
-use phraya_align::executor::align_task;
 use phraya_core::types::Sequence;
 use phraya_io::plan::{PhrayaPlan, UseCase};
 
@@ -35,17 +34,17 @@ fn issue_148_align_config_struct_exists() {
     assert_eq!(config.strategy, Strategy::Balanced, "default strategy should be Balanced");
 }
 
-/// Test that Strategy enum has fast, balanced, and exact variants.
+/// Test that Strategy enum has fast, balanced, and sensitive variants.
 #[test]
 fn issue_148_strategy_enum_has_required_variants() {
     use phraya_align::executor::{AlignConfig, Strategy};
     let fast_config = AlignConfig::new(Strategy::Fast);
     let balanced_config = AlignConfig::new(Strategy::Balanced);
-    let exact_config = AlignConfig::new(Strategy::Exact);
+    let sensitive_config = AlignConfig::new(Strategy::Sensitive);
 
     assert_eq!(fast_config.coverage_window_radius, 150);
     assert_eq!(balanced_config.coverage_window_radius, 50);
-    assert_eq!(exact_config.coverage_window_radius, 25);
+    assert_eq!(sensitive_config.coverage_window_radius, 25);
 }
 
 /// Test that align_task signature accepts AlignConfig parameter.
@@ -134,13 +133,13 @@ fn issue_148_balanced_strategy_produces_default_coverage_window() {
     );
 }
 
-/// Test that exact strategy produces ±25bp local coverage window.
+/// Test that sensitive strategy produces ±25bp local coverage window.
 /// Window around position 50 should be:
 /// window_start = max(0, 50 - 25) = 25
 /// window_end = min(200, 50 + 25 + 1) = 76
 /// Expected window length: exactly 51
 #[test]
-fn issue_148_exact_strategy_produces_narrow_coverage_window() {
+fn issue_148_sensitive_strategy_produces_narrow_coverage_window() {
     use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 
     let mut query_bases = vec![b'A'; 100];
@@ -152,16 +151,16 @@ fn issue_148_exact_strategy_produces_narrow_coverage_window() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let config = AlignConfig::new(Strategy::Exact);
+    let config = AlignConfig::new(Strategy::Sensitive);
     let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
     let var = &result.variants[0];
     let lc = var.local_coverage();
 
-    // Exact strategy uses tight window: ±25bp
+    // Sensitive strategy uses tight window: ±25bp
     assert_eq!(
         lc.len(),
         51,
-        "exact strategy window should be ±25bp (length 51), got {}",
+        "sensitive strategy window should be ±25bp (length 51), got {}",
         lc.len()
     );
 }
@@ -187,16 +186,16 @@ fn issue_148_window_radius_boundary_conditions_fast() {
     assert_eq!(end - start, 156, "fast window at pos 5 in 200bp target should be 156 elements");
 }
 
-/// Test boundary condition: AlignConfig.coverage_window_radius is correct for exact strategy.
+/// Test boundary condition: AlignConfig.coverage_window_radius is correct for sensitive strategy.
 #[test]
-fn issue_148_window_radius_boundary_conditions_exact() {
+fn issue_148_window_radius_boundary_conditions_sensitive() {
     use phraya_align::executor::{AlignConfig, Strategy};
 
-    let config = AlignConfig::new(Strategy::Exact);
+    let config = AlignConfig::new(Strategy::Sensitive);
     assert_eq!(
         config.coverage_window_radius,
         25,
-        "exact strategy must use ±25bp radius, got {}",
+        "sensitive strategy must use ±25bp radius, got {}",
         config.coverage_window_radius
     );
     // Window at position 5: [max(0,5-25)=0, min(200, 5+26)] = [0, 31] = 31 elements
@@ -204,7 +203,7 @@ fn issue_148_window_radius_boundary_conditions_exact() {
     let target_len: usize = 200;
     let start = if pos >= config.coverage_window_radius { pos - config.coverage_window_radius } else { 0 };
     let end = (pos + config.coverage_window_radius + 1).min(target_len);
-    assert_eq!(end - start, 31, "exact window at pos 5 in 200bp target should be 31 elements");
+    assert_eq!(end - start, 31, "sensitive window at pos 5 in 200bp target should be 31 elements");
 }
 
 /// Test backward compatibility: default strategy should be balanced.
@@ -236,10 +235,10 @@ fn issue_148_balanced_is_default_and_backward_compatible() {
     );
 }
 
-/// Test that exact strategy narrows the window near a variant cluster.
-/// Multiple SNPs at positions 48-52 with exact strategy should produce ±25bp windows.
+/// Test that sensitive strategy narrows the window near a variant cluster.
+/// Multiple SNPs at positions 48-52 with sensitive strategy should produce ±25bp windows.
 #[test]
-fn issue_148_exact_strategy_narrows_window_near_variant_cluster() {
+fn issue_148_sensitive_strategy_narrows_window_near_variant_cluster() {
     use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 
     let mut query_bases = vec![b'A'; 100];
@@ -255,7 +254,7 @@ fn issue_148_exact_strategy_narrows_window_near_variant_cluster() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let config = AlignConfig::new(Strategy::Exact);
+    let config = AlignConfig::new(Strategy::Sensitive);
     let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     // Alignment places SNPs at target positions index-1. Find the middle variant.
@@ -264,7 +263,7 @@ fn issue_148_exact_strategy_narrows_window_near_variant_cluster() {
     let lc = result.variants[result.variants.len() / 2].local_coverage();
     assert!(
         lc.len() == 51 || lc.len() == 50,
-        "exact strategy cluster window should be ~±25bp (length 50-51), got {}",
+        "sensitive strategy cluster window should be ~±25bp (length 50-51), got {}",
         lc.len()
     );
 }
