@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared phraya runner — called by phraya.sh, phraya-exact.sh, phraya-fast.sh
+# Shared phraya runner — called by phraya.sh, phraya-sensitive.sh, phraya-fast.sh
 # Usage: _phraya_run.sh <strategy> <ref.fasta> <reads_1.fq.gz> <reads_2.fq.gz> <out_dir> <threads>
 set -euo pipefail
 

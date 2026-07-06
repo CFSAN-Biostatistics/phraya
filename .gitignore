@@ -41,3 +41,6 @@ Thumbs.db
 
 # Local Claude Code state (worktrees, skills, agents)
 .claude/
+
+# Local benchmark scratch / results (large binaries, generated per-run)
+results/

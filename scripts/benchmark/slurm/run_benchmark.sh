@@ -98,8 +98,8 @@ fi
 # Array dimensions: targets × aligners × replicates
 # bwa-mem2/minimap2: alignment-only throughput baselines
 # bwa-pipeline: full variant-calling pipeline (fair phraya comparison)
-# phraya/phraya-exact/phraya-fast: three Phraya strategy modes
-ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-exact" "phraya-fast")
+# phraya/phraya-sensitive/phraya-fast: three Phraya strategy modes
+ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-fast")
 NUM_ALIGNERS=${#ALIGNERS[@]}
 ARRAY_SIZE=$((TARGET_COUNT * NUM_ALIGNERS * REPLICATES))
 
