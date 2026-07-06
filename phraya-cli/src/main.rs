@@ -16,6 +16,20 @@ use phraya_io::{
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Timestamp to stamp into `.phraya` / `.phrayaplan` headers.
+///
+/// Normally the current wall-clock time (RFC 3339). If the `PHRAYA_SOURCE_DATE` environment
+/// variable is set, its value is used verbatim instead — this pins the only non-deterministic
+/// field in the output so that two runs on identical inputs produce byte-identical files,
+/// which lets benchmark/regression harnesses use a content hash as an equality gate. Mirrors
+/// the `SOURCE_DATE_EPOCH` convention used by reproducible-build tooling.
+fn output_timestamp() -> String {
+    match std::env::var("PHRAYA_SOURCE_DATE") {
+        Ok(v) if !v.is_empty() => v,
+        _ => chrono::Utc::now().to_rfc3339(),
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "phraya")]
 #[command(about = "Phraya: pairwise sequence aligner for bacterial genomics")]
@@ -321,7 +335,7 @@ fn run_align(
     let phraya_file = phraya::PhrayaFile::new(
         target.len() as u32,
         query_id.to_string(),
-        chrono::Utc::now().to_rfc3339(),
+        output_timestamp(),
         result.variants,
         coverage,
     );
@@ -489,7 +503,7 @@ fn run_align_worker_with_plan(
     let phraya_file = phraya::PhrayaFile::new(
         target.len() as u32,
         format!("worker_{}", worker_id),
-        chrono::Utc::now().to_rfc3339(),
+        output_timestamp(),
         all_variants,
         coverage,
     );
@@ -816,7 +830,7 @@ fn run_plan(
     let mut plan = PhrayaPlan::new(
         use_case,
         input_file_list,
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        output_timestamp(),
         kmer_index,
         kmer_uniqueness,
         task_list,

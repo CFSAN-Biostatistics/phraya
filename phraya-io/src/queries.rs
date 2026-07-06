@@ -28,15 +28,24 @@ pub enum QueriesError {
 pub fn write_queries(path: &std::path::Path, index: &QueryIndex) -> Result<(), QueriesError> {
     const SCORE_THRESHOLD: f64 = 0.95;
 
-    // Filter index to keep only high-confidence alignments
-    let filtered_index: QueryIndex = index
+    // Filter index to keep only high-confidence alignments.
+    //
+    // Serialize through a BTreeMap keyed by query id so output is deterministic run-to-run:
+    // the in-memory QueryIndex is a HashMap whose iteration order is randomized per process,
+    // which would otherwise make the `.phraya.queries` bytes vary between identical runs.
+    // Within each query, positions are sorted by (position, score) for the same reason (the
+    // alignment order depends on anchor-extension order, which we do not want leaking into
+    // the serialized form).
+    let filtered_index: std::collections::BTreeMap<String, Vec<(u32, f64)>> = index
         .iter()
         .map(|(query_id, alignments)| {
-            let filtered_alignments: Vec<(u32, f64)> = alignments
+            let mut filtered_alignments: Vec<(u32, f64)> = alignments
                 .iter()
                 .filter(|(_, score)| *score >= SCORE_THRESHOLD)
                 .copied()
                 .collect();
+            filtered_alignments
+                .sort_by(|a, b| a.0.cmp(&b.0).then(b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)));
             (query_id.clone(), filtered_alignments)
         })
         .collect();
@@ -104,6 +113,40 @@ mod tests {
         assert_eq!(positions.len(), 2);
         assert_eq!(positions[0], (100, 0.98));
         assert_eq!(positions[1], (200, 0.95));
+    }
+
+    /// The serialized `.queries` bytes must not depend on `HashMap` iteration order:
+    /// two indices holding the same logical content, inserted in different orders, must
+    /// serialize to identical bytes. This locks in the deterministic-output guarantee so a
+    /// content hash can be used as a benchmark/regression gate.
+    #[test]
+    fn write_queries_is_order_independent() {
+        // Enough distinct keys that HashMap iteration order almost certainly varies between
+        // the two maps below (and between runs).
+        let keys: Vec<String> = (0..64).map(|i| format!("read_{i}")).collect();
+
+        let mut forward = HashMap::new();
+        for (i, k) in keys.iter().enumerate() {
+            forward.insert(k.clone(), vec![(i as u32 * 7, 0.99f64), (i as u32 * 7 + 3, 0.96f64)]);
+        }
+        let mut reverse = HashMap::new();
+        for (i, k) in keys.iter().enumerate().rev() {
+            // Same key -> same value, inserted in the opposite order and with the positions
+            // provided in the opposite (score) order to also exercise the per-query sort.
+            reverse.insert(k.clone(), vec![(i as u32 * 7 + 3, 0.96f64), (i as u32 * 7, 0.99f64)]);
+        }
+
+        let ta = NamedTempFile::new().unwrap();
+        let tb = NamedTempFile::new().unwrap();
+        write_queries(ta.path(), &forward).unwrap();
+        write_queries(tb.path(), &reverse).unwrap();
+
+        let bytes_a = std::fs::read(ta.path()).unwrap();
+        let bytes_b = std::fs::read(tb.path()).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "identical content in different insertion/position orders must serialize identically"
+        );
     }
 
     #[test]

@@ -1,8 +1,27 @@
 use phraya_core::types::MinimizerSketch;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use thiserror::Error;
+
+/// Serialize a `HashMap` with keys in ascending order for deterministic output.
+///
+/// The plan's per-sequence maps (sketches, uniqueness, membership, mate info) are `HashMap`s
+/// for fast build-time insertion, but `HashMap` iteration order is randomized per process,
+/// which makes the serialized `.phrayaplan` bytes vary between identical `phraya plan` runs.
+/// Routing serialization through a `BTreeMap` gives a canonical, byte-stable order without
+/// changing the in-memory types or any accessor. Paired with a pinned header timestamp
+/// (`PHRAYA_SOURCE_DATE`), this makes plans reproducible so a content hash can gate
+/// regression runs.
+fn serialize_map_sorted<S, K, V>(map: &HashMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    K: serde::Serialize + Ord + Clone,
+    V: serde::Serialize + Clone,
+{
+    let sorted: BTreeMap<K, V> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    sorted.serialize(serializer)
+}
 
 /// PhrayaPlan format version for forward compatibility
 pub const PHRAYAPLAN_VERSION: u32 = 5;
@@ -129,8 +148,10 @@ pub struct PhrayaPlan {
     /// Timestamp (ISO8601)
     pub timestamp: String,
     /// K-mer sketches keyed by sequence ID — for reuse during alignment
+    #[serde(serialize_with = "serialize_map_sorted")]
     pub kmer_index: HashMap<String, MinimizerSketch>,
     /// K-mer uniqueness: position → uniqueness score
+    #[serde(serialize_with = "serialize_map_sorted")]
     pub kmer_uniqueness: HashMap<u32, f64>,
     /// Task list: (query_id, target_id) pairs
     pub task_list: Vec<(u32, u32)>,
@@ -162,15 +183,15 @@ pub struct PhrayaPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insert_size_distribution: Option<InsertSizeDistribution>,
     /// Mate information keyed by sequence ID (for BAM/CRAM inputs)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty", serialize_with = "serialize_map_sorted")]
     pub mate_info: HashMap<String, phraya_core::types::MateInfo>,
     /// Dense minimizer sketches keyed by sequence ID
     /// Empty if sparse_mode is true
-    #[serde(default = "default_dense_kmer_index", skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default = "default_dense_kmer_index", skip_serializing_if = "HashMap::is_empty", serialize_with = "serialize_map_sorted")]
     pub dense_kmer_index: HashMap<String, MinimizerSketch>,
     /// Per-sequence w=11 membership tags for dense sketches
     /// Indicates which dense minimizers are part of the canonical w=11 set
-    #[serde(default = "default_w11_membership", skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default = "default_w11_membership", skip_serializing_if = "HashMap::is_empty", serialize_with = "serialize_map_sorted")]
     pub w11_membership: HashMap<String, Vec<bool>>,
     /// If true, only w=11 sketches are stored (--sparse flag)
     /// If false, both w=11 and dense sketches are stored (default)
