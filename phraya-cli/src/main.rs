@@ -405,6 +405,10 @@ fn run_align_worker_with_plan(
     let mut all_query_positions = HashMap::new();
     let mut coverage_track = vec![0u32; target.len()];
 
+    // Per-read outcome tally (issue #194): where are reads lost — seeding, extension, or the
+    // divergence cutoff? Shared across rayon tasks (atomic), reported in the completion line.
+    let stats = phraya_align::executor::AlignStats::default();
+
     // Align reads in parallel using rayon, processing in fixed-size batches to bound
     // peak memory. Each batch of BATCH_SIZE reads is aligned in parallel; WFA state is
     // freed after each batch. Total in-flight memory ≈ BATCH_SIZE × read_size.
@@ -454,7 +458,7 @@ fn run_align_worker_with_plan(
             let batch_results: Vec<_> = batch
                 .par_iter()
                 .filter_map(|seq| {
-                    align_read(&target_ctx, seq, plan_ref, &config)
+                    align_read(&target_ctx, seq, plan_ref, &config, Some(&stats))
                         .map(|r| (seq.id().to_string(), r))
                 })
                 .collect();
@@ -474,7 +478,7 @@ fn run_align_worker_with_plan(
             let batch_results: Vec<_> = batch?
                 .par_iter()
                 .filter_map(|seq| {
-                    align_read(&target_ctx, seq, plan_ref, &config)
+                    align_read(&target_ctx, seq, plan_ref, &config, Some(&stats))
                         .map(|r| (seq.id().to_string(), r))
                 })
                 .collect();
@@ -504,6 +508,7 @@ fn run_align_worker_with_plan(
     queries::write_queries(std::path::Path::new(&queries_path), &index)?;
 
     eprintln!("Worker {} complete: {} observations written to {}", worker_id, phraya_file.observations.len(), output_path);
+    eprintln!("Worker {} read outcomes: {}", worker_id, stats.summary());
     Ok(())
 }
 

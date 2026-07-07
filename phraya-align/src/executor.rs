@@ -9,6 +9,7 @@ use phraya_core::types::{
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Alignment strategy affecting coverage window size and anchor selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +156,70 @@ const FAST_MAX_DIVERGENCE: f64 = 0.20;
 /// must occur more than this many times in the target before it can be masked, so clean and
 /// moderately-repetitive genomes mask nothing (the cap only bites on pathological hyper-repeats).
 const SEED_OCC_CAP_FLOOR: usize = 256;
+
+/// Normalized-score floor at which a read's primary placement is reportable in `.phraya.queries`
+/// (mirrors the 0.95 filter in `phraya_io::queries::write_queries`). Used only to classify a read
+/// as placed vs below-threshold for [`AlignStats`]; the actual filtering happens at write time.
+const SCORE_REPORT_THRESHOLD: f64 = 0.95;
+
+/// Per-read outcome classification, for localizing where reads are lost (issue #194 AC #1).
+enum Outcome {
+    /// Reportable primary (normalized score ≥ [`SCORE_REPORT_THRESHOLD`]).
+    Placed,
+    /// No shared minimizer seed in either orientation — only the `(0,0)` fallback anchor.
+    NoSeed,
+    /// Seeded and extended, but the best primary scored below the report threshold.
+    BelowThreshold,
+    /// Dropped by the Fast-strategy divergence cutoff.
+    FastCutoff,
+    /// No anchor extended at all (extension errored on every anchor, both orientations).
+    NoAlignment,
+}
+
+/// Thread-safe tally of read outcomes across an alignment run.
+///
+/// Answers "where are reads being lost?" — the instrumentation for issue #194: is the loss in
+/// seeding (`no_seed`), in extension/divergence (`below_threshold`), in the Fast cutoff, or in
+/// extension failure (`no_alignment`)? Atomic counters so the parallel worker can share one
+/// across rayon tasks. Pass `Some(&stats)` to [`align_read`] to accumulate; `None` disables it.
+#[derive(Debug, Default)]
+pub struct AlignStats {
+    /// Reads placed with a reportable primary (score ≥ 0.95).
+    pub placed: AtomicU64,
+    /// Reads with no shared minimizer seed in either orientation.
+    pub no_seed: AtomicU64,
+    /// Reads that seeded and extended but whose best primary scored < 0.95.
+    pub below_threshold: AtomicU64,
+    /// Reads dropped by the Fast-strategy divergence cutoff.
+    pub fast_cutoff: AtomicU64,
+    /// Reads for which no anchor extended at all.
+    pub no_alignment: AtomicU64,
+}
+
+impl AlignStats {
+    fn record(&self, outcome: Outcome) {
+        let counter = match outcome {
+            Outcome::Placed => &self.placed,
+            Outcome::NoSeed => &self.no_seed,
+            Outcome::BelowThreshold => &self.below_threshold,
+            Outcome::FastCutoff => &self.fast_cutoff,
+            Outcome::NoAlignment => &self.no_alignment,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One-line summary: `placed=.. no_seed=.. below_threshold=.. fast_cutoff=.. no_alignment=..`.
+    pub fn summary(&self) -> String {
+        format!(
+            "placed={} no_seed={} below_threshold={} fast_cutoff={} no_alignment={}",
+            self.placed.load(Ordering::Relaxed),
+            self.no_seed.load(Ordering::Relaxed),
+            self.below_threshold.load(Ordering::Relaxed),
+            self.fast_cutoff.load(Ordering::Relaxed),
+            self.no_alignment.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// Build the list of WFA/Myers anchors (each `query_pos = 0`) from minimizer seeds,
 /// according to the strategy.
@@ -463,7 +528,7 @@ pub fn align_task_with_config(
     config: &AlignConfig,
 ) -> Option<AlignmentResult> {
     let ctx = TargetContext::build(target, plan);
-    align_read(&ctx, query, plan, config)
+    align_read(&ctx, query, plan, config, None)
 }
 
 /// Seed, anchor, and extend `query_bytes` (already in the orientation to align) against the
@@ -474,14 +539,18 @@ pub fn align_task_with_config(
 /// `query_bytes` in this same orientation (canonical minimizers are strand-invariant, but the
 /// seed *query positions* are orientation-specific, so a forward sketch cannot serve reverse
 /// bytes).
+///
+/// Returns `(n_seeds, scored)` — `n_seeds` (shared minimizers found) lets the caller
+/// distinguish "no seed" from "seeded but unplaceable" for [`AlignStats`].
 fn align_oriented(
     strategy: Strategy,
     ctx: &TargetContext<'_>,
     query_bytes: &[u8],
     query_sketch: &MinimizerSketch,
-) -> Option<crate::ScoredAlignments> {
+) -> (usize, Option<crate::ScoredAlignments>) {
     let target = ctx.target;
     let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
+    let n_seeds = seeds.len();
 
     // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
     // Seeds mid-query would miss variants before the seed; aligning from query position 0
@@ -507,20 +576,29 @@ fn align_oriented(
     }
 
     if alignments.is_empty() {
-        return None;
+        return (n_seeds, None);
     }
 
-    Some(score_alignments(&alignments, query_bytes.len()))
+    (n_seeds, Some(score_alignments(&alignments, query_bytes.len())))
 }
 
 /// Align a single query against the target described by `ctx`.
+///
+/// Pass `Some(&stats)` to tally the read's outcome (placed / no-seed / below-threshold /
+/// fast-cutoff / no-alignment) for issue #194 diagnostics; `None` skips accounting.
 pub fn align_read(
     ctx: &TargetContext<'_>,
     query: &Sequence,
     plan: &PhrayaPlan,
     config: &AlignConfig,
+    stats: Option<&AlignStats>,
 ) -> Option<AlignmentResult> {
     let target = ctx.target;
+    let record = |outcome: Outcome| {
+        if let Some(s) = stats {
+            s.record(outcome);
+        }
+    };
 
     // Try both strands. A reverse-strand read's stored bytes are the reverse complement of
     // the reference region it came from; seeding finds anchors either way (canonical
@@ -539,12 +617,16 @@ pub fn align_read(
         .get_sketch(query.id())
         .cloned()
         .unwrap_or_else(|| sketch_sequence_default(query));
-    let fwd = align_oriented(config.strategy, ctx, query.bases(), &fwd_sketch);
+    let (fwd_seeds, fwd) = align_oriented(config.strategy, ctx, query.bases(), &fwd_sketch);
 
     let rc_bases = reverse_complement(query.bases());
     let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
     let rev_sketch = sketch_sequence_default(&rc_seq);
-    let rev = align_oriented(config.strategy, ctx, &rc_bases, &rev_sketch);
+    let (rev_seeds, rev) = align_oriented(config.strategy, ctx, &rc_bases, &rev_sketch);
+
+    // Whether the read shared any minimizer with the target (in either orientation). Distinguishes
+    // a seeding loss from an extension/divergence loss when classifying an unplaced read.
+    let had_seeds = fwd_seeds > 0 || rev_seeds > 0;
 
     // Keep the better-scoring orientation; ties resolve to forward deterministically.
     let (scored, query_bytes, strand): (crate::ScoredAlignments, &[u8], Strand) = match (fwd, rev)
@@ -554,7 +636,10 @@ pub fn align_read(
         }
         (Some(f), _) => (f, query.bases(), Strand::Forward),
         (None, Some(r)) => (r, &rc_bases[..], Strand::Reverse),
-        (None, None) => return None,
+        (None, None) => {
+            record(Outcome::NoAlignment);
+            return None;
+        }
     };
 
     let primary_score = 1.0 - (scored.primary.edit_distance as f64 / query.len().max(1) as f64);
@@ -564,9 +649,20 @@ pub fn align_read(
     if config.strategy == Strategy::Fast {
         let divergence = scored.primary.edit_distance as f64 / query.len().max(1) as f64;
         if divergence > FAST_MAX_DIVERGENCE {
+            record(Outcome::FastCutoff);
             return None;
         }
     }
+
+    // Classify the surviving read: reportable placement, or seeded-but-below-threshold, or a
+    // read that only reached extension via the (0,0) fallback (no shared seed).
+    record(if primary_score >= SCORE_REPORT_THRESHOLD {
+        Outcome::Placed
+    } else if had_seeds {
+        Outcome::BelowThreshold
+    } else {
+        Outcome::NoSeed
+    });
 
     // Raw (un-quantized) coverage over just the aligned span, for local_coverage
     // lookups in variants; quantized separately for the stored coverage track.
@@ -1107,6 +1203,43 @@ mod tests {
             "allele must be the forward-strand read base, not its complement"
         );
         assert_eq!(var.strand(), Strand::Reverse, "variant must record Strand::Reverse");
+    }
+
+    #[test]
+    fn align_stats_classify_placed_below_threshold_and_no_seed() {
+        use std::sync::atomic::Ordering;
+
+        let target = Sequence::new(diverse_dna(300, 3), None, "ref".to_string(), None);
+        let plan = make_plan();
+        let ctx = TargetContext::build(&target, &plan);
+        let cfg = AlignConfig::default();
+        let stats = AlignStats::default();
+
+        // Perfect substring → placed.
+        let good = Sequence::new(target.bases()[50..150].to_vec(), None, "good".to_string(), None);
+        align_read(&ctx, &good, &plan, &cfg, Some(&stats));
+
+        // A 150bp read whose divergence is clustered: long exact flanks still yield shared
+        // minimizers (so it seeds), but ~15 clustered mismatches push the primary below 0.95
+        // (15/150 = 0.10 divergence) → below_threshold, not no_seed.
+        let mut div = target.bases()[50..200].to_vec();
+        for i in 67..82 {
+            div[i] = if div[i] == b'A' { b'C' } else { b'A' };
+        }
+        let diverged = Sequence::new(div, None, "div".to_string(), None);
+        align_read(&ctx, &diverged, &plan, &cfg, Some(&stats));
+
+        // Unrelated random read → no shared minimizer → no_seed.
+        let junk = Sequence::new(diverse_dna(120, 987_654), None, "junk".to_string(), None);
+        align_read(&ctx, &junk, &plan, &cfg, Some(&stats));
+
+        assert_eq!(stats.placed.load(Ordering::Relaxed), 1, "perfect read is placed");
+        assert_eq!(stats.no_seed.load(Ordering::Relaxed), 1, "unrelated read is no_seed");
+        assert_eq!(
+            stats.below_threshold.load(Ordering::Relaxed),
+            1,
+            "heavily-diverged read seeds but falls below 0.95"
+        );
     }
 
     #[test]
