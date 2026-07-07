@@ -5,9 +5,12 @@ pub mod wfa_simd_dispatch;
 
 pub use executor::{
     align_read, align_task_with_config, extend_alternates_bounded, score_bound_max_s,
-    wfa_extend_capped, AlignConfig, Strategy, TargetContext, WindowedCoverage,
+    wfa_extend_capped, AlignConfig, AlignStats, Strategy, TargetContext, WindowedCoverage,
 };
-pub use seeding::{build_minimizer_index, find_seeds, find_seeds_indexed, MinimizerIndex, Seed};
+pub use seeding::{
+    build_minimizer_index, find_seeds, find_seeds_indexed, find_seeds_indexed_capped,
+    seed_occurrence_cap, MinimizerIndex, Seed,
+};
 
 #[cfg(test)]
 mod local_coverage_tests;
