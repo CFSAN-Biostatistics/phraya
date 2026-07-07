@@ -1,4 +1,6 @@
-use crate::seeding::{build_minimizer_index, find_seeds_indexed, MinimizerIndex};
+use crate::seeding::{
+    build_minimizer_index, find_seeds_indexed_capped, seed_occurrence_cap, MinimizerIndex,
+};
 use crate::{myers_extend, score_alignments, wfa_extend, wfa_simd, Alignment, SeedAnchor, WfaError, WfaResult};
 use phraya_core::types::{
     reverse_complement, sketch_sequence_default, MinimizerSketch, Sequence, Strand,
@@ -148,6 +150,11 @@ const MYERS_MAX_QUERY_LEN: usize = 500;
 /// fraction of mismatches+indels per base are dropped — the low-sensitivity tradeoff
 /// that lets Fast skip hard/divergent reads for speed.
 const FAST_MAX_DIVERGENCE: f64 = 0.20;
+
+/// Floor for the repeat-masking seed occurrence cap ([`seed_occurrence_cap`]). A minimizer
+/// must occur more than this many times in the target before it can be masked, so clean and
+/// moderately-repetitive genomes mask nothing (the cap only bites on pathological hyper-repeats).
+const SEED_OCC_CAP_FLOOR: usize = 256;
 
 /// Build the list of WFA/Myers anchors (each `query_pos = 0`) from minimizer seeds,
 /// according to the strategy.
@@ -408,6 +415,10 @@ pub struct TargetContext<'a> {
     target: &'a Sequence,
     minimizer_index: MinimizerIndex,
     repeat_regions: Vec<phraya_core::RepeatRegion>,
+    /// Repeat-masking cap: minimizers occurring more than this many times in the target
+    /// are skipped during seeding. Derived once from the index's occurrence distribution
+    /// (issue #194 — bounds the seed explosion on repeat-dense / low-complexity genomes).
+    seed_max_occ: usize,
 }
 
 impl<'a> TargetContext<'a> {
@@ -419,6 +430,10 @@ impl<'a> TargetContext<'a> {
             .cloned()
             .unwrap_or_else(|| sketch_sequence_default(target));
         let minimizer_index = build_minimizer_index(&sketch);
+        // Repeat-masking cap from the index's own occurrence distribution. Floor 256 keeps
+        // it a no-op on clean/moderately-repetitive genomes (nothing occurs that often), so
+        // only pathological hyper-repeats (homopolymer/microsatellite k-mers) are trimmed.
+        let seed_max_occ = seed_occurrence_cap(&minimizer_index, SEED_OCC_CAP_FLOOR);
         let target_str = String::from_utf8_lossy(target.bases());
         let repeat_regions =
             detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
@@ -426,6 +441,7 @@ impl<'a> TargetContext<'a> {
             target,
             minimizer_index,
             repeat_regions,
+            seed_max_occ,
         }
     }
 
@@ -465,7 +481,7 @@ fn align_oriented(
     query_sketch: &MinimizerSketch,
 ) -> Option<crate::ScoredAlignments> {
     let target = ctx.target;
-    let seeds = find_seeds_indexed(query_sketch, &ctx.minimizer_index);
+    let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
 
     // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
     // Seeds mid-query would miss variants before the seed; aligning from query position 0
