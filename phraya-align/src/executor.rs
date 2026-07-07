@@ -1,6 +1,9 @@
 use crate::seeding::{build_minimizer_index, find_seeds_indexed, MinimizerIndex};
 use crate::{myers_extend, score_alignments, wfa_extend, wfa_simd, Alignment, SeedAnchor, WfaError, WfaResult};
-use phraya_core::types::{sketch_sequence_default, Sequence, VariantObservation};
+use phraya_core::types::{
+    reverse_complement, sketch_sequence_default, MinimizerSketch, Sequence, Strand,
+    VariantObservation,
+};
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
 use std::collections::{HashMap, HashSet};
@@ -447,27 +450,28 @@ pub fn align_task_with_config(
     align_read(&ctx, query, plan, config)
 }
 
-/// Align a single query against the target described by `ctx`.
-pub fn align_read(
+/// Seed, anchor, and extend `query_bytes` (already in the orientation to align) against the
+/// target, returning the scored alignments — or `None` if nothing extended.
+///
+/// Factored out of [`align_read`] so both the forward bytes and the reverse complement can be
+/// run through the identical pipeline and compared. `query_sketch` must be the sketch of
+/// `query_bytes` in this same orientation (canonical minimizers are strand-invariant, but the
+/// seed *query positions* are orientation-specific, so a forward sketch cannot serve reverse
+/// bytes).
+fn align_oriented(
+    strategy: Strategy,
     ctx: &TargetContext<'_>,
-    query: &Sequence,
-    plan: &PhrayaPlan,
-    config: &AlignConfig,
-) -> Option<AlignmentResult> {
+    query_bytes: &[u8],
+    query_sketch: &MinimizerSketch,
+) -> Option<crate::ScoredAlignments> {
     let target = ctx.target;
-
-    // Query sketch is per-read; reuse the plan's copy if present, else recompute.
-    let query_sketch = plan
-        .get_sketch(query.id())
-        .cloned()
-        .unwrap_or_else(|| sketch_sequence_default(query));
-    let seeds = find_seeds_indexed(&query_sketch, &ctx.minimizer_index);
+    let seeds = find_seeds_indexed(query_sketch, &ctx.minimizer_index);
 
     // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
     // Seeds mid-query would miss variants before the seed; aligning from query position 0
     // ensures the full query is aligned. Anchor selection is strategy-dependent.
     let mut alignments = Vec::new();
-    let anchors = build_anchors(config.strategy, &seeds);
+    let anchors = build_anchors(strategy, &seeds);
 
     for anchor in anchors {
         // Window the target to ~2× query length from the anchor position.
@@ -477,10 +481,10 @@ pub fn align_read(
         // edit distance ~|target|-|query| (length gap) rather than ~2% divergence,
         // turning O(s) into O(target²). The 2× margin accommodates indels while
         // keeping the aligned window tractable.
-        let margin = query.len() * 2;
+        let margin = query_bytes.len() * 2;
         let window_end = (anchor.target_pos + margin).min(target.bases().len());
         let target_window = &target.bases()[..window_end];
-        match extend_anchor(config.strategy, query.bases(), target_window, anchor) {
+        match extend_anchor(strategy, query_bytes, target_window, anchor) {
             Ok(aln) => alignments.push(aln),
             Err(e) => log::warn!("alignment failed for anchor {:?}: {:?}", anchor, e),
         }
@@ -490,7 +494,53 @@ pub fn align_read(
         return None;
     }
 
-    let scored = score_alignments(&alignments, query.len());
+    Some(score_alignments(&alignments, query_bytes.len()))
+}
+
+/// Align a single query against the target described by `ctx`.
+pub fn align_read(
+    ctx: &TargetContext<'_>,
+    query: &Sequence,
+    plan: &PhrayaPlan,
+    config: &AlignConfig,
+) -> Option<AlignmentResult> {
+    let target = ctx.target;
+
+    // Try both strands. A reverse-strand read's stored bytes are the reverse complement of
+    // the reference region it came from; seeding finds anchors either way (canonical
+    // minimizers are strand-invariant), but extension is strand-naïve, so the forward bytes
+    // of a reverse read align at ~read-length edit distance and get dropped. Aligning the
+    // reverse complement too — and keeping whichever orientation scores better — recovers
+    // those reads (issue #192). Extension against the *forward* target means the winning
+    // CIGAR and alleles are always in reference-forward orientation regardless of strand.
+    //
+    // Forward orientation reuses the plan's cached sketch if present; the reverse orientation
+    // must re-sketch the RC bytes (a forward sketch's seed query positions are in the wrong
+    // orientation). A future optimization could skip the reverse extension when the forward
+    // alignment is already near-perfect, or derive reverse anchors from the forward seed
+    // geometry to avoid the second sketch.
+    let fwd_sketch = plan
+        .get_sketch(query.id())
+        .cloned()
+        .unwrap_or_else(|| sketch_sequence_default(query));
+    let fwd = align_oriented(config.strategy, ctx, query.bases(), &fwd_sketch);
+
+    let rc_bases = reverse_complement(query.bases());
+    let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
+    let rev_sketch = sketch_sequence_default(&rc_seq);
+    let rev = align_oriented(config.strategy, ctx, &rc_bases, &rev_sketch);
+
+    // Keep the better-scoring orientation; ties resolve to forward deterministically.
+    let (scored, query_bytes, strand): (crate::ScoredAlignments, &[u8], Strand) = match (fwd, rev)
+    {
+        (Some(f), Some(r)) if r.primary.edit_distance < f.primary.edit_distance => {
+            (r, &rc_bases[..], Strand::Reverse)
+        }
+        (Some(f), _) => (f, query.bases(), Strand::Forward),
+        (None, Some(r)) => (r, &rc_bases[..], Strand::Reverse),
+        (None, None) => return None,
+    };
+
     let primary_score = 1.0 - (scored.primary.edit_distance as f64 / query.len().max(1) as f64);
 
     // Fast strategy: drop reads whose best alignment exceeds the divergence cutoff. This
@@ -520,7 +570,7 @@ pub fn align_read(
     let variants = extract_variants_from_cigar(
         &scored.primary.cigar,
         scored.primary.target_start,
-        query.bases(),
+        query_bytes,
         target.bases(),
         scored.primary.edit_distance as u32,
         query.id().to_string(),
@@ -533,6 +583,7 @@ pub fn align_read(
         &plan.hotspot_intervals,
         mate_info,
         insert_stats,
+        strand,
     );
 
     // Quantize in place over the window; positions outside the window quantize to 0
@@ -577,6 +628,7 @@ fn extract_variants_from_cigar(
     hotspot_intervals: &[(u32, u32)],
     mate_info: Option<&phraya_core::types::MateInfo>,
     insert_stats: Option<(i64, u32)>,
+    strand: Strand,
 ) -> Vec<VariantObservation> {
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
@@ -631,7 +683,8 @@ fn extract_variants_from_cigar(
                             provenance.clone(),
                         ).with_tandem_repeat(in_repeat)
                          .with_kmer_uniqueness(kmer_uniqueness)
-                         .with_coverage_window_offset(variant_offset);
+                         .with_coverage_window_offset(variant_offset)
+                         .with_strand(strand);
 
                         if let Some(mi) = mate_info {
                             obs = obs
@@ -696,7 +749,8 @@ fn extract_variants_from_cigar(
                     .with_tandem_repeat(in_repeat)
                     .with_variant_type(phraya_core::types::VariantType::Deletion)
                     .with_kmer_uniqueness(kmer_uniqueness)
-                    .with_coverage_window_offset(variant_offset);
+                    .with_coverage_window_offset(variant_offset)
+                    .with_strand(strand);
 
                     if let Some(mi) = mate_info {
                         obs = obs
@@ -754,7 +808,8 @@ fn extract_variants_from_cigar(
                     .with_tandem_repeat(in_repeat)
                     .with_variant_type(phraya_core::types::VariantType::Insertion)
                     .with_kmer_uniqueness(kmer_uniqueness)
-                    .with_coverage_window_offset(variant_offset);
+                    .with_coverage_window_offset(variant_offset)
+                    .with_strand(strand);
 
                     if let Some(mi) = mate_info {
                         obs = obs
@@ -976,6 +1031,89 @@ mod tests {
             cigar.len() > 2,
             "CIGAR should represent the full alignment, got: {cigar}"
         );
+    }
+
+    /// Deterministic diverse DNA (LCG) — avoids the minimizer-seed explosion of repetitive
+    /// sequence and guarantees enough distinct k-mers to seed a 100bp read.
+    fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed;
+        (0..len)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                b"ACGT"[((x >> 33) & 3) as usize]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reverse_strand_read_places_with_forward_strand_alleles() {
+        // Issue #192: a read originating from the reverse strand is stored as the reverse
+        // complement of its reference region. It must place at the correct forward coordinate,
+        // report reference-strand alleles (not the RC), and be marked Strand::Reverse.
+        use phraya_core::types::{reverse_complement, Strand};
+
+        let target_bytes = diverse_dna(300, 7);
+        // Forward-strand mutant of region [100,200): one SNP at forward offset 50 (abs pos 150).
+        let mut region = target_bytes[100..200].to_vec();
+        let orig = region[50];
+        let snp = if orig == b'A' { b'C' } else { b'A' };
+        region[50] = snp;
+        // The reverse-strand read as it would be stored: RC of the forward mutant region.
+        let read_bytes = reverse_complement(&region);
+
+        let target = Sequence::new(target_bytes, None, "ref".to_string(), None);
+        let query = Sequence::new(read_bytes, None, "rev_read".to_string(), None);
+        let plan = make_plan();
+
+        let result = align_task(&query, &target, &plan)
+            .expect("reverse-strand read must align, not be dropped");
+
+        // Places at the correct forward coordinate (~100).
+        let (pos, score) = result.query_positions[0];
+        assert!(
+            (pos as i64 - 100).abs() <= 1,
+            "reverse read should place near forward coord 100, got {pos}"
+        );
+        assert!(score > 0.9, "reverse read should place with high score, got {score}");
+
+        // The single SNP is reported at forward position 150, with the reference-strand
+        // ref base and the forward-strand allele — NOT their reverse complements.
+        let var = result
+            .variants
+            .iter()
+            .find(|v| v.position() == 150)
+            .expect("SNP must be called at forward position 150");
+        assert_eq!(var.ref_base(), orig, "ref base must be the forward-strand reference base");
+        assert!(
+            var.all_alleles().contains_key(&snp),
+            "allele must be the forward-strand read base, not its complement"
+        );
+        assert_eq!(var.strand(), Strand::Reverse, "variant must record Strand::Reverse");
+    }
+
+    #[test]
+    fn forward_strand_read_is_marked_forward() {
+        // A forward-strand read with a SNP must still place forward and be marked Forward.
+        use phraya_core::types::Strand;
+
+        let target_bytes = diverse_dna(300, 11);
+        let mut read_bytes = target_bytes[100..200].to_vec();
+        let orig = read_bytes[50];
+        read_bytes[50] = if orig == b'A' { b'C' } else { b'A' };
+
+        let target = Sequence::new(target_bytes, None, "ref".to_string(), None);
+        let query = Sequence::new(read_bytes, None, "fwd_read".to_string(), None);
+        let plan = make_plan();
+
+        let result = align_task(&query, &target, &plan).expect("forward read must align");
+        let var = result
+            .variants
+            .iter()
+            .find(|v| v.position() == 150)
+            .expect("SNP at forward position 150");
+        assert_eq!(var.strand(), Strand::Forward, "forward read must record Strand::Forward");
     }
 
     #[test]

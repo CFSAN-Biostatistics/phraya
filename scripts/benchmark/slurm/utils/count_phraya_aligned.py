@@ -25,7 +25,11 @@ def main():
             with dctx.stream_reader(f) as reader:
                 raw = reader.read()
         data = msgpack.unpackb(raw, raw=False)
-        print(len(data))
+        # Count reads with at least one recorded placement, not the raw key count.
+        # phraya may write a key with an empty position list for a read whose only
+        # alignments were sub-threshold; those are not placements. Counting keys
+        # inflated n_aligned to 100% (issue #193).
+        print(sum(1 for v in data.values() if v))
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)

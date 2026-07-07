@@ -25,6 +25,53 @@ impl Default for VariantType {
     }
 }
 
+/// Strand on which a read aligned to the reference.
+///
+/// `Forward` means the read's stored bytes aligned directly; `Reverse` means the read's
+/// reverse complement aligned (the read originated from the opposite strand). Recorded on
+/// each [`VariantObservation`] so downstream strand-aware analyses interpret the CIGAR and
+/// alleles — which are always emitted in reference-forward orientation — correctly.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Strand {
+    /// Read aligned in its stored orientation.
+    #[serde(rename = "+")]
+    Forward,
+    /// Read's reverse complement aligned.
+    #[serde(rename = "-")]
+    Reverse,
+}
+
+impl Default for Strand {
+    fn default() -> Self {
+        Strand::Forward
+    }
+}
+
+/// Reverse-complement a DNA byte string.
+///
+/// Complements A↔T, C↔G (both cases), passes N and any other byte through unchanged, and
+/// reverses the order. `reverse_complement(reverse_complement(x)) == x` for well-formed DNA.
+/// Used to align reads originating from the reverse strand: a reverse-strand read's stored
+/// bytes are the reverse complement of the reference region, so aligning its RC recovers the
+/// reference-forward orientation (see `phraya_align::executor::align_read`).
+pub fn reverse_complement(bases: &[u8]) -> Vec<u8> {
+    bases
+        .iter()
+        .rev()
+        .map(|&b| match b {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            b'a' => b't',
+            b't' => b'a',
+            b'c' => b'g',
+            b'g' => b'c',
+            other => other,
+        })
+        .collect()
+}
+
 /// Sequence type with DNA bytes, optional per-base quality scores (Phred), metadata (id, description).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Sequence {
@@ -163,6 +210,10 @@ pub struct VariantObservation {
     /// K-mer uniqueness score at this position (0.0-1.0)
     #[serde(default = "default_kmer_uniqueness")]
     kmer_uniqueness: f64,
+    /// Strand the supporting read aligned on. Alleles/CIGAR are always reference-forward;
+    /// this records whether the read's forward bytes or its reverse complement produced them.
+    #[serde(default)]
+    strand: Strand,
     /// Number of reads at this position that are paired (SAM flag 0x1)
     #[serde(default)]
     total_paired_count: u32,
@@ -216,6 +267,7 @@ impl VariantObservation {
             in_tandem_repeat: false,
             variant_type: VariantType::default(),
             kmer_uniqueness: default_kmer_uniqueness(),
+            strand: Strand::default(),
             coverage_window_variant_offset: 0,
             mate_info: None,
             total_paired_count: 0,
@@ -256,6 +308,17 @@ impl VariantObservation {
     /// Get the k-mer uniqueness score.
     pub fn kmer_uniqueness(&self) -> f64 {
         self.kmer_uniqueness
+    }
+
+    /// Set the strand the supporting read aligned on.
+    pub fn with_strand(mut self, strand: Strand) -> Self {
+        self.strand = strand;
+        self
+    }
+
+    /// Get the strand the supporting read aligned on.
+    pub fn strand(&self) -> Strand {
+        self.strand
     }
 
     /// Set the index within `local_coverage` that corresponds to the variant position.
@@ -584,6 +647,52 @@ pub enum FilterError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== reverse_complement / Strand tests =====
+
+    #[test]
+    fn reverse_complement_basic() {
+        assert_eq!(reverse_complement(b"ACGT"), b"ACGT"); // ACGT is its own RC
+        assert_eq!(reverse_complement(b"AAAA"), b"TTTT");
+        assert_eq!(reverse_complement(b"GATTACA"), b"TGTAATC");
+    }
+
+    #[test]
+    fn reverse_complement_is_an_involution() {
+        let seq = b"GATTACAGGCCTTAACGNNTA";
+        assert_eq!(reverse_complement(&reverse_complement(seq)), seq);
+    }
+
+    #[test]
+    fn reverse_complement_passes_through_unknown_and_case() {
+        // N stays N; lowercase complements to lowercase; unknown bytes pass through.
+        assert_eq!(reverse_complement(b"N"), b"N");
+        assert_eq!(reverse_complement(b"acgt"), b"acgt");
+        assert_eq!(reverse_complement(b"ANCXT"), b"AXGNT"); // reverse T X C N A, complement -> A X G N T
+    }
+
+    #[test]
+    fn strand_defaults_to_forward() {
+        assert_eq!(Strand::default(), Strand::Forward);
+    }
+
+    #[test]
+    fn variant_observation_strand_defaults_forward_and_is_settable() {
+        let obs = VariantObservation::new(
+            0,
+            b'A',
+            HashMap::new(),
+            1.0,
+            "1M".to_string(),
+            60,
+            0,
+            vec![1],
+            60.0,
+            "s:r".to_string(),
+        );
+        assert_eq!(obs.strand(), Strand::Forward);
+        assert_eq!(obs.with_strand(Strand::Reverse).strand(), Strand::Reverse);
+    }
 
     // ===== Sequence type tests =====
 

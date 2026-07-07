@@ -24,20 +24,28 @@ pub enum QueriesError {
 /// * `path` - output file path
 /// * `index` - QueryIndex: HashMap<query_id, Vec<(position, score)>>
 ///
-/// Note: Filters entries to include only positions with score_ratio >= 0.95 (hard-coded opinion)
+/// Note: Filters positions to score_ratio >= 0.95 (hard-coded opinion), then drops any
+/// query whose filtered list is empty. A query therefore appears in the file iff it placed
+/// at least one alignment at score >= 0.95 — matching the documented contract that
+/// downstream counters (e.g. the benchmark harness) rely on. Keeping empty-list keys
+/// previously inflated the aligned-read count to 100% (issue #193).
 pub fn write_queries(path: &std::path::Path, index: &QueryIndex) -> Result<(), QueriesError> {
     const SCORE_THRESHOLD: f64 = 0.95;
 
-    // Filter index to keep only high-confidence alignments
+    // Filter index to keep only high-confidence alignments, dropping reads left with none.
     let filtered_index: QueryIndex = index
         .iter()
-        .map(|(query_id, alignments)| {
+        .filter_map(|(query_id, alignments)| {
             let filtered_alignments: Vec<(u32, f64)> = alignments
                 .iter()
                 .filter(|(_, score)| *score >= SCORE_THRESHOLD)
                 .copied()
                 .collect();
-            (query_id.clone(), filtered_alignments)
+            if filtered_alignments.is_empty() {
+                None
+            } else {
+                Some((query_id.clone(), filtered_alignments))
+            }
         })
         .collect();
 
@@ -174,16 +182,37 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_alignment_list() {
+    fn empty_query_alignment_list_is_dropped() {
+        // A read whose only alignments are sub-threshold (or which placed nothing) leaves an
+        // empty filtered list; that key must NOT be written (issue #193 — it inflated the
+        // aligned-read count). Only reads with >=1 placement appear in the file.
         let mut index = HashMap::new();
         index.insert("query_no_hits".to_string(), vec![]);
+        index.insert("query_subthreshold".to_string(), vec![(10u32, 0.40f64)]);
+
+        let temp = NamedTempFile::new().unwrap();
+        write_queries(temp.path(), &index).unwrap();
+        let read_index = read_queries(temp.path()).unwrap();
+
+        assert_eq!(read_index.len(), 0, "empty and all-sub-threshold reads must be dropped");
+    }
+
+    #[test]
+    fn subthreshold_positions_dropped_but_read_kept_if_any_placement() {
+        // A read with one placement and one sub-threshold hit keeps the key, with only the
+        // >=0.95 position retained.
+        let mut index = HashMap::new();
+        index.insert(
+            "mixed".to_string(),
+            vec![(100u32, 0.98f64), (200u32, 0.40f64)],
+        );
 
         let temp = NamedTempFile::new().unwrap();
         write_queries(temp.path(), &index).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         assert_eq!(read_index.len(), 1);
-        assert!(read_index["query_no_hits"].is_empty());
+        assert_eq!(read_index["mixed"], vec![(100u32, 0.98f64)]);
     }
 
     #[test]

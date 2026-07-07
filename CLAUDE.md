@@ -52,6 +52,7 @@ phraya filter → VCF | TSV | filtered .phraya
 ### Alignment Algorithm
 
 - **Seeding**: `sketch_sequence_default()` (phraya-core, via simd-minimizers, k=21 w=11) → `find_seeds()` (phraya-align/seeding.rs)
+- **Strand**: `align_read` aligns *both* the read's forward bytes and its reverse complement (`phraya_core::types::reverse_complement`) and keeps the better-scoring orientation (ties → forward). Canonical minimizers seed either strand, but extension is strand-naïve, so a reverse-strand read only places when its RC is tried. Extension always runs against the forward target, so CIGAR and alleles come out reference-forward regardless of strand; the chosen orientation is recorded on each `VariantObservation` (`strand()` → `Strand::Forward`/`Reverse`). The reverse orientation re-sketches the RC bytes (a forward sketch's seed query positions are wrong for RC).
 - **Extension**: WFA O(s·n) (`wfa_extend`, fitting mode) or Myers bit-parallel O(nm/w) (`myers_extend`, fitting mode) — both share the SIMD `count_matching_prefix` match-extension primitive and emit the identical CIGAR convention (M/X consume both, `I` = target-only, `D` = query-only). Differential-tested to agree on edit distance.
 - **Scoring**: Multi-mapping score ratio = (1 - edit_dist/query_len) for primary vs alternatives
 - **Output**: Store all alignments with score_ratio ≥ 0.95 (hard-coded opinion)
@@ -85,6 +86,7 @@ Each preset selects an algorithm **and** a default coverage-window radius; `--co
 
 ### `.phraya.queries` (query index, sidecar)
 - For each query: list of alignment positions + scores above threshold (score_ratio ≥ 0.95)
+- A query key appears **iff** it has ≥1 placement at score ≥ 0.95; `write_queries` drops reads whose filtered list is empty (so key count == placed-read count — do not count keys of reads with only sub-threshold hits as "aligned")
 - Enables multi-mapping analysis: "exclude variants where >50% supporting reads multi-map"
 - Separate file to keep merge fast (not needed for typical variant calling)
 
