@@ -1,3 +1,4 @@
+pub mod ab1;
 pub mod bam_cram;
 pub mod phraya;
 pub mod plan;
@@ -16,18 +17,25 @@ use std::path::Path;
 pub struct SequenceParser;
 
 impl SequenceParser {
-    /// Parse sequences from a file (FASTA or FASTQ auto-detected, with optional gzip).
-    /// Supports .fa/.fasta/.fq/.fastq and .gz variants.
+    /// Parse sequences from a file (FASTA, FASTQ, or AB1 auto-detected, with optional gzip).
+    /// Supports .fa/.fasta/.fq/.fastq/.ab1 and .gz variants.
     /// Returns an iterator of Sequence objects.
     pub fn from_path<P: AsRef<Path>>(
         path: P,
     ) -> Result<Box<dyn Iterator<Item = Result<Sequence, ParseError>>>, ParseError> {
         let path = path.as_ref();
+        let path_str = path.as_os_str().to_string_lossy();
+
+        // Check for AB1 extension
+        if path_str.ends_with(".ab1") {
+            let seq = ab1::parse_ab1_file(path)?;
+            return Ok(Box::new(std::iter::once(Ok(seq))));
+        }
 
         let file = File::open(path)
             .map_err(|e| ParseError::InvalidFormat(format!("failed to open file: {}", e)))?;
 
-        let is_gzipped = path.as_os_str().to_string_lossy().ends_with(".gz");
+        let is_gzipped = path_str.ends_with(".gz");
 
         if is_gzipped {
             let reader = GzDecoder::new(file);
