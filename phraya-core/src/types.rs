@@ -2,8 +2,24 @@
 // Tests are written first (TDD RED phase).
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
+
+/// Serialize a `HashMap<u8, u32>` with keys in ascending order.
+///
+/// The in-memory allele map is a `HashMap` (fast to accumulate), but `HashMap` iteration
+/// order is randomized per process, which would make the serialized `.phraya` output
+/// non-deterministic run-to-run (the same variant could emit `A:2,T:1` or `T:1,A:2`).
+/// Routing serialization through a `BTreeMap` fixes a canonical, byte-stable order without
+/// changing the in-memory type or any read/accessor code. Allele maps hold ≤4 entries, so
+/// the sort is negligible.
+fn serialize_alleles_sorted<S>(alleles: &HashMap<u8, u32>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let sorted: BTreeMap<u8, u32> = alleles.iter().map(|(&k, &v)| (k, v)).collect();
+    sorted.serialize(serializer)
+}
 
 /// Variant type classification for variant observations.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -185,7 +201,9 @@ pub struct VariantObservation {
     position: u32,
     /// Reference base
     ref_base: u8,
-    /// All alleles with their counts
+    /// All alleles with their counts. Serialized in ascending key order for deterministic
+    /// output (see [`serialize_alleles_sorted`]); the in-memory type stays a `HashMap`.
+    #[serde(serialize_with = "serialize_alleles_sorted")]
     all_alleles: HashMap<u8, u32>,
     /// Confidence score (0.0-1.0)
     confidence: f64,
@@ -1581,6 +1599,44 @@ mod tests {
         let uniqueness = compute_kmer_uniqueness(&[s0, s1]);
 
         assert!(uniqueness.get(&0).copied().unwrap_or(0.0) > uniqueness.get(&1).copied().unwrap_or(0.0));
+    }
+
+    /// A `VariantObservation`'s `all_alleles` map must serialize in a canonical (ascending
+    /// key) order regardless of `HashMap` insertion order, so `.phraya` output is
+    /// byte-deterministic run-to-run. Two observations with identical allele content built
+    /// by inserting the alleles in opposite orders must serialize identically.
+    #[test]
+    fn all_alleles_serializes_in_sorted_order() {
+        let make = |order: &[(u8, u32)]| {
+            let mut alleles = HashMap::new();
+            for &(base, count) in order {
+                alleles.insert(base, count);
+            }
+            VariantObservation::new(
+                42,
+                b'A',
+                alleles,
+                0.9,
+                "10M".to_string(),
+                60,
+                1,
+                vec![5],
+                40.0,
+                "read1".to_string(),
+            )
+        };
+
+        let forward = make(&[(b'A', 3), (b'C', 1), (b'G', 4), (b'T', 2)]);
+        let reverse = make(&[(b'T', 2), (b'G', 4), (b'C', 1), (b'A', 3)]);
+
+        let ja = serde_json::to_string(&forward).unwrap();
+        let jb = serde_json::to_string(&reverse).unwrap();
+        assert_eq!(ja, jb, "allele map must serialize independent of insertion order");
+
+        // And the canonical order is ascending by base: A(65) < C(67) < G(71) < T(84).
+        let a_idx = ja.find("65").unwrap();
+        let t_idx = ja.find("84").unwrap();
+        assert!(a_idx < t_idx, "alleles must serialize in ascending key order");
     }
 }
 
