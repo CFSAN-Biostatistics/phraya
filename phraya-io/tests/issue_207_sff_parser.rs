@@ -178,7 +178,6 @@ fn create_invalid_sff_truncated_header() -> NamedTempFile {
 // ============================================================================
 
 #[test]
-#[should_panic]
 fn sff_auto_detect_single_read() {
     // Test: SFF files are auto-detected by extension or magic and parsed
     let sff_file = create_minimal_sff_single_read();
@@ -193,7 +192,6 @@ fn sff_auto_detect_single_read() {
 }
 
 #[test]
-#[should_panic]
 fn sff_multi_read_iteration() {
     // Test: Multi-read SFF files iterate all reads
     let sff_file = create_minimal_sff_multiple_reads();
@@ -219,7 +217,6 @@ fn sff_multi_read_iteration() {
 }
 
 #[test]
-#[should_panic]
 fn sff_quality_clip_right_boundary() {
     // Test: Quality clipping right boundary is applied (clip_qual_right)
     let sff_file = create_minimal_sff_with_quality_clipping();
@@ -234,7 +231,6 @@ fn sff_quality_clip_right_boundary() {
 }
 
 #[test]
-#[should_panic]
 fn sff_adapter_clip_right_boundary() {
     // Test: Adapter clipping right boundary is applied (clip_adapter_right)
     let sff_file = create_minimal_sff_with_adapter_clipping();
@@ -249,7 +245,6 @@ fn sff_adapter_clip_right_boundary() {
 }
 
 #[test]
-#[should_panic]
 fn sff_combined_quality_and_adapter_clipping() {
     // Test: Both quality and adapter clipping are applied (min of both)
     let sff_file = create_minimal_sff_with_combined_clipping();
@@ -264,7 +259,6 @@ fn sff_combined_quality_and_adapter_clipping() {
 }
 
 #[test]
-#[should_panic]
 fn sff_invalid_magic_bytes_returns_error() {
     // Test: Invalid SFF magic bytes are rejected with ParseError
     let sff_file = create_invalid_sff_bad_magic();
@@ -278,7 +272,6 @@ fn sff_invalid_magic_bytes_returns_error() {
 }
 
 #[test]
-#[should_panic]
 fn sff_truncated_header_returns_error() {
     // Test: Truncated SFF header is rejected
     let sff_file = create_invalid_sff_truncated_header();
@@ -292,7 +285,6 @@ fn sff_truncated_header_returns_error() {
 }
 
 #[test]
-#[should_panic]
 fn sff_preserves_sequence_id() {
     // Test: SFF read names are correctly extracted as sequence IDs
     let sff_file = create_minimal_sff_single_read();
@@ -306,7 +298,6 @@ fn sff_preserves_sequence_id() {
 }
 
 #[test]
-#[should_panic]
 fn sff_preserves_base_sequence() {
     // Test: DNA bases in SFF are correctly extracted (bases field)
     let sff_file = create_minimal_sff_single_read();
@@ -322,7 +313,6 @@ fn sff_preserves_base_sequence() {
 }
 
 #[test]
-#[should_panic]
 fn sff_preserves_quality_scores() {
     // Test: Quality scores in SFF are correctly extracted and stored
     let sff_file = create_minimal_sff_single_read();
@@ -340,7 +330,6 @@ fn sff_preserves_quality_scores() {
 }
 
 #[test]
-#[should_panic]
 fn sff_quality_and_bases_length_match() {
     // Test: After clipping, bases and quality scores have matching length
     let sff_file = create_minimal_sff_with_quality_clipping();
@@ -355,7 +344,6 @@ fn sff_quality_and_bases_length_match() {
 }
 
 #[test]
-#[should_panic]
 fn sff_extension_auto_detection() {
     // Test: Files with .sff extension are recognized and parsed
     // (not treated as FASTA/FASTQ)
@@ -369,7 +357,6 @@ fn sff_extension_auto_detection() {
 }
 
 #[test]
-#[should_panic]
 fn sff_empty_file_returns_empty_iterator() {
     // Test: Empty or minimal SFF file returns empty iterator
     let tmp = NamedTempFile::new().unwrap();
@@ -387,7 +374,6 @@ fn sff_empty_file_returns_empty_iterator() {
 }
 
 #[test]
-#[should_panic]
 fn sff_zero_clip_returns_zero_length_sequence() {
     // Test: Clipping to zero returns valid but empty Sequence
     let tmp = NamedTempFile::new().unwrap();
@@ -403,7 +389,6 @@ fn sff_zero_clip_returns_zero_length_sequence() {
 }
 
 #[test]
-#[should_panic]
 fn sff_dna_bases_validation() {
     // Test: Only valid DNA bases (ACGTN) appear in output
     let sff_file = create_minimal_sff_single_read();
@@ -418,7 +403,6 @@ fn sff_dna_bases_validation() {
 }
 
 #[test]
-#[should_panic]
 fn sff_quality_encoding_validation() {
     // Test: Quality scores are valid Phred+33 values
     let sff_file = create_minimal_sff_single_read();
