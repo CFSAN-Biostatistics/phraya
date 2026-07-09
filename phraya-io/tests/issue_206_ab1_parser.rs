@@ -45,7 +45,7 @@ fn create_minimal_ab1_single_sequence() -> (NamedTempFile, PathBuf) {
     let ab1_path = tmp.path().with_extension("ab1");
 
     // Write minimal valid AB1 file
-    write_minimal_ab1(&ab1_path, "ACGTACGTACGTACGTACGTACGTACGTACGTACGT", Some("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII")).unwrap();
+    write_minimal_ab1(&ab1_path, "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC", Some("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII")).unwrap();
 
     (tmp, ab1_path)
 }
@@ -65,7 +65,7 @@ fn create_ab1_no_quality() -> (NamedTempFile, PathBuf) {
     let tmp = NamedTempFile::new().unwrap();
     let ab1_path = tmp.path().with_extension("ab1");
 
-    write_minimal_ab1(&ab1_path, "ACGTACGTACGTACGTACGTACGTACGT", None).unwrap();
+    write_minimal_ab1(&ab1_path, "ACGTACGTACGTACGTACGTACGT", None).unwrap();
 
     (tmp, ab1_path)
 }
@@ -104,13 +104,13 @@ fn write_minimal_ab1(path: &PathBuf, bases: &str, quality: Option<&str>) -> std:
     file.write_all(&101u32.to_be_bytes())?; // Version 101
 
     // Number of directory elements (we'll have 2-3 tags)
-    let num_elements = if quality.is_some() { 3 } else { 2 };
+    let num_elements: u32 = if quality.is_some() { 3u32 } else { 2u32 };
     file.write_all(&num_elements.to_be_bytes())?; // Number of elements
     file.write_all(&num_elements.to_be_bytes())?; // Number of elements (repeated)
 
     // Calculate offsets for data section
     // Directory starts after header (4+4+4+4 = 16 bytes)
-    let dir_size = num_elements * 28; // Each tag is 28 bytes
+    let dir_size = (num_elements as usize) * 24; // Each tag is 24 bytes (not 28!)
     let data_offset = 16 + dir_size;
 
     let bases_bytes = bases.as_bytes();
