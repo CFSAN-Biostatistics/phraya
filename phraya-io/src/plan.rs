@@ -190,13 +190,6 @@ pub struct PhrayaPlan {
     pub mate_info: HashMap<String, phraya_core::types::MateInfo>,
     /// Dense minimizer sketches keyed by sequence ID
     /// Empty if sparse_mode is true
-<<<<<<< HEAD
-    #[serde(default = "default_dense_kmer_index", skip_serializing_if = "HashMap::is_empty", serialize_with = "serialize_map_sorted")]
-    pub dense_kmer_index: HashMap<String, MinimizerSketch>,
-    /// Per-sequence w=11 membership tags for dense sketches
-    /// Indicates which dense minimizers are part of the canonical w=11 set
-    #[serde(default = "default_w11_membership", skip_serializing_if = "HashMap::is_empty", serialize_with = "serialize_map_sorted")]
-=======
     #[serde(
         default = "default_dense_kmer_index",
         skip_serializing_if = "HashMap::is_empty"
@@ -208,7 +201,6 @@ pub struct PhrayaPlan {
         default = "default_w11_membership",
         skip_serializing_if = "HashMap::is_empty"
     )]
->>>>>>> origin/worktree-issue-185-tests
     pub w11_membership: HashMap<String, Vec<bool>>,
     /// If true, only w=11 sketches are stored (--sparse flag)
     /// If false, both w=11 and dense sketches are stored (default)

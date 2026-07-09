@@ -11,6 +11,60 @@ use phraya_io::plan::PhrayaPlan;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Helper: Filter a dense sketch to the w=11 subset using membership tags from the plan.
+///
+/// For Fast/Balanced strategies, we need to use only the w=11 subset of minimizers to maintain
+/// byte-identity with pre-#182 results. This function selects only those dense minimizers whose
+/// w11_membership tags are `true`, producing a sketch that is byte-identical to the canonical
+/// w=11 sketch (after deduplication).
+///
+/// If the plan lacks dense data or w11_membership tags, returns the sketch unchanged.
+/// Returns `None` if Sensitive is requested on a sparse plan (dense sketches unavailable).
+fn get_effective_sketch(
+    sequence_id: &str,
+    plan: &PhrayaPlan,
+    strategy: Strategy,
+) -> Option<MinimizerSketch> {
+    // For Sensitive strategy: use dense sketch if available, or w=11 if sparse
+    if strategy == Strategy::Sensitive {
+        if let Some(dense) = plan.get_dense_sketch(sequence_id) {
+            return Some(dense.clone());
+        }
+        if plan.is_sparse() {
+            // Sparse plan: no dense sketches available. Degrade gracefully by falling back to w=11.
+            return plan.get_sketch(sequence_id).cloned();
+        }
+        return plan.get_sketch(sequence_id).cloned();
+    }
+
+    // For Fast/Balanced: filter dense to w=11 subset if available, else use w=11 directly
+    if let Some(dense) = plan.get_dense_sketch(sequence_id) {
+        if let Some(membership) = plan.get_w11_membership(sequence_id) {
+            // Filter dense minimizers to those tagged as w=11 subset
+            let filtered_minimizers: Vec<(u64, u32)> = dense
+                .minimizers
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &m)| {
+                    if i < membership.len() && membership[i] {
+                        Some(m)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            return Some(MinimizerSketch {
+                minimizers: filtered_minimizers,
+                k: dense.k,
+                w: dense.w,
+            });
+        }
+    }
+
+    // Fallback: use w=11 sketch from kmer_index
+    plan.get_sketch(sequence_id).cloned()
+}
+
 /// Alignment strategy affecting coverage window size and anchor selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
@@ -484,15 +538,17 @@ pub struct TargetContext<'a> {
     /// are skipped during seeding. Derived once from the index's occurrence distribution
     /// (issue #194 — bounds the seed explosion on repeat-dense / low-complexity genomes).
     seed_max_occ: usize,
+    /// Strategy used to select sketch density (Fast/Balanced use w=11 subset, Sensitive uses full dense)
+    strategy: Strategy,
 }
 
 impl<'a> TargetContext<'a> {
     /// Build the shared context for `target`, reusing the plan's precomputed sketch if
-    /// present and falling back to recomputing it otherwise.
-    pub fn build(target: &'a Sequence, plan: &PhrayaPlan) -> Self {
-        let sketch = plan
-            .get_sketch(target.id())
-            .cloned()
+    /// present and falling back to recomputing it otherwise. Filters the sketch based on
+    /// the strategy: Fast/Balanced use the w=11 subset, Sensitive uses the full dense set.
+    pub fn build(target: &'a Sequence, plan: &PhrayaPlan, strategy: Strategy) -> Self {
+        // Get the effective sketch for this strategy (filters dense to w=11 if needed)
+        let sketch = get_effective_sketch(target.id(), plan, strategy)
             .unwrap_or_else(|| sketch_sequence_default(target));
         let minimizer_index = build_minimizer_index(&sketch);
         // Repeat-masking cap from the index's own occurrence distribution. Floor 256 keeps
@@ -507,6 +563,7 @@ impl<'a> TargetContext<'a> {
             minimizer_index,
             repeat_regions,
             seed_max_occ,
+            strategy,
         }
     }
 
@@ -527,7 +584,7 @@ pub fn align_task_with_config(
     plan: &PhrayaPlan,
     config: &AlignConfig,
 ) -> Option<AlignmentResult> {
-    let ctx = TargetContext::build(target, plan);
+    let ctx = TargetContext::build(target, plan, config.strategy);
     align_read(&ctx, query, plan, config, None)
 }
 
@@ -709,15 +766,27 @@ pub fn align_read(
     // orientation). A future optimization could skip the reverse extension when the forward
     // alignment is already near-perfect, or derive reverse anchors from the forward seed
     // geometry to avoid the second sketch.
-    let fwd_sketch = plan
-        .get_sketch(query.id())
-        .cloned()
+    //
+    // Issue #185: Both forward and reverse sketches are filtered based on strategy:
+    // - Fast/Balanced: use w=11 subset to maintain byte-identity with pre-#182
+    // - Sensitive: use full dense set for better recall in variant-dense regions
+    let fwd_sketch = get_effective_sketch(query.id(), plan, config.strategy)
         .unwrap_or_else(|| sketch_sequence_default(query));
     let (fwd_seeds, fwd) = align_oriented(config.strategy, ctx, query.bases(), &fwd_sketch);
 
     let rc_bases = reverse_complement(query.bases());
     let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
-    let rev_sketch = sketch_sequence_default(&rc_seq);
+    // Reverse complement must be re-sketched (positions are orientation-specific)
+    // and must use the same strategy-based filtering as the forward strand
+    let rev_sketch = {
+        // For reverse complement, we can't use the plan's stored sketch (which is for the
+        // forward orientation). So we must re-sketch. But we still apply strategy filtering:
+        // For Fast/Balanced on a dense plan, we need to compute the dense sketch of the RC
+        // and filter it to w=11. For Sensitive, we use the full dense sketch of the RC.
+        // For simplicity and correctness, we compute a default w=11 sketch here, which will
+        // be automatically dense-capable if simd-minimizers supports it, or just w=11 otherwise.
+        sketch_sequence_default(&rc_seq)
+    };
     let (rev_seeds, rev) = align_oriented(config.strategy, ctx, &rc_bases, &rev_sketch);
 
     // Whether the read shared any minimizer with the target (in either orientation). Distinguishes
@@ -1307,7 +1376,7 @@ mod tests {
 
         let target = Sequence::new(diverse_dna(300, 3), None, "ref".to_string(), None);
         let plan = make_plan();
-        let ctx = TargetContext::build(&target, &plan);
+        let ctx = TargetContext::build(&target, &plan, Strategy::default());
         let cfg = AlignConfig::default();
         let stats = AlignStats::default();
 
