@@ -58,7 +58,8 @@ fn mutate_sequence(base: &[u8], mutation_rate: f64, seed: u64) -> Vec<u8> {
     for i in 0..result.len() {
         // Generate a pseudo-random number in [0, 1)
         x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let rand_01 = ((x >> 33) as f64) / (u32::MAX as f64);
+        let rand_bits = (x >> 32) as u32;
+        let rand_01 = rand_bits as f64 / (u32::MAX as f64 + 1.0);
 
         if rand_01 < mutation_rate {
             // Mutate this position: pick a different base

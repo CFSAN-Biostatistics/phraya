@@ -4,8 +4,9 @@
 /// Fixture
 /// -------
 /// Contigs (5 total, 10kb each, ~95% similar to each other):
-///   Generated via diverse_dna with different seeds to ensure ~95% similarity
-///   while avoiding minimizer-seed explosion
+///   Contig 1: diverse_dna with seed 42
+///   Contigs 2-5: ~95% similar mutated copies of contig1 (5% mutation rate each)
+///   This ensures fast contig-to-centroid alignments, matching real Case 3 use (strain-level contigs)
 ///
 /// Reads (50 total, 150bp each):
 ///   Derived from contig sequences with occasional SNPs to create variants
@@ -60,16 +61,44 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
         .collect()
 }
 
+/// Generate a mutated copy of a base sequence by applying random substitutions.
+/// Returns a new sequence ~(1 - mutation_rate)×100% similar to base.
+fn mutate_sequence(base: &[u8], mutation_rate: f64, seed: u64) -> Vec<u8> {
+    let mut x = seed;
+    let mut result = base.to_vec();
+    for i in 0..result.len() {
+        // Generate a pseudo-random number in [0, 1)
+        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let rand_bits = (x >> 32) as u32;
+        let rand_01 = rand_bits as f64 / (u32::MAX as f64 + 1.0);
+
+        if rand_01 < mutation_rate {
+            // Mutate this position: pick a different base
+            let current = result[i];
+            let candidates: Vec<u8> = b"ACGT"
+                .iter()
+                .filter(|&&b| b != current)
+                .copied()
+                .collect();
+            if !candidates.is_empty() {
+                let idx = ((x >> 40) as usize) % candidates.len();
+                result[i] = candidates[idx];
+            }
+        }
+    }
+    result
+}
+
 /// Build Case 3 fixtures: 5 contigs (10kb each) + 50 reads (150bp each)
 /// Returns (contigs_path, reads_path)
 fn write_fixtures(dir: &Path) -> (PathBuf, PathBuf) {
     // 5 contigs, each 10kb (contig-length)
-    // Use diverse_dna with different seeds to create ~95% similarity
+    // Create base contig via diverse_dna, then contigs 2-5 as ~95% similar mutated copies
     let contig1 = diverse_dna(10240, 42);
-    let contig2 = diverse_dna(10240, 43);
-    let contig3 = diverse_dna(10240, 44);
-    let contig4 = diverse_dna(10240, 45);
-    let contig5 = diverse_dna(10240, 46);
+    let contig2 = mutate_sequence(&contig1, 0.05, 100);
+    let contig3 = mutate_sequence(&contig1, 0.05, 101);
+    let contig4 = mutate_sequence(&contig1, 0.05, 102);
+    let contig5 = mutate_sequence(&contig1, 0.05, 103);
 
     let contigs_path = dir.join("contigs.fa");
     let mut content = String::new();
