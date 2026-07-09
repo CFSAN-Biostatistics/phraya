@@ -15,6 +15,9 @@ pub use seeding::{
 #[cfg(test)]
 mod local_coverage_tests;
 
+#[cfg(test)]
+mod issue_185_tests;
+
 /// Seed anchor position for WFA extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeedAnchor {

@@ -412,7 +412,8 @@ fn run_align_worker_with_plan(
     // Build the shared target context once, then align every read in the chunk against
     // it. This hoists the per-target minimizer index and tandem-repeat detection out of
     // the per-read loop (they depend only on the reference, not the read).
-    let target_ctx = TargetContext::build(&target, &plan);
+    // Issue #185: Pass strategy to build so it can filter sketches appropriately
+    let target_ctx = TargetContext::build(&target, &plan, config.strategy);
 
     // Extract and align reads in this chunk
     let mut all_variants = Vec::new();
