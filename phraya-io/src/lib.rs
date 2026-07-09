@@ -2,6 +2,7 @@ pub mod bam_cram;
 pub mod phraya;
 pub mod plan;
 pub mod queries;
+pub mod sff;
 pub mod use_case;
 
 pub use use_case::{classify_input, InputType, UseCaseError};
@@ -12,22 +13,49 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-/// Parser for FASTA and FASTQ files with auto-detection.
+/// Parser for FASTA, FASTQ, and SFF files with auto-detection.
 pub struct SequenceParser;
 
 impl SequenceParser {
-    /// Parse sequences from a file (FASTA or FASTQ auto-detected, with optional gzip).
-    /// Supports .fa/.fasta/.fq/.fastq and .gz variants.
+    /// Parse sequences from a file (FASTA, FASTQ, or SFF auto-detected, with optional gzip).
+    /// Supports .fa/.fasta/.fq/.fastq/.sff and .gz variants.
+    /// SFF detection: by .sff extension or by magic bytes ".sff"
     /// Returns an iterator of Sequence objects.
     pub fn from_path<P: AsRef<Path>>(
         path: P,
     ) -> Result<Box<dyn Iterator<Item = Result<Sequence, ParseError>>>, ParseError> {
         let path = path.as_ref();
 
-        let file = File::open(path)
+        let path_str = path.as_os_str().to_string_lossy();
+        let is_gzipped = path_str.ends_with(".gz");
+
+        // Check for SFF format (.sff extension)
+        if path_str.ends_with(".sff") {
+            return sff::parse_sff_file(path);
+        }
+
+        // Check for SFF by magic bytes
+        let mut file = File::open(path)
             .map_err(|e| ParseError::InvalidFormat(format!("failed to open file: {}", e)))?;
 
-        let is_gzipped = path.as_os_str().to_string_lossy().ends_with(".gz");
+        let mut magic = [0u8; 4];
+        match file.read_exact(&mut magic) {
+            Ok(()) => {
+                if &magic == b".sff" {
+                    // Reopen file for SFF parsing
+                    let file = File::open(path)
+                        .map_err(|e| ParseError::InvalidFormat(format!("failed to open file: {}", e)))?;
+                    return sff::parse_sff_file_from_reader(Box::new(file));
+                }
+            }
+            Err(_) => {
+                // File too short to contain magic bytes, not SFF
+            }
+        }
+
+        // Reopen file for text parsing
+        let file = File::open(path)
+            .map_err(|e| ParseError::InvalidFormat(format!("failed to open file: {}", e)))?;
 
         if is_gzipped {
             let reader = GzDecoder::new(file);
@@ -53,9 +81,16 @@ impl SequenceParser {
             Format::Fasta
         } else if first_line.starts_with('@') {
             Format::Fastq
+        } else if first_line.starts_with(".sff") {
+            // This shouldn't happen (SFF files should have been caught by magic detection)
+            // But provide a better error message
+            return Err(ParseError::InvalidFormat(
+                "file appears to be SFF format (starts with .sff) but could not be parsed as valid SFF".to_string(),
+            ));
         } else {
             return Err(ParseError::InvalidFormat(
-                "file must start with '>' (FASTA) or '@' (FASTQ)".to_string(),
+                format!("invalid file format; magic bytes should be '>' (FASTA), '@' (FASTQ), or '.sff' (SFF), got: '{}'",
+                        first_line.chars().take(4).collect::<String>())
             ));
         };
 
