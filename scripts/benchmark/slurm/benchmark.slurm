@@ -8,13 +8,16 @@
 # Main benchmark array job
 # Decodes task ID → (target, aligner, replicate), runs alignment+calling with timing
 #
-# Aligners (6 total):
+# Aligners (9 total):
 #   bwa-mem2      — alignment only (throughput baseline, SAM output)
 #   minimap2      — alignment only (throughput baseline, SAM output)
 #   bwa-pipeline  — bwa mem + sort + mpileup + bcftools call (fair phraya comparison)
 #   phraya          — phraya --strategy balanced (Myers ≤500bp, WFA fallback, K=5, ±50bp)
 #   phraya-sensitive — phraya --strategy sensitive (WFA all-anchors, K=∞, ±25bp)
 #   phraya-fast     — phraya --strategy fast (seed-vote subsampling, K=1, ±150bp)
+#   bowtie2         — industry-standard gapped aligner (--very-sensitive preset)
+#   minibwa         — hybrid bwa-mem/minimap2 (3× faster than bwa-mem)
+#   rammap          — pure Rust minimap2 clone (SIMD DP, -x sr preset)
 
 set -euo pipefail
 
@@ -30,7 +33,7 @@ fi
 
 # Decode array task ID → (target_idx, aligner_idx, replicate_idx)
 TASK_ID=${SLURM_ARRAY_TASK_ID}
-NUM_ALIGNERS=6  # bwa-mem2, minimap2, bwa-pipeline, phraya, phraya-sensitive, phraya-fast
+NUM_ALIGNERS=9  # bwa-mem2, minimap2, bwa-pipeline, phraya×3, bowtie2, minibwa, rammap
 NUM_REPLICATES=$REPLICATES
 
 TARGET_IDX=$((TASK_ID / (NUM_ALIGNERS * NUM_REPLICATES)))
@@ -38,7 +41,7 @@ ALIGNER_IDX=$(((TASK_ID / NUM_REPLICATES) % NUM_ALIGNERS))
 REPLICATE_IDX=$((TASK_ID % NUM_REPLICATES))
 
 # Map aligner index to name
-ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-fast")
+ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-fast" "bowtie2" "minibwa" "rammap")
 ALIGNER="${ALIGNERS[$ALIGNER_IDX]}"
 
 # Read target from targets.conf (skip comments, filter large if needed)

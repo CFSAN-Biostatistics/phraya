@@ -99,7 +99,10 @@ fi
 # bwa-mem2/minimap2: alignment-only throughput baselines
 # bwa-pipeline: full variant-calling pipeline (fair phraya comparison)
 # phraya/phraya-sensitive/phraya-fast: three Phraya strategy modes
-ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-fast")
+# bowtie2: industry-standard gapped aligner (Illumina baseline)
+# minibwa: hybrid bwa-mem/minimap2 (modern BWA-family baseline)
+# rammap: pure-Rust minimap2 clone (SIMD DP)
+ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-fast" "bowtie2" "minibwa" "rammap")
 NUM_ALIGNERS=${#ALIGNERS[@]}
 ARRAY_SIZE=$((TARGET_COUNT * NUM_ALIGNERS * REPLICATES))
 
