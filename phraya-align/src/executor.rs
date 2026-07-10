@@ -884,8 +884,26 @@ pub fn align_read(
 }
 
 /// Check if a position falls within any hotspot interval.
+///
+/// `hotspot_intervals` (from [`phraya_core::types::detect_hotspot_intervals`]) is sorted by
+/// `start` and non-overlapping, so binary search replaces the O(n) linear scan with O(log n) —
+/// load-bearing once intervals number in the thousands+ (issue: 500x perf investigation).
 fn is_in_hotspot(pos: u32, hotspot_intervals: &[(u32, u32)]) -> bool {
-    hotspot_intervals.iter().any(|&(start, end)| pos >= start && pos < end)
+    // Last interval whose start is <= pos.
+    let idx = hotspot_intervals.partition_point(|&(start, _)| start <= pos);
+    idx > 0 && pos < hotspot_intervals[idx - 1].1
+}
+
+/// Check if a position falls within any tandem-repeat region.
+///
+/// `repeat_regions` (from [`phraya_core::detect_tandem_repeats`]) is produced by a strictly
+/// forward-scanning detector, so regions are sorted by `start` and non-overlapping — binary
+/// search replaces an O(n) linear scan with O(log n). On a human chromosome, `repeat_regions`
+/// numbers in the millions (chr1: ~1.5M), so the linear scan dominated per-variant extraction
+/// cost (~22ms/read, the majority of `phraya align`'s wall time on medium/large references).
+fn is_in_repeat_region(pos: usize, repeat_regions: &[phraya_core::RepeatRegion]) -> bool {
+    let idx = repeat_regions.partition_point(|r| r.start <= pos);
+    idx > 0 && pos < repeat_regions[idx - 1].end
 }
 
 /// Parse CIGAR and extract VariantObservations at mismatch positions.
@@ -937,9 +955,7 @@ fn extract_variants_from_cigar(
                             .collect();
                         let variant_offset = (tp - window_start) as u32;
 
-                        let in_repeat = repeat_regions
-                            .iter()
-                            .any(|r| tp >= r.start && tp < r.end);
+                        let in_repeat = is_in_repeat_region(tp, repeat_regions);
 
                         let kmer_uniqueness = if is_in_hotspot(tp as u32, hotspot_intervals) {
                             0.0
@@ -992,9 +1008,7 @@ fn extract_variants_from_cigar(
                         .collect();
                     let variant_offset = (t_pos - window_start) as u32;
 
-                    let in_repeat = repeat_regions
-                        .iter()
-                        .any(|r| t_pos >= r.start && t_pos < r.end);
+                    let in_repeat = is_in_repeat_region(t_pos, repeat_regions);
 
                     let kmer_uniqueness = if is_in_hotspot(t_pos as u32, hotspot_intervals) {
                         0.0
@@ -1054,9 +1068,7 @@ fn extract_variants_from_cigar(
                         .collect();
                     let variant_offset = (t_pos - window_start) as u32;
 
-                    let in_repeat = repeat_regions
-                        .iter()
-                        .any(|r| t_pos >= r.start && t_pos < r.end);
+                    let in_repeat = is_in_repeat_region(t_pos, repeat_regions);
 
                     let kmer_uniqueness = if is_in_hotspot(t_pos as u32, hotspot_intervals) {
                         0.0
@@ -1211,6 +1223,40 @@ mod tests {
         assert_eq!(result.cigar, "");
         assert_eq!(result.query_start, 4);
         assert_eq!(result.query_end, 4);
+    }
+
+    #[test]
+    fn is_in_repeat_region_matches_linear_scan_at_boundaries() {
+        // Adjacent, non-overlapping regions as produced by detect_tandem_repeats:
+        // [10, 20), [20, 30), gap, [50, 55)
+        let regions = vec![
+            phraya_core::RepeatRegion::new(10, 19, 2, "AT".to_string()),
+            phraya_core::RepeatRegion::new(20, 29, 3, "CAG".to_string()),
+            phraya_core::RepeatRegion::new(50, 54, 4, "GATA".to_string()),
+        ];
+        let linear = |pos: usize| regions.iter().any(|r| pos >= r.start && pos < r.end);
+        for pos in 0..60 {
+            assert_eq!(
+                is_in_repeat_region(pos, &regions),
+                linear(pos),
+                "mismatch at pos {pos}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_in_repeat_region_empty_regions_always_false() {
+        assert!(!is_in_repeat_region(0, &[]));
+        assert!(!is_in_repeat_region(1_000_000, &[]));
+    }
+
+    #[test]
+    fn is_in_hotspot_matches_linear_scan_at_boundaries() {
+        let intervals = vec![(10u32, 20u32), (20u32, 30u32), (50u32, 55u32)];
+        let linear = |pos: u32| intervals.iter().any(|&(s, e)| pos >= s && pos < e);
+        for pos in 0..60u32 {
+            assert_eq!(is_in_hotspot(pos, &intervals), linear(pos), "mismatch at pos {pos}");
+        }
     }
 
     #[test]
