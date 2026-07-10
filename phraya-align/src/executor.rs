@@ -89,6 +89,11 @@ pub struct AlignConfig {
     pub strategy: Strategy,
     /// Coverage window radius in base pairs
     pub coverage_window_radius: usize,
+    /// Debug-only A/B toggle: use the pre-chaining raw-vote anchor selection
+    /// (`build_anchors_legacy`) instead of seed chaining. Not CLI-exposed — exists
+    /// purely to compare legacy vs chained behavior during the chaining redesign's HPC
+    /// validation phase; removed once that validation is complete.
+    pub use_legacy_anchors: bool,
 }
 
 impl AlignConfig {
@@ -103,7 +108,15 @@ impl AlignConfig {
         AlignConfig {
             strategy,
             coverage_window_radius,
+            use_legacy_anchors: false,
         }
+    }
+
+    /// Debug-only: force the pre-chaining raw-vote anchor selection path. See
+    /// [`AlignConfig::use_legacy_anchors`].
+    pub fn with_legacy_anchors(mut self, use_legacy: bool) -> Self {
+        self.use_legacy_anchors = use_legacy;
+        self
     }
 
     /// Create a Fast strategy config (±150bp window).
@@ -286,8 +299,14 @@ impl AlignStats {
     }
 }
 
-/// Build the list of WFA/Myers anchors (each `query_pos = 0`) from minimizer seeds,
-/// according to the strategy.
+/// Debug-only legacy anchor selection (raw minimizer vote counting, pre-chaining).
+///
+/// Superseded by [`anchors_from_chains`]: this votes each seed independently for an
+/// implied target-start and extends up to K of those raw positions with no attempt to
+/// collapse co-linear seeds into a single candidate region first, so a `balanced` read
+/// could pay for up to 6 independent DP extensions where chaining pays for far fewer.
+/// Kept only behind [`AlignConfig::use_legacy_anchors`] as an A/B debugging tool during
+/// the chaining redesign's validation; not reachable from the CLI.
 ///
 /// - `Fast`: K=1 — a single anchor at the best-supported target start (minimizer vote),
 ///   collapsing the per-read anchor count to O(1) even when a repeat sprays thousands
@@ -296,7 +315,7 @@ impl AlignStats {
 ///   Balances between Fast's O(1) speed and Sensitive's O(n) sensitivity.
 /// - `Sensitive`: K=∞ — every distinct seed-derived target start, plus a `(0,0)` fallback
 ///   that wins ties in degenerate/repetitive sequences. Highest sensitivity.
-fn build_anchors(strategy: Strategy, seeds: &[crate::Seed]) -> Vec<SeedAnchor> {
+fn build_anchors_legacy(strategy: Strategy, seeds: &[crate::Seed]) -> Vec<SeedAnchor> {
     let target_start_of = |s: &crate::Seed| (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
 
     match strategy {
@@ -347,6 +366,38 @@ fn build_anchors(strategy: Strategy, seeds: &[crate::Seed]) -> Vec<SeedAnchor> {
             result
         }
     }
+}
+
+/// Number of top chains extended per strategy — chaining's counterpart to the legacy
+/// path's raw anchor cap `K`. `Sensitive` gets a large finite cap (50), not the legacy
+/// path's literal `K = ∞`: chaining already collapses most of the raw-vote explosion
+/// that made an unbounded cap tractable only via ADR-0007's branch-and-bound, and a
+/// finite cap gives predictable worst-case cost from the outset rather than waiting to
+/// discover a pathological genome empirically.
+fn chain_cap(strategy: Strategy) -> usize {
+    match strategy {
+        Strategy::Fast => 1,
+        Strategy::Balanced => 5,
+        Strategy::Sensitive => 50,
+    }
+}
+
+/// Build the list of WFA/Myers anchors from chained seeds, one anchor per surviving
+/// chain (up to `k`), each anchor's `target_pos` taken from [`crate::chaining::Chain::target_start`].
+///
+/// Always includes a `(0,0)` anchor, matching the legacy path's unconditional fallback
+/// (issue #146's `multiple_hotspot_intervals` fixture — a near-homopolymer target with
+/// only a handful of distinct minimizer values — showed this is load-bearing, not dead
+/// weight: on a low-complexity/repetitive background, chaining's top-K by score can miss
+/// the true locus entirely even when it finds plenty of *chains*, because seed density is
+/// too uniform to distinguish the right position from noise. The `(0,0)` anchor is a
+/// cheap, unconditional safety net for exactly that case).
+fn anchors_from_chains(chains: &[crate::chaining::Chain], k: usize) -> Vec<SeedAnchor> {
+    let mut result = vec![SeedAnchor { query_pos: 0, target_pos: 0 }];
+    for c in chains.iter().take(k) {
+        result.push(SeedAnchor { query_pos: 0, target_pos: c.target_start() });
+    }
+    result
 }
 
 /// Extend a single anchor with the engine selected by `strategy`.
@@ -615,6 +666,7 @@ fn align_oriented(
     ctx: &TargetContext<'_>,
     query_bytes: &[u8],
     query_sketch: &MinimizerSketch,
+    use_legacy_anchors: bool,
 ) -> (usize, Option<crate::ScoredAlignments>) {
     let target = ctx.target;
     let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
@@ -623,7 +675,15 @@ fn align_oriented(
     // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
     // Seeds mid-query would miss variants before the seed; aligning from query position 0
     // ensures the full query is aligned. Anchor selection is strategy-dependent.
-    let anchors = build_anchors(strategy, &seeds);
+    //
+    // Debug-only A/B path: `use_legacy_anchors` selects the pre-chaining raw-vote
+    // selection (see AlignConfig::use_legacy_anchors); default is chained anchors.
+    let anchors = if use_legacy_anchors {
+        build_anchors_legacy(strategy, &seeds)
+    } else {
+        let chains = crate::chaining::chain_seeds(&seeds, &crate::chaining::ChainParams::default());
+        anchors_from_chains(&chains, chain_cap(strategy))
+    };
     let query_len = query_bytes.len();
 
     // ADR-0007 / issue #183: score-bounded branch-and-bound alternate extension.
@@ -783,7 +843,13 @@ pub fn align_read(
     // - Sensitive: use full dense set for better recall in variant-dense regions
     let fwd_sketch = get_effective_sketch(query.id(), plan, config.strategy)
         .unwrap_or_else(|| sketch_sequence_default(query));
-    let (fwd_seeds, fwd) = align_oriented(config.strategy, ctx, query.bases(), &fwd_sketch);
+    let (fwd_seeds, fwd) = align_oriented(
+        config.strategy,
+        ctx,
+        query.bases(),
+        &fwd_sketch,
+        config.use_legacy_anchors,
+    );
 
     let rc_bases = reverse_complement(query.bases());
     let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
@@ -798,7 +864,13 @@ pub fn align_read(
         // be automatically dense-capable if simd-minimizers supports it, or just w=11 otherwise.
         sketch_sequence_default(&rc_seq)
     };
-    let (rev_seeds, rev) = align_oriented(config.strategy, ctx, &rc_bases, &rev_sketch);
+    let (rev_seeds, rev) = align_oriented(
+        config.strategy,
+        ctx,
+        &rc_bases,
+        &rev_sketch,
+        config.use_legacy_anchors,
+    );
 
     // Whether the read shared any minimizer with the target (in either orientation). Distinguishes
     // a seeding loss from an extension/divergence loss when classifying an unplaced read.
@@ -1270,13 +1342,13 @@ mod tests {
     }
 
     #[test]
-    fn build_anchors_fast_strategy_falls_back_to_origin_when_no_seeds() {
-        let anchors = build_anchors(Strategy::Fast, &[]);
+    fn build_anchors_legacy_fast_strategy_falls_back_to_origin_when_no_seeds() {
+        let anchors = build_anchors_legacy(Strategy::Fast, &[]);
         assert_eq!(anchors, vec![SeedAnchor { query_pos: 0, target_pos: 0 }]);
     }
 
     #[test]
-    fn build_anchors_fast_strategy_picks_most_voted_target_start() {
+    fn build_anchors_legacy_fast_strategy_picks_most_voted_target_start() {
         // target_start = target_pos - query_pos: seeds 1 and 2 both vote for
         // start=10 (majority); seed 3 votes for start=12.
         let seeds = vec![
@@ -1284,8 +1356,50 @@ mod tests {
             crate::Seed { query_pos: 5, target_pos: 15, minimizer: 2 },
             crate::Seed { query_pos: 8, target_pos: 20, minimizer: 3 },
         ];
-        let anchors = build_anchors(Strategy::Fast, &seeds);
+        let anchors = build_anchors_legacy(Strategy::Fast, &seeds);
         assert_eq!(anchors, vec![SeedAnchor { query_pos: 0, target_pos: 10 }]);
+    }
+
+    #[test]
+    fn anchors_from_chains_falls_back_to_origin_when_no_chains() {
+        let anchors = anchors_from_chains(&[], chain_cap(Strategy::Fast));
+        assert_eq!(anchors, vec![SeedAnchor { query_pos: 0, target_pos: 0 }]);
+    }
+
+    #[test]
+    fn anchors_from_chains_uses_chain_target_start_and_respects_cap() {
+        let seeds_a = vec![crate::Seed { query_pos: 0, target_pos: 100, minimizer: 1 }];
+        let seeds_b = vec![crate::Seed { query_pos: 0, target_pos: 5000, minimizer: 2 }];
+        let seeds_c = vec![crate::Seed { query_pos: 0, target_pos: 9000, minimizer: 3 }];
+        let chains = vec![
+            crate::chaining::Chain { seeds: seeds_a, score: 30 },
+            crate::chaining::Chain { seeds: seeds_b, score: 25 },
+            crate::chaining::Chain { seeds: seeds_c, score: 20 },
+        ];
+        // K=1 (Fast) keeps only the first (highest-scoring, by construction of the input
+        // order) chain's target_start, plus the unconditional (0,0) safety net.
+        let anchors = anchors_from_chains(&chains, chain_cap(Strategy::Fast));
+        assert_eq!(
+            anchors,
+            vec![
+                SeedAnchor { query_pos: 0, target_pos: 0 },
+                SeedAnchor { query_pos: 0, target_pos: 100 },
+            ]
+        );
+
+        // K=5 (Balanced) keeps all three since there are fewer than 5 chains, plus the
+        // unconditional (0,0) safety net (matches the legacy path's behavior — see
+        // issue #146's near-homopolymer fixture for why this must stay unconditional).
+        let anchors = anchors_from_chains(&chains, chain_cap(Strategy::Balanced));
+        assert_eq!(
+            anchors,
+            vec![
+                SeedAnchor { query_pos: 0, target_pos: 0 },
+                SeedAnchor { query_pos: 0, target_pos: 100 },
+                SeedAnchor { query_pos: 0, target_pos: 5000 },
+                SeedAnchor { query_pos: 0, target_pos: 9000 },
+            ]
+        );
     }
 
     #[test]
