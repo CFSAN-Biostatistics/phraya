@@ -323,15 +323,18 @@ fn run_align(
     let result = align_task_with_config(query, target, &plan, &config)
         .ok_or_else(|| format!("alignment failed for {query_id} vs {target_id}"))?;
 
-    // Build .phraya file (single-read path: expand the windowed coverage to full length).
-    let coverage = CoverageTrack::new(
-        result
-            .coverage
-            .to_full(target.len())
-            .iter()
-            .map(|&v| v as usize)
-            .collect(),
-    );
+    // Build .phraya file (single-read path: merge each alignment's window into a full-length
+    // track). Windows can overlap (e.g. a nearby alternate), so accumulate with +=.
+    let mut full_coverage = vec![0u32; target.len()];
+    for w in &result.coverage {
+        for (j, &c) in w.counts.iter().enumerate() {
+            let pos = w.start + j;
+            if pos < full_coverage.len() {
+                full_coverage[pos] += c;
+            }
+        }
+    }
+    let coverage = CoverageTrack::new(full_coverage.iter().map(|&v| v as usize).collect());
     let phraya_file = phraya::PhrayaFile::new(
         target.len() as u32,
         query_id.to_string(),
@@ -449,11 +452,12 @@ fn run_align_worker_with_plan(
                         result: phraya_align::executor::AlignmentResult| {
         all_variants.extend(result.variants);
         all_query_positions.insert(query_id, result.query_positions);
-        let cov = &result.coverage;
-        for (j, &c) in cov.counts.iter().enumerate() {
-            let pos = cov.start + j;
-            if pos < coverage_track.len() {
-                coverage_track[pos] += c;
+        for cov in &result.coverage {
+            for (j, &c) in cov.counts.iter().enumerate() {
+                let pos = cov.start + j;
+                if pos < coverage_track.len() {
+                    coverage_track[pos] += c;
+                }
             }
         }
     };
