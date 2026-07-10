@@ -686,118 +686,38 @@ fn align_oriented(
     };
     let query_len = query_bytes.len();
 
-    // ADR-0007 / issue #183: score-bounded branch-and-bound alternate extension.
+    // Extend every anchor with the strategy's engine. Previously Sensitive alone routed
+    // through ADR-0007's score-bounded branch-and-bound (`wfa_extend_capped`,
+    // `score_bound_max_s`) to cheaply abandon hopeless alternates on repeat-heavy
+    // targets, because K=∞ raw-vote anchoring could spray hundreds of spurious
+    // candidates. Seed chaining (this module's default anchor selection) collapses that
+    // explosion structurally — each repeat copy becomes one chain, not one anchor per
+    // seed within it — and Sensitive additionally caps at K=50 chains (`chain_cap`), so
+    // the anchor count here is already small before extension starts. The
+    // branch-and-bound's provable byte-identity to an uncapped baseline is no longer
+    // the correctness contract for Sensitive (superseded by empirical PA/CBS
+    // validation, see the ADR superseding ADR-0007) — extend every anchor plainly, same
+    // as Balanced/Fast. `score_bound_max_s`/`wfa_extend_capped`/`extend_alternates_bounded`
+    // remain defined and unit-tested for now (referenced only by their own tests and the
+    // debug-only legacy path's historical behavior), slated for removal alongside the
+    // legacy toggle once HPC validation confirms the chained path.
     //
-    // This is a *Sensitive-only* optimisation. Sensitive uses K=∞ anchors (every distinct
-    // seed target-start), so on repeat-heavy targets a read sprays hundreds of spurious
-    // alternate anchors — each of which the old code extended to completion with WFA only
-    // for `score_alignments` to discard it against the 0.95 multi-mapping filter. That
-    // filter is a bound available *during* extension: an alternate whose edit distance
-    // exceeds `max_s = score_bound_max_s(query_len, d_best)` can never reach score
-    // ratio ≥ 0.95, so its WFA wavefront (`fill_wfa_fitting`'s `for s in 1..=max_s` loop)
-    // can be abandoned early rather than run to its natural depth.
-    //
-    // Byte-identity for Sensitive is provable, not merely observed:
-    //   * Sensitive extends every anchor with WFA in both paths; `wfa_extend_capped` and the
-    //     uncapped `wfa_extend` share the same `fill_wfa_fitting_impl` core, so a *retained*
-    //     alternate has an identical CIGAR/edit-distance/target-span.
-    //   * The cap is always ≥ `d_best` (`max_s - d_best = floor(0.05·(L - d_best)) ≥ 0`), so
-    //     the min-edit primary is never abandoned. An alternate is abandoned only when its
-    //     edit distance exceeds the cap for the *current* incumbent, and the incumbent only
-    //     falls, so an abandoned alternate exceeds even the final cap — exactly the alternates
-    //     `score_alignments`'s 0.95 filter would have dropped. Reported variants, primary
-    //     CIGAR, and surviving multi-mapping positions are therefore unchanged.
-    //
-    // Balanced and Fast deliberately do NOT use the cap:
-    //   * Balanced is already bounded to K=5 anchors (#184), so anchor-count is not its
-    //     bottleneck, and its engine is Myers — which is O(n·⌈m/64⌉) fixed-cost and *not*
-    //     boundable. Routing Balanced's alternates through capped WFA would (a) break
-    //     byte-identity, because Myers and WFA agree on edit distance but can pick different
-    //     equally-optimal CIGARs on degenerate/high-divergence reads (the #144 CIGAR-equality
-    //     guarantee holds for well-behaved alignments, not co-optimal-path-rich ones), and
-    //     (b) be *slower* when `d_best` is large (a deep WFA wavefront vs Myers' fixed cost).
-    //   * Fast is K=1: a single anchor, no alternates to bound.
-    // So Balanced/Fast keep extending every anchor with their strategy engine, unchanged.
-    //
-    // Seeds are occurrence-capped upstream (issue #194): `find_seeds_indexed_capped` already
-    // dropped hyper-frequent minimizers, so the anchor set here is bounded even on
-    // repeat-dense targets before the BnB cap applies.
-
-    let alignments: Vec<Alignment> = if strategy == Strategy::Sensitive {
-        // Vote count per candidate target start (mirrors `build_anchors`), used only to
-        // order extension so the incumbent `d_best` tightens as fast as possible. Output is
-        // emitted in `build_anchors` order regardless, so extension order is invisible to
-        // the serialized `.phraya`/`.phraya.queries`.
-        let mut votes: HashMap<usize, usize> = HashMap::new();
-        for s in &seeds {
-            let ts = (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
-            *votes.entry(ts).or_insert(0) += 1;
+    // Window the target to ~2× query length from the anchor position. WFA is O(s·n)
+    // where s = edit distance; for s << min(|q|,|t|) it is dramatically faster than
+    // O(|q|×|t|) DP, but s grows with the length difference — passing the full
+    // reference to a 150bp read makes the edit distance ~|target|-|query| (length gap)
+    // rather than ~2% divergence, turning O(s) into O(target²). The 2× margin
+    // accommodates indels while keeping the aligned window tractable.
+    let mut alignments = Vec::with_capacity(anchors.len());
+    for anchor in anchors {
+        let margin = query_len * 2;
+        let window_end = (anchor.target_pos + margin).min(target.bases().len());
+        let target_window = &target.bases()[..window_end];
+        match extend_anchor(strategy, query_bytes, target_window, anchor) {
+            Ok(aln) => alignments.push(aln),
+            Err(e) => log::warn!("alignment failed for anchor {:?}: {:?}", anchor, e),
         }
-        let mut ext_order: Vec<usize> = (0..anchors.len()).collect();
-        ext_order.sort_by_key(|&i| {
-            std::cmp::Reverse(votes.get(&anchors[i].target_pos).copied().unwrap_or(0))
-        });
-
-        let mut slots: Vec<Option<Alignment>> = std::iter::repeat_with(|| None)
-            .take(anchors.len())
-            .collect();
-        let mut d_best = usize::MAX;
-
-        for &i in &ext_order {
-            let anchor = anchors[i];
-            // Window the target to ~2× query length from the anchor position (see the
-            // O(target²) note below); passing the full reference would inflate edit distance
-            // to the length gap.
-            let margin = query_len * 2;
-            let window_end = (anchor.target_pos + margin).min(target.bases().len());
-            let target_window = &target.bases()[..window_end];
-
-            let result = if d_best == usize::MAX {
-                // First (top-voted) anchor: extend fully to establish the incumbent bound.
-                wfa_extend(query_bytes, target_window, anchor)
-            } else {
-                // Cap the WFA s-loop at the 0.95 score bound so a hopeless alternate abandons
-                // instead of running a full extension it could never report.
-                let max_s = score_bound_max_s(query_len, d_best);
-                wfa_extend_capped(query_bytes, target_window, anchor, max_s)
-            };
-
-            match result {
-                Ok(aln) => {
-                    if aln.edit_distance < d_best {
-                        d_best = aln.edit_distance;
-                    }
-                    slots[i] = Some(aln);
-                }
-                // Abandoned (edit > cap) or failed: drop. An abandoned alternate could not
-                // have passed the 0.95 filter, so nothing is lost.
-                Err(_) => {}
-            }
-        }
-
-        // Emit in build_anchors order so the serialized alternate ordering is unchanged.
-        slots.into_iter().flatten().collect()
-    } else {
-        // Balanced / Fast: extend every anchor with the strategy engine, unchanged.
-        let mut alignments = Vec::with_capacity(anchors.len());
-        for anchor in anchors {
-            // Window the target to ~2× query length from the anchor position.
-            // WFA is O(s·n) where s = edit distance; for s << min(|q|,|t|) it is
-            // dramatically faster than O(|q|×|t|) DP, but s grows with the length
-            // difference — passing the full reference to a 150bp read makes the
-            // edit distance ~|target|-|query| (length gap) rather than ~2% divergence,
-            // turning O(s) into O(target²). The 2× margin accommodates indels while
-            // keeping the aligned window tractable.
-            let margin = query_len * 2;
-            let window_end = (anchor.target_pos + margin).min(target.bases().len());
-            let target_window = &target.bases()[..window_end];
-            match extend_anchor(strategy, query_bytes, target_window, anchor) {
-                Ok(aln) => alignments.push(aln),
-                Err(e) => log::warn!("alignment failed for anchor {:?}: {:?}", anchor, e),
-            }
-        }
-        alignments
-    };
+    }
 
     if alignments.is_empty() {
         return (n_seeds, None);

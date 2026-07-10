@@ -1,6 +1,6 @@
 # 7. Score-bounded early abandonment of alternate anchors
 
-- **Status**: Proposed
+- **Status**: Superseded by ADR-0012
 - **Date**: 2026-07-03
 
 ## Context
