@@ -1,12 +1,19 @@
 //! Issue #176: alignment strategy ladder (Sensitive / Balanced / Fast).
 //!
 //! New semantics:
-//!   - Sensitive: seeded WFA, all anchors (K=∞) — the canonical reference path.
-//!   - Balanced: Myers fitting (≤500bp) with WFA fallback, top 5 anchors (K=5) — exact results, faster engine.
-//!   - Fast:     low-sensitivity (seed subsampling + divergence cutoff, K=1).
+//!   - Sensitive: seeded WFA, all genuine chains up to a K=50 cap — the canonical
+//!     reference path (was raw-vote K=∞ before the chaining redesign, ADR-0012; a clean
+//!     uniquely-mapping read chains to one dominant candidate either way).
+//!   - Balanced: Myers fitting (≤500bp) with WFA fallback, top 5 chains (K=5) — exact
+//!     results, faster engine.
+//!   - Fast:     low-sensitivity (seed subsampling + divergence cutoff, K=1 chain).
 //!
 //! Because Myers and WFA compute identical edit distances, Sensitive and Balanced must agree
 //! on the variants they call for a uniquely-mapping read. This file pins that invariant.
+//! Seed chaining (ADR-0012) changed *how* candidate loci are selected (co-linear seeds
+//! collapsed into chains before extension, rather than independent per-anchor voting) but
+//! not the invariant itself: a clean, uniquely-mapping read has one true locus regardless
+//! of the anchor-selection mechanism, so both strategies still converge on it.
 
 use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::Sequence;

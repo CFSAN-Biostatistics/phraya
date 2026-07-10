@@ -3,20 +3,33 @@ use phraya_core::types::Sequence;
 use phraya_io::plan::{PhrayaPlan, UseCase};
 /// Issue #184: feat(align): recall-axis strategy ladder; rename exact -> sensitive, K=1/5/inf (ADR-0008)
 ///
-/// This test file contains RED (failing) acceptance tests for issue #184.
-/// Tests verify that the strategy ladder is redefined on a single recall axis (anchor cap K),
-/// and that the `exact` strategy is renamed to `sensitive`.
+/// This test file originally shipped as RED acceptance tests for issue #184. Tests verify
+/// that the strategy ladder is defined on a single recall axis (anchor cap K), and that
+/// the `exact` strategy is renamed to `sensitive`.
+///
+/// **Mechanism update (ADR-0012, chaining redesign)**: `K` was originally "how many raw
+/// minimizer-vote anchor positions get extended" — `build_anchors` (now
+/// `build_anchors_legacy`, debug-only) voted each seed for an implied target-start and
+/// extended up to K of those raw positions independently. `K` is now "how many top
+/// seed-chains get extended" (`chain_cap`, `chain_seeds`/`anchors_from_chains`) — co-linear
+/// seeds are collapsed into candidate loci before extension, so a repeat family that would
+/// have sprayed many raw votes now produces one chain per genuine copy. The assertions
+/// below are unchanged and still pass: a clean tandem-repeat fixture chains each copy into
+/// exactly one candidate, so the K=1/5/∞(now 50) placement-count hierarchy holds under
+/// chaining exactly as it held under raw voting.
 ///
 /// Expected API after implementation:
-/// - Strategy enum: fast (K=1), balanced (K=5), sensitive (K=∞)
+/// - Strategy enum: fast (K=1), balanced (K=5), sensitive (K=50, see ADR-0012 — no longer
+///   literally infinite; a large finite cap replaces the old K=∞ raw-vote enumeration)
 /// - AlignConfig struct: new AlignConfig::sensitive() method
 /// - --strategy exact is rejected with updated error message
-/// - Balanced strategy reports at most 5 anchors (multi-mapping preserved)
-/// - Sensitive strategy reproduces old exact behavior (all anchors)
+/// - Balanced strategy reports at most 5 chains (multi-mapping preserved)
+/// - Sensitive strategy reproduces old exact behavior (all genuine chains, up to the cap)
 /// - Coverage windows unchanged: fast ±150bp, balanced ±50bp, sensitive ±25bp
 ///
 /// References:
 /// - ADR-0008: Strategy ladder as a single recall axis
+/// - ADR-0012: Seed chaining supersedes ADR-0007's branch-and-bound (mechanism change)
 /// - ADR-0003: Earlier strategy definitions (superseded)
 use std::collections::HashMap;
 
@@ -118,10 +131,11 @@ fn issue_184_coverage_windows_unchanged() {
 // phraya-cli/tests/issue_184_cli_strategy_tests.rs.
 
 // ============================================================================
-// ANCHOR CAP K TESTS: Verify strategies implement K=1/5/∞ behavior
+// ANCHOR CAP K TESTS: Verify strategies implement K=1/5/50 behavior (chain count,
+// per ADR-0012 — was raw anchor-vote count before the chaining redesign)
 // ============================================================================
 
-/// Test that fast strategy (K=1) reports at most 1 anchor.
+/// Test that fast strategy (K=1) reports at most 1 chain-derived anchor.
 /// Acceptance criterion: A read at an ambiguous locus reports ≤1 placement.
 /// The tandem duplication fixture has two equally-good matches at offsets 0 and N.
 #[test]
@@ -147,9 +161,10 @@ fn issue_184_fast_strategy_reports_single_anchor_on_tandem() {
     );
 }
 
-/// Test that balanced strategy (K=5) reports multiple placements at ambiguous loci.
+/// Test that balanced strategy (K=5 chains) reports multiple placements at ambiguous loci.
 /// Acceptance criterion: A read at a genuinely ambiguous locus reports >1 placement (multi-mapping preserved).
-/// The tandem duplication fixture has two equally-good matches; balanced with K=5 should report both.
+/// The tandem duplication fixture has two equally-good matches, each collapsing to its own
+/// chain; balanced with K=5 chains should report both.
 #[test]
 fn issue_184_balanced_strategy_preserves_multimapping_at_k5() {
     let unit = random_dna(0x0FAC_E001, 80);
@@ -177,9 +192,9 @@ fn issue_184_balanced_strategy_preserves_multimapping_at_k5() {
     );
 }
 
-/// Test that balanced strategy (K=5) does not report excessive anchors.
-/// Acceptance criterion: Balanced reports ≤5 primary anchors (bounded by K=5).
-/// On a very repetitive target with many possible alignments, balanced caps at 5.
+/// Test that balanced strategy (K=5 chains) does not report excessive placements.
+/// Acceptance criterion: Balanced reports ≤5 primary chains (bounded by K=5).
+/// On a very repetitive target with many possible alignments, balanced caps at 5 chains.
 #[test]
 fn issue_184_balanced_strategy_caps_at_k5() {
     // Create a highly repetitive read: 50bp of a single k-mer unit.
@@ -187,7 +202,8 @@ fn issue_184_balanced_strategy_caps_at_k5() {
     let query = Sequence::new(unit.to_vec(), None, "read1".to_string(), None);
 
     // Create a target with many repeat copies: 20 tandem repeats of the unit.
-    // This creates >20 possible seed anchors, but balanced should cap at 5.
+    // This creates >20 possible seed anchors (which chaining collapses toward one
+    // chain per genuine repeat copy), but balanced should cap reporting at 5 chains.
     let mut target_bases = Vec::new();
     for _ in 0..20 {
         target_bases.extend_from_slice(unit);
@@ -206,14 +222,16 @@ fn issue_184_balanced_strategy_caps_at_k5() {
     .expect("balanced alignment on repetitive target should succeed");
 
     assert!(
-        result.query_positions.len() <= 6, // Up to 5 seed anchors + 1 fallback
-        "Balanced (K=5) must cap reported placements at ~6 (5 anchors + fallback), got {}",
+        result.query_positions.len() <= 6, // Up to 5 chains + 1 fallback
+        "Balanced (K=5) must cap reported placements at ~6 (5 chains + fallback), got {}",
         result.query_positions.len()
     );
 }
 
-/// Test that sensitive strategy (K=∞) reports all anchors (regression test).
-/// Acceptance criterion: Sensitive reproduces the old exact behavior: all distinct seed targets + fallback.
+/// Test that sensitive strategy reports all genuine chains (regression test).
+/// Acceptance criterion: Sensitive reproduces the old exact behavior: all distinct
+/// candidate loci + fallback (now bounded by chain_cap=50 rather than literally K=∞ —
+/// see ADR-0012 — but a small tandem-repeat fixture like this stays far below that cap).
 #[test]
 fn issue_184_sensitive_strategy_reports_all_anchors() {
     let unit = random_dna(0x0FAC_E001, 80);
@@ -234,21 +252,25 @@ fn issue_184_sensitive_strategy_reports_all_anchors() {
     )
     .expect("sensitive alignment should succeed");
 
-    // Sensitive should report both tandem matches (K=∞ means all anchors).
+    // Sensitive should report both tandem matches (each repeat copy collapses to its own
+    // chain; a large chain cap means both are reported).
     assert!(
         result.query_positions.len() >= 2,
-        "Sensitive (K=∞) must report all distinct seed target-starts, got {} placements",
+        "Sensitive must report all distinct candidate loci, got {} placements",
         result.query_positions.len()
     );
 }
 
 /// Test that sensitive reproduces the old exact anchor set (on a multi-mapping fixture).
 /// Acceptance criterion: Sensitive and old-exact both report ≥2 placements on tandem duplication.
-/// This is a regression test to ensure sensitive() provides the same anchor list as exact() did.
+/// This is a regression test to ensure sensitive() provides the same placement set that
+/// exact() did — now via chaining rather than raw anchor voting (ADR-0012), but the
+/// observable outcome on a clean tandem-repeat fixture is unchanged.
 #[test]
 fn issue_184_sensitive_reproduces_old_exact_anchor_set() {
     let unit = random_dna(0xDEAD_BEEF, 90);
-    // Create multiple seed anchors: 3 tandem repeats of unit, allowing ≥3 equally-good placements.
+    // Create multiple candidate loci: 3 tandem repeats of unit, allowing ≥3 equally-good
+    // placements (each repeat copy collapses to one chain).
     let mut target_bases = unit.clone();
     target_bases.extend_from_slice(&unit);
     target_bases.extend_from_slice(&unit);
@@ -266,10 +288,11 @@ fn issue_184_sensitive_reproduces_old_exact_anchor_set() {
     )
     .expect("sensitive alignment should succeed");
 
-    // Sensitive (K=∞) should report all three tandem matches.
+    // Sensitive should report all three tandem matches (each copy is its own chain,
+    // and 3 chains is far below the K=50 cap).
     assert!(
         sensitive.query_positions.len() >= 3,
-        "Sensitive must report all seed anchors on 3×tandem duplication, got {}",
+        "Sensitive must report all candidate loci on 3×tandem duplication, got {}",
         sensitive.query_positions.len()
     );
 }
@@ -404,9 +427,9 @@ fn issue_184_align_config_factory_methods_correct() {
 // ============================================================================
 
 /// Test the complete strategy ladder on a single fixture:
-/// - Fast (K=1): single best anchor
-/// - Balanced (K=5): multiple anchors, capped at ~5
-/// - Sensitive (K=∞): all anchors
+/// - Fast (K=1): single best chain
+/// - Balanced (K=5): multiple chains, capped at ~5
+/// - Sensitive (K=50): all genuine chains (this fixture has 7, far below the cap)
 ///
 /// This integration test ensures the ladder behaves as specified across all three rungs.
 #[test]
@@ -445,16 +468,16 @@ fn issue_184_strategy_ladder_on_recall_axis() {
     let sensitive_count = sensitive.query_positions.len();
 
     // Verify the hierarchy:
-    // fast (K=1) <= balanced (K=5) <= sensitive (K=∞)
+    // fast (K=1) <= balanced (K=5) <= sensitive (K=50, far above this fixture's 7 chains)
     assert_eq!(fast_count, 1, "Fast must report exactly 1 placement (K=1)");
     assert!(
-        balanced_count <= 6, // Up to 5 seed anchors + 1 fallback
+        balanced_count <= 6, // Up to 5 chains + 1 fallback
         "Balanced must report ≤6 placements (K=5 + fallback), got {}",
         balanced_count
     );
     assert_eq!(
         sensitive_count, 7,
-        "Sensitive must report all 7 tandem repeats (K=∞), got {}",
+        "Sensitive must report all 7 tandem repeats (each its own chain), got {}",
         sensitive_count
     );
     assert!(
