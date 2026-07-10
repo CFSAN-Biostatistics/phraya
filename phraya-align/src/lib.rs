@@ -1,8 +1,10 @@
+pub mod chaining;
 pub mod executor;
 pub mod seeding;
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
 
+pub use chaining::{chain_seeds, Chain, ChainParams};
 pub use executor::{
     align_read, align_task_with_config, extend_alternates_bounded, score_bound_max_s,
     wfa_extend_capped, AlignConfig, AlignStats, Strategy, TargetContext, WindowedCoverage,
