@@ -1,14 +1,14 @@
 use crate::seeding::{
     build_minimizer_index, find_seeds_indexed_capped, seed_occurrence_cap, MinimizerIndex,
 };
-use crate::{myers_extend, score_alignments, wfa_extend, wfa_simd, Alignment, SeedAnchor, WfaError, WfaResult};
+use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{
     reverse_complement, sketch_sequence_default, MinimizerSketch, Sequence, Strand,
     VariantObservation,
 };
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::PhrayaPlan;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Helper: Filter a dense sketch to the w=11 subset using membership tags from the plan.
@@ -89,11 +89,6 @@ pub struct AlignConfig {
     pub strategy: Strategy,
     /// Coverage window radius in base pairs
     pub coverage_window_radius: usize,
-    /// Debug-only A/B toggle: use the pre-chaining raw-vote anchor selection
-    /// (`build_anchors_legacy`) instead of seed chaining. Not CLI-exposed — exists
-    /// purely to compare legacy vs chained behavior during the chaining redesign's HPC
-    /// validation phase; removed once that validation is complete.
-    pub use_legacy_anchors: bool,
 }
 
 impl AlignConfig {
@@ -108,15 +103,7 @@ impl AlignConfig {
         AlignConfig {
             strategy,
             coverage_window_radius,
-            use_legacy_anchors: false,
         }
-    }
-
-    /// Debug-only: force the pre-chaining raw-vote anchor selection path. See
-    /// [`AlignConfig::use_legacy_anchors`].
-    pub fn with_legacy_anchors(mut self, use_legacy: bool) -> Self {
-        self.use_legacy_anchors = use_legacy;
-        self
     }
 
     /// Create a Fast strategy config (±150bp window).
@@ -299,75 +286,6 @@ impl AlignStats {
     }
 }
 
-/// Debug-only legacy anchor selection (raw minimizer vote counting, pre-chaining).
-///
-/// Superseded by [`anchors_from_chains`]: this votes each seed independently for an
-/// implied target-start and extends up to K of those raw positions with no attempt to
-/// collapse co-linear seeds into a single candidate region first, so a `balanced` read
-/// could pay for up to 6 independent DP extensions where chaining pays for far fewer.
-/// Kept only behind [`AlignConfig::use_legacy_anchors`] as an A/B debugging tool during
-/// the chaining redesign's validation; not reachable from the CLI.
-///
-/// - `Fast`: K=1 — a single anchor at the best-supported target start (minimizer vote),
-///   collapsing the per-read anchor count to O(1) even when a repeat sprays thousands
-///   of seeds. Falls back to `(0,0)` when no seeds are shared.
-/// - `Balanced`: K=5 — top 5 target starts ranked by seed vote count (with fallback `(0,0)`).
-///   Balances between Fast's O(1) speed and Sensitive's O(n) sensitivity.
-/// - `Sensitive`: K=∞ — every distinct seed-derived target start, plus a `(0,0)` fallback
-///   that wins ties in degenerate/repetitive sequences. Highest sensitivity.
-fn build_anchors_legacy(strategy: Strategy, seeds: &[crate::Seed]) -> Vec<SeedAnchor> {
-    let target_start_of = |s: &crate::Seed| (s.target_pos as i64 - s.query_pos as i64).max(0) as usize;
-
-    match strategy {
-        Strategy::Fast => {
-            let mut votes: HashMap<usize, usize> = HashMap::new();
-            for s in seeds {
-                *votes.entry(target_start_of(s)).or_insert(0) += 1;
-            }
-            // Most-voted target start; ties broken toward the earliest position.
-            match votes
-                .into_iter()
-                .max_by_key(|&(start, count)| (count, std::cmp::Reverse(start)))
-            {
-                Some((best_start, _)) => vec![SeedAnchor { query_pos: 0, target_pos: best_start }],
-                None => vec![SeedAnchor { query_pos: 0, target_pos: 0 }],
-            }
-        }
-        Strategy::Balanced => {
-            // K=5: top 5 target starts by vote count
-            let mut votes: HashMap<usize, usize> = HashMap::new();
-            for s in seeds {
-                *votes.entry(target_start_of(s)).or_insert(0) += 1;
-            }
-            // Sort by vote count (descending), ties broken toward earliest position
-            let mut sorted: Vec<_> = votes.into_iter().collect();
-            sorted.sort_by(|&(pos_a, cnt_a), &(pos_b, cnt_b)| {
-                // Primary sort: count descending; ties: position ascending
-                (std::cmp::Reverse(cnt_a), pos_a).cmp(&(std::cmp::Reverse(cnt_b), pos_b))
-            });
-            // Keep the top 5 by vote count, plus the (0,0) fallback
-            let mut result = vec![SeedAnchor { query_pos: 0, target_pos: 0 }];
-            for (start, _count) in sorted.iter().take(5) {
-                result.push(SeedAnchor { query_pos: 0, target_pos: *start });
-            }
-            result
-        }
-        Strategy::Sensitive => {
-            // K=∞: all distinct seed target-starts
-            let mut seen = HashSet::new();
-            let mut result = vec![SeedAnchor { query_pos: 0, target_pos: 0 }];
-            seen.insert(0usize);
-            for s in seeds {
-                let target_start = target_start_of(s);
-                if seen.insert(target_start) {
-                    result.push(SeedAnchor { query_pos: 0, target_pos: target_start });
-                }
-            }
-            result
-        }
-    }
-}
-
 /// Number of top chains extended per strategy — chaining's counterpart to the legacy
 /// path's raw anchor cap `K`. `Sensitive` gets a large finite cap (50), not the legacy
 /// path's literal `K = ∞`: chaining already collapses most of the raw-vote explosion
@@ -425,162 +343,6 @@ fn extend_anchor(
             }
         }
     }
-}
-
-/// ADR-0007 / issue #183: score-bounded branch-and-bound alternate extension.
-///
-/// Compute the score-bounded `max_s` cap for extending an *alternate* anchor, given the
-/// incumbent primary's edit distance `d_best` and query length `query_len`.
-///
-/// `max_s = floor(0.05 * query_len + 0.95 * d_best)` is the exact edit distance at which
-/// the multi-mapping score ratio `(1 - d_alt/query_len) / (1 - d_best/query_len)` drops
-/// to the 0.95 reporting threshold — so an alternate needing more than `max_s` edits could
-/// never pass the existing 0.95 filter and is safe to abandon early.
-///
-/// Safety invariant: `max_s >= d_best` always (`max_s - d_best = floor(0.05 * (query_len -
-/// d_best)) >= 0` for `d_best <= query_len`), so an anchor that could beat the incumbent
-/// and become the new primary is never pruned.
-pub fn score_bound_max_s(query_len: usize, d_best: usize) -> usize {
-    // ADR-0007 / issue #183: score-bounded early abandonment.
-    //
-    // The 0.95 reporting threshold is load-bearing for BOTH speed and correctness:
-    // it defines the score ratio (1 - d_alt/L) / (1 - d_best/L) below which an alternate
-    // cannot pass the existing filter in `score_alignments`. This bound allows us to
-    // abandon alternates early during extension that could never contribute to output.
-    //
-    // Solving for d_alt at which the ratio hits 0.95:
-    //   (1 - d_alt/L) / (1 - d_best/L) = 0.95
-    //   1 - d_alt/L = 0.95 * (1 - d_best/L)
-    //   1 - d_alt/L = 0.95 - 0.95*d_best/L
-    //   d_alt/L = 1 - 0.95 + 0.95*d_best/L
-    //   d_alt/L = 0.05 + 0.95*d_best/L
-    //   d_alt = 0.05*L + 0.95*d_best
-    //
-    // Safety invariant: max_s >= d_best always (the cap is never tighter than the incumbent),
-    // because max_s - d_best = 0.05*(L - d_best) >= 0 for d_best <= L, so an anchor that
-    // could beat the incumbent is never pruned.
-    ((0.05 * query_len as f64 + 0.95 * d_best as f64).floor()) as usize
-}
-
-/// ADR-0007 / issue #183: extend an alternate anchor with WFA under a score-bound cap.
-///
-/// Like [`wfa_extend`], but abandons (returns `Err(WfaError::AlignmentFailed)`) if no
-/// fitting-end is reached within `max_s_cap` edits, instead of running to completion.
-/// Built on the `max_s_cap`-aware primitive introduced in #180
-/// (`wfa_simd::fill_wfa_fitting_impl`).
-pub fn wfa_extend_capped(
-    query: &[u8],
-    target: &[u8],
-    seed: SeedAnchor,
-    max_s_cap: usize,
-) -> WfaResult {
-    // ADR-0007 / issue #183: score-capped WFA extension for alternates.
-    //
-    // For production use, we call the uncapped WFA and then validate the result
-    // against the cap. This avoids issues with test-only behavior in
-    // fill_wfa_fitting_impl's capped mode.
-
-    // Validate seed position
-    if seed.query_pos > query.len() || seed.target_pos > target.len() {
-        return Err(WfaError::InvalidInput(
-            "Seed position beyond sequence length".to_string(),
-        ));
-    }
-
-    // Extract suffix sequences
-    let query_suffix = &query[seed.query_pos..];
-    let target_suffix = &target[seed.target_pos..];
-
-    let query_len = query_suffix.len();
-    let target_len = target_suffix.len();
-
-    // Handle empty suffixes
-    if query_len == 0 && target_len == 0 {
-        return Ok(Alignment {
-            cigar: String::new(),
-            edit_distance: 0,
-            query_start: seed.query_pos,
-            query_end: seed.query_pos,
-            target_start: seed.target_pos,
-            target_end: seed.target_pos,
-        });
-    }
-
-    // Pass the cap into the wavefront loop itself (the #180 primitive) so a hopeless
-    // anchor's s-loop actually stops at max_s_cap instead of running to completion and
-    // being rejected afterwards — that early exit is the entire point of this function
-    // and of issue #183 (a junk anchor must not pay for a full extension it can never
-    // report). A `Some(cigar, edit_distance, ..)` result is guaranteed to have
-    // edit_distance <= max_s_cap by construction (the s-loop never explores beyond the
-    // cap), so no further validation is needed.
-    match wfa_simd::fill_wfa_fitting_impl(query_suffix, target_suffix, Some(max_s_cap)) {
-        Some((cigar, edit_distance, target_consumed)) => Ok(Alignment {
-            cigar,
-            edit_distance,
-            query_start: seed.query_pos,
-            query_end: seed.query_pos + query_len,
-            target_start: seed.target_pos,
-            target_end: seed.target_pos + target_consumed,
-        }),
-        None => Err(WfaError::AlignmentFailed(
-            "alignment abandoned: edit distance exceeded score-bound cap".to_string(),
-        )),
-    }
-}
-
-/// ADR-0007 / issue #183: branch-and-bound extension of alternate anchors.
-///
-/// `primary_edit_distance` seeds the incumbent bound `d_best`. Each alternate is extended
-/// via [`wfa_extend_capped`] at `max_s = score_bound_max_s(query.len(), d_best)`; whenever
-/// an alternate's edit distance beats the current `d_best`, the bound tightens
-/// (monotonically non-increasing) for subsequent alternates. Abandoned alternates are
-/// dropped from the returned list — they never reach `score_alignments`, so reported
-/// variants and multi-mapping output are unchanged versus extending every alternate to
-/// completion; only the *work* to get there is reduced.
-pub fn extend_alternates_bounded(
-    query: &[u8],
-    target: &[u8],
-    primary_edit_distance: usize,
-    alternates: &[SeedAnchor],
-) -> Vec<Alignment> {
-    // ADR-0007 / issue #183: branch-and-bound extension of alternate anchors.
-    //
-    // The primary anchor has already been extended, giving us an incumbent edit distance
-    // `d_best`. For each alternate, we compute a score-bounded cap `max_s` from the 0.95
-    // reporting threshold. Alternates whose true edit distance exceeds `max_s` could never
-    // pass the filter, so we abandon them early via WFA's capped mode (issue #180).
-    //
-    // As we discover better alternates (smaller edit distance), we tighten the cap for
-    // subsequent anchors — this is the "branch-and-bound" optimization that pulls away from
-    // junk anchors quickly.
-    //
-    // The alternates returned here are exactly those that survive the score bound and will
-    // later pass through `score_alignments` at the 0.95 threshold. Output is unchanged
-    // versus extending every alternate to completion; only the *work* to get there is reduced.
-
-    let query_len = query.len();
-    let mut d_best = primary_edit_distance;
-    let mut retained = Vec::new();
-
-    for &anchor in alternates {
-        let max_s = score_bound_max_s(query_len, d_best);
-        match wfa_extend_capped(query, target, anchor, max_s) {
-            Ok(aln) => {
-                // Successfully extended within the cap.
-                if aln.edit_distance < d_best {
-                    // Found a better alternate; tighten the bound for subsequent alternates.
-                    d_best = aln.edit_distance;
-                }
-                retained.push(aln);
-            }
-            Err(_) => {
-                // Abandoned: edit distance exceeded the cap. Drop this alternate.
-                // It couldn't pass the 0.95 filter anyway, so nothing is lost.
-            }
-        }
-    }
-
-    retained
 }
 
 /// Precomputed, read-only per-target data shared across every query aligned to one
@@ -666,7 +428,6 @@ fn align_oriented(
     ctx: &TargetContext<'_>,
     query_bytes: &[u8],
     query_sketch: &MinimizerSketch,
-    use_legacy_anchors: bool,
 ) -> (usize, Option<crate::ScoredAlignments>) {
     let target = ctx.target;
     let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
@@ -674,16 +435,11 @@ fn align_oriented(
 
     // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
     // Seeds mid-query would miss variants before the seed; aligning from query position 0
-    // ensures the full query is aligned. Anchor selection is strategy-dependent.
-    //
-    // Debug-only A/B path: `use_legacy_anchors` selects the pre-chaining raw-vote
-    // selection (see AlignConfig::use_legacy_anchors); default is chained anchors.
-    let anchors = if use_legacy_anchors {
-        build_anchors_legacy(strategy, &seeds)
-    } else {
-        let chains = crate::chaining::chain_seeds(&seeds, &crate::chaining::ChainParams::default());
-        anchors_from_chains(&chains, chain_cap(strategy))
-    };
+    // ensures the full query is aligned. Anchor selection is strategy-dependent: seeds are
+    // collapsed into co-linear chains first (ADR-0012), then the top `chain_cap(strategy)`
+    // chains become anchors.
+    let chains = crate::chaining::chain_seeds(&seeds, &crate::chaining::ChainParams::default());
+    let anchors = anchors_from_chains(&chains, chain_cap(strategy));
     let query_len = query_bytes.len();
 
     // Extend every anchor with the strategy's engine. Previously Sensitive alone routed
@@ -763,13 +519,7 @@ pub fn align_read(
     // - Sensitive: use full dense set for better recall in variant-dense regions
     let fwd_sketch = get_effective_sketch(query.id(), plan, config.strategy)
         .unwrap_or_else(|| sketch_sequence_default(query));
-    let (fwd_seeds, fwd) = align_oriented(
-        config.strategy,
-        ctx,
-        query.bases(),
-        &fwd_sketch,
-        config.use_legacy_anchors,
-    );
+    let (fwd_seeds, fwd) = align_oriented(config.strategy, ctx, query.bases(), &fwd_sketch);
 
     let rc_bases = reverse_complement(query.bases());
     let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
@@ -784,13 +534,7 @@ pub fn align_read(
         // be automatically dense-capable if simd-minimizers supports it, or just w=11 otherwise.
         sketch_sequence_default(&rc_seq)
     };
-    let (rev_seeds, rev) = align_oriented(
-        config.strategy,
-        ctx,
-        &rc_bases,
-        &rev_sketch,
-        config.use_legacy_anchors,
-    );
+    let (rev_seeds, rev) = align_oriented(config.strategy, ctx, &rc_bases, &rev_sketch);
 
     // Whether the read shared any minimizer with the target (in either orientation). Distinguishes
     // a seeding loss from an extension/divergence loss when classifying an unplaced read.
@@ -1207,27 +951,6 @@ mod tests {
     }
 
     #[test]
-    fn wfa_extend_capped_rejects_seed_beyond_sequence_length() {
-        let query = b"ACGT";
-        let target = b"ACGT";
-        let seed = SeedAnchor { query_pos: 10, target_pos: 0 };
-        let result = wfa_extend_capped(query, target, seed, 5);
-        assert!(matches!(result, Err(WfaError::InvalidInput(_))));
-    }
-
-    #[test]
-    fn wfa_extend_capped_handles_fully_consumed_suffixes() {
-        let query = b"ACGT";
-        let target = b"ACGT";
-        let seed = SeedAnchor { query_pos: 4, target_pos: 4 }; // both suffixes empty
-        let result = wfa_extend_capped(query, target, seed, 5).expect("empty suffixes align trivially");
-        assert_eq!(result.edit_distance, 0);
-        assert_eq!(result.cigar, "");
-        assert_eq!(result.query_start, 4);
-        assert_eq!(result.query_end, 4);
-    }
-
-    #[test]
     fn is_in_repeat_region_matches_linear_scan_at_boundaries() {
         // Adjacent, non-overlapping regions as produced by detect_tandem_repeats:
         // [10, 20), [20, 30), gap, [50, 55)
@@ -1259,25 +982,6 @@ mod tests {
         for pos in 0..60u32 {
             assert_eq!(is_in_hotspot(pos, &intervals), linear(pos), "mismatch at pos {pos}");
         }
-    }
-
-    #[test]
-    fn build_anchors_legacy_fast_strategy_falls_back_to_origin_when_no_seeds() {
-        let anchors = build_anchors_legacy(Strategy::Fast, &[]);
-        assert_eq!(anchors, vec![SeedAnchor { query_pos: 0, target_pos: 0 }]);
-    }
-
-    #[test]
-    fn build_anchors_legacy_fast_strategy_picks_most_voted_target_start() {
-        // target_start = target_pos - query_pos: seeds 1 and 2 both vote for
-        // start=10 (majority); seed 3 votes for start=12.
-        let seeds = vec![
-            crate::Seed { query_pos: 0, target_pos: 10, minimizer: 1 },
-            crate::Seed { query_pos: 5, target_pos: 15, minimizer: 2 },
-            crate::Seed { query_pos: 8, target_pos: 20, minimizer: 3 },
-        ];
-        let anchors = build_anchors_legacy(Strategy::Fast, &seeds);
-        assert_eq!(anchors, vec![SeedAnchor { query_pos: 0, target_pos: 10 }]);
     }
 
     #[test]

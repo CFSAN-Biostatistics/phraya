@@ -6,8 +6,8 @@ pub mod wfa_simd_dispatch;
 
 pub use chaining::{chain_seeds, Chain, ChainParams};
 pub use executor::{
-    align_read, align_task_with_config, extend_alternates_bounded, score_bound_max_s,
-    wfa_extend_capped, AlignConfig, AlignStats, Strategy, TargetContext, WindowedCoverage,
+    align_read, align_task_with_config, AlignConfig, AlignStats, Strategy, TargetContext,
+    WindowedCoverage,
 };
 pub use seeding::{
     build_minimizer_index, find_seeds, find_seeds_indexed, find_seeds_indexed_capped,
