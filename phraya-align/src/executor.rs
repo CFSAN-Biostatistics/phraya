@@ -412,51 +412,53 @@ pub fn align_task_with_config(
     align_read(&ctx, query, plan, config, None)
 }
 
-/// Seed, anchor, and extend `query_bytes` (already in the orientation to align) against the
-/// target, returning the scored alignments — or `None` if nothing extended.
+/// Seed and chain `query_sketch` against the target — the cheap half of
+/// [`align_oriented`], factored out so [`align_read`] can decide which orientation(s)
+/// are worth the expensive extend step before paying for it.
 ///
-/// Factored out of [`align_read`] so both the forward bytes and the reverse complement can be
-/// run through the identical pipeline and compared. `query_sketch` must be the sketch of
-/// `query_bytes` in this same orientation (canonical minimizers are strand-invariant, but the
-/// seed *query positions* are orientation-specific, so a forward sketch cannot serve reverse
-/// bytes).
+/// Returns `(n_seeds, chains)`. Both orientations of a read always find the *same*
+/// number of raw seeds (canonical minimizers are strand-invariant in value; only the
+/// seed *query positions* differ), so `n_seeds` alone cannot distinguish the true
+/// orientation from the wrong one. Chaining can: it requires seeds to be co-linear
+/// (consistent diagonal, increasing query/target position), which only holds in a
+/// read's true orientation — seeding the wrong orientation of a real match reliably
+/// produces zero chains even when seeds are plentiful (verified: a genuinely
+/// forward-matching 150bp read seeded in the wrong (RC) orientation found the same
+/// seed count but chained to nothing, while the true orientation chained to one strong
+/// candidate). `chains` is this function's actual "is this orientation plausible?"
+/// signal.
+fn seed_and_chain(
+    ctx: &TargetContext<'_>,
+    query_sketch: &MinimizerSketch,
+) -> (usize, Vec<crate::chaining::Chain>) {
+    let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
+    let n_seeds = seeds.len();
+    let chains = crate::chaining::chain_seeds(&seeds, &crate::chaining::ChainParams::default());
+    (n_seeds, chains)
+}
+
+/// Extend the top `chain_cap(strategy)` chains (plus the unconditional `(0,0)` fallback,
+/// see [`anchors_from_chains`]) against the target, returning the scored alignments — or
+/// `None` if nothing extended.
 ///
-/// Returns `(n_seeds, scored)` — `n_seeds` (shared minimizers found) lets the caller
-/// distinguish "no seed" from "seeded but unplaceable" for [`AlignStats`].
-fn align_oriented(
+/// The expensive half of what was [`align_oriented`] before it was split so
+/// [`align_read`] could skip this step entirely for an orientation [`seed_and_chain`]
+/// found implausible.
+fn extend_chains(
     strategy: Strategy,
     ctx: &TargetContext<'_>,
     query_bytes: &[u8],
-    query_sketch: &MinimizerSketch,
-) -> (usize, Option<crate::ScoredAlignments>) {
+    chains: &[crate::chaining::Chain],
+) -> Option<crate::ScoredAlignments> {
     let target = ctx.target;
-    let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
-    let n_seeds = seeds.len();
-
-    // Convert seeds to full-query anchors (query_pos=0, target_pos=target-query offset).
-    // Seeds mid-query would miss variants before the seed; aligning from query position 0
-    // ensures the full query is aligned. Anchor selection is strategy-dependent: seeds are
-    // collapsed into co-linear chains first (ADR-0012), then the top `chain_cap(strategy)`
-    // chains become anchors.
-    let chains = crate::chaining::chain_seeds(&seeds, &crate::chaining::ChainParams::default());
-    let anchors = anchors_from_chains(&chains, chain_cap(strategy));
+    let anchors = anchors_from_chains(chains, chain_cap(strategy));
     let query_len = query_bytes.len();
 
-    // Extend every anchor with the strategy's engine. Previously Sensitive alone routed
-    // through ADR-0007's score-bounded branch-and-bound (`wfa_extend_capped`,
-    // `score_bound_max_s`) to cheaply abandon hopeless alternates on repeat-heavy
-    // targets, because K=∞ raw-vote anchoring could spray hundreds of spurious
-    // candidates. Seed chaining (this module's default anchor selection) collapses that
-    // explosion structurally — each repeat copy becomes one chain, not one anchor per
-    // seed within it — and Sensitive additionally caps at K=50 chains (`chain_cap`), so
-    // the anchor count here is already small before extension starts. The
-    // branch-and-bound's provable byte-identity to an uncapped baseline is no longer
-    // the correctness contract for Sensitive (superseded by empirical PA/CBS
-    // validation, see the ADR superseding ADR-0007) — extend every anchor plainly, same
-    // as Balanced/Fast. `score_bound_max_s`/`wfa_extend_capped`/`extend_alternates_bounded`
-    // remain defined and unit-tested for now (referenced only by their own tests and the
-    // debug-only legacy path's historical behavior), slated for removal alongside the
-    // legacy toggle once HPC validation confirms the chained path.
+    // Extend every anchor with the strategy's engine, uniformly across Fast/Balanced/
+    // Sensitive (ADR-0012 — chaining's structural collapse of repeat families into one
+    // chain per copy, plus Sensitive's finite K=50 chain cap, made the old
+    // Sensitive-only score-bounded branch-and-bound (ADR-0007) unnecessary; that
+    // machinery was removed once chaining was validated on the full benchmark ladder).
     //
     // Window the target to ~2× query length from the anchor position. WFA is O(s·n)
     // where s = edit distance; for s << min(|q|,|t|) it is dramatically faster than
@@ -476,10 +478,10 @@ fn align_oriented(
     }
 
     if alignments.is_empty() {
-        return (n_seeds, None);
+        return None;
     }
 
-    (n_seeds, Some(score_alignments(&alignments, query_bytes.len())))
+    Some(score_alignments(&alignments, query_bytes.len()))
 }
 
 /// Align a single query against the target described by `ctx`.
@@ -510,16 +512,21 @@ pub fn align_read(
     //
     // Forward orientation reuses the plan's cached sketch if present; the reverse orientation
     // must re-sketch the RC bytes (a forward sketch's seed query positions are in the wrong
-    // orientation). A future optimization could skip the reverse extension when the forward
-    // alignment is already near-perfect, or derive reverse anchors from the forward seed
-    // geometry to avoid the second sketch.
+    // orientation). Both sketches are always computed — that part is unavoidable, since we
+    // don't know which orientation is correct until we've seeded both — but *extension* is
+    // skipped for whichever orientation has no chain support, once the other orientation has
+    // at least one (seed_and_chain / extend_chains split below). Both orientations of a real
+    // read always find the same raw seed count (canonical minimizers are strand-invariant in
+    // value), so seed count can't distinguish true orientation, but chaining can: chaining
+    // requires seed co-linearity, which reliably holds only in a read's true orientation — the
+    // wrong orientation of a genuine match chains to nothing even when seeds are plentiful.
     //
     // Issue #185: Both forward and reverse sketches are filtered based on strategy:
     // - Fast/Balanced: use w=11 subset to maintain byte-identity with pre-#182
     // - Sensitive: use full dense set for better recall in variant-dense regions
     let fwd_sketch = get_effective_sketch(query.id(), plan, config.strategy)
         .unwrap_or_else(|| sketch_sequence_default(query));
-    let (fwd_seeds, fwd) = align_oriented(config.strategy, ctx, query.bases(), &fwd_sketch);
+    let (fwd_seeds, fwd_chains) = seed_and_chain(ctx, &fwd_sketch);
 
     let rc_bases = reverse_complement(query.bases());
     let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
@@ -534,11 +541,29 @@ pub fn align_read(
         // be automatically dense-capable if simd-minimizers supports it, or just w=11 otherwise.
         sketch_sequence_default(&rc_seq)
     };
-    let (rev_seeds, rev) = align_oriented(config.strategy, ctx, &rc_bases, &rev_sketch);
+    let (rev_seeds, rev_chains) = seed_and_chain(ctx, &rev_sketch);
 
     // Whether the read shared any minimizer with the target (in either orientation). Distinguishes
     // a seeding loss from an extension/divergence loss when classifying an unplaced read.
     let had_seeds = fwd_seeds > 0 || rev_seeds > 0;
+
+    // Extend only the orientation(s) worth extending. If exactly one orientation has
+    // chain support and the other has none, the chainless side can only ever produce a
+    // (0,0)-fallback-anchor alignment (see anchors_from_chains) — never competitive
+    // against a real chain-backed match, so skip its extension entirely. If both have
+    // chains, or neither does (both fall through to the fallback anchor — e.g. a
+    // low-complexity/repetitive background where chaining can't distinguish signal from
+    // noise in either orientation, see issue #146), extend both, exactly as before.
+    let (fwd, rev) = if !fwd_chains.is_empty() && rev_chains.is_empty() {
+        (extend_chains(config.strategy, ctx, query.bases(), &fwd_chains), None)
+    } else if fwd_chains.is_empty() && !rev_chains.is_empty() {
+        (None, extend_chains(config.strategy, ctx, &rc_bases, &rev_chains))
+    } else {
+        (
+            extend_chains(config.strategy, ctx, query.bases(), &fwd_chains),
+            extend_chains(config.strategy, ctx, &rc_bases, &rev_chains),
+        )
+    };
 
     // Keep the better-scoring orientation; ties resolve to forward deterministically.
     let (scored, query_bytes, strand): (crate::ScoredAlignments, &[u8], Strand) = match (fwd, rev)
@@ -1222,6 +1247,52 @@ mod tests {
             .find(|v| v.position() == 150)
             .expect("SNP at forward position 150");
         assert_eq!(var.strand(), Strand::Forward, "forward read must record Strand::Forward");
+    }
+
+    /// Regression guard for the orientation-skip optimization in [`align_read`]: seeding
+    /// the *wrong* orientation of a genuine match must produce the same raw seed count as
+    /// the *true* orientation (canonical minimizers are strand-invariant in value) but zero
+    /// chains (chaining requires seed co-linearity, which only holds in the true
+    /// orientation). This is the property `align_read` relies on to skip extending a
+    /// chainless orientation once the other orientation has chain support — if it stopped
+    /// holding, the skip could silently drop a genuinely reverse-strand read.
+    #[test]
+    fn wrong_orientation_seeding_finds_seeds_but_no_chains() {
+        let target_bytes = diverse_dna(300, 21);
+        let true_fwd_read = target_bytes[50..200].to_vec();
+
+        let target = Sequence::new(target_bytes, None, "ref".to_string(), None);
+        let plan = make_plan();
+        let ctx = TargetContext::build(&target, &plan, Strategy::Balanced);
+
+        let fwd_sketch = sketch_sequence_default(&Sequence::new(
+            true_fwd_read.clone(),
+            None,
+            "q".to_string(),
+            None,
+        ));
+        let (fwd_seeds, fwd_chains) = seed_and_chain(&ctx, &fwd_sketch);
+
+        let rc_bytes = reverse_complement(&true_fwd_read);
+        let rc_sketch = sketch_sequence_default(&Sequence::new(
+            rc_bytes,
+            None,
+            "q_rc".to_string(),
+            None,
+        ));
+        let (rc_seeds, rc_chains) = seed_and_chain(&ctx, &rc_sketch);
+
+        assert_eq!(
+            fwd_seeds, rc_seeds,
+            "canonical minimizers are strand-invariant: both orientations must find the \
+             same raw seed count"
+        );
+        assert!(!fwd_chains.is_empty(), "the true orientation must chain to something");
+        assert!(
+            rc_chains.is_empty(),
+            "the wrong orientation of a genuine match must chain to nothing, despite \
+             sharing the same seed count as the true orientation"
+        );
     }
 
     #[test]
