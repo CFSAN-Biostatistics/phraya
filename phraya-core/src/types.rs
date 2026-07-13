@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Serialize a `HashMap<u8, u32>` with keys in ascending order.
@@ -19,6 +20,23 @@ where
 {
     let sorted: BTreeMap<u8, u32> = alleles.iter().map(|(&k, &v)| (k, v)).collect();
     sorted.serialize(serializer)
+}
+
+/// Serialize Arc<str> as a string for MessagePack compatibility.
+fn serialize_arc_str<S>(arc_str: &Arc<str>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    arc_str.as_ref().serialize(serializer)
+}
+
+/// Deserialize a string back into Arc<str>.
+fn deserialize_arc_str<'de, D>(deserializer: D) -> Result<Arc<str>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: String = String::deserialize(deserializer)?;
+    Ok(Arc::from(s))
 }
 
 /// Variant type classification for variant observations.
@@ -207,8 +225,12 @@ pub struct VariantObservation {
     all_alleles: HashMap<u8, u32>,
     /// Confidence score (0.0-1.0)
     confidence: f64,
-    /// CIGAR string for this alignment
-    cigar: String,
+    /// CIGAR string for this alignment (shared across variants from same read)
+    #[serde(
+        serialize_with = "serialize_arc_str",
+        deserialize_with = "deserialize_arc_str"
+    )]
+    cigar: Arc<str>,
     /// Mapping quality (0-60)
     mapq: u8,
     /// Edit distance between query and reference
@@ -217,8 +239,12 @@ pub struct VariantObservation {
     local_coverage: Vec<u32>,
     /// Average per-base quality at this position
     avg_base_quality: f64,
-    /// Provenance: identifies the sample and read (e.g., "sample1:read42")
-    provenance: String,
+    /// Provenance: identifies the sample and read (e.g., "sample1:read42") (shared across variants from same read)
+    #[serde(
+        serialize_with = "serialize_arc_str",
+        deserialize_with = "deserialize_arc_str"
+    )]
+    provenance: Arc<str>,
     /// Whether this variant falls within a tandem repeat region
     #[serde(default)]
     in_tandem_repeat: bool,
@@ -270,6 +296,45 @@ impl VariantObservation {
         local_coverage: Vec<u32>,
         avg_base_quality: f64,
         provenance: String,
+    ) -> Self {
+        VariantObservation {
+            position,
+            ref_base,
+            all_alleles,
+            confidence,
+            cigar: Arc::from(cigar),
+            mapq,
+            edit_distance,
+            local_coverage,
+            avg_base_quality,
+            provenance: Arc::from(provenance),
+            in_tandem_repeat: false,
+            variant_type: VariantType::default(),
+            kmer_uniqueness: default_kmer_uniqueness(),
+            strand: Strand::default(),
+            coverage_window_variant_offset: 0,
+            mate_info: None,
+            total_paired_count: 0,
+            proper_pair_count: 0,
+            insert_size_sum: 0,
+            insert_size_count: 0,
+        }
+    }
+
+    /// Create a new variant observation from Arc<str> (internal constructor for sharing allocation)
+    #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    pub fn with_arc(
+        position: u32,
+        ref_base: u8,
+        all_alleles: HashMap<u8, u32>,
+        confidence: f64,
+        cigar: Arc<str>,
+        mapq: u8,
+        edit_distance: u32,
+        local_coverage: Vec<u32>,
+        avg_base_quality: f64,
+        provenance: Arc<str>,
     ) -> Self {
         VariantObservation {
             position,
@@ -467,6 +532,24 @@ impl VariantObservation {
     /// Get the provenance string
     pub fn provenance(&self) -> &str {
         &self.provenance
+    }
+
+    /// Test-only accessor: return pointer to cigar Arc for sharing verification.
+    ///
+    /// This method is intended for tests to verify that variants from the same read
+    /// share the same Arc allocation.
+    #[doc(hidden)]
+    pub fn cigar_arc_ptr(&self) -> *const str {
+        Arc::as_ptr(&self.cigar)
+    }
+
+    /// Test-only accessor: return pointer to provenance Arc for sharing verification.
+    ///
+    /// This method is intended for tests to verify that variants from the same read
+    /// share the same Arc allocation.
+    #[doc(hidden)]
+    pub fn provenance_arc_ptr(&self) -> *const str {
+        Arc::as_ptr(&self.provenance)
     }
 }
 
@@ -1579,7 +1662,11 @@ mod tests {
     fn select_centroid_all_empty_sketches_uses_jaccard_identity() {
         // Two sketches with zero minimizers are treated as fully similar (Jaccard 1.0
         // for the empty/empty case), so centroid selection still terminates cleanly.
-        let sketches = vec![make_sketch(vec![]), make_sketch(vec![]), make_sketch(vec![])];
+        let sketches = vec![
+            make_sketch(vec![]),
+            make_sketch(vec![]),
+            make_sketch(vec![]),
+        ];
         let centroid = select_centroid(&sketches);
         assert!(centroid.is_some());
     }
@@ -1598,7 +1685,9 @@ mod tests {
 
         let uniqueness = compute_kmer_uniqueness(&[s0, s1]);
 
-        assert!(uniqueness.get(&0).copied().unwrap_or(0.0) > uniqueness.get(&1).copied().unwrap_or(0.0));
+        assert!(
+            uniqueness.get(&0).copied().unwrap_or(0.0) > uniqueness.get(&1).copied().unwrap_or(0.0)
+        );
     }
 
     /// A `VariantObservation`'s `all_alleles` map must serialize in a canonical (ascending
@@ -1631,12 +1720,18 @@ mod tests {
 
         let ja = serde_json::to_string(&forward).unwrap();
         let jb = serde_json::to_string(&reverse).unwrap();
-        assert_eq!(ja, jb, "allele map must serialize independent of insertion order");
+        assert_eq!(
+            ja, jb,
+            "allele map must serialize independent of insertion order"
+        );
 
         // And the canonical order is ascending by base: A(65) < C(67) < G(71) < T(84).
         let a_idx = ja.find("65").unwrap();
         let t_idx = ja.find("84").unwrap();
-        assert!(a_idx < t_idx, "alleles must serialize in ascending key order");
+        assert!(
+            a_idx < t_idx,
+            "alleles must serialize in ascending key order"
+        );
     }
 }
 
@@ -1694,8 +1789,8 @@ impl MinimizerSketch {
 pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimizerSketch {
     use packed_seq::AsciiSeq;
     let mut positions = Vec::new();
-    let output = simd_minimizers::canonical_minimizers(k, w)
-        .run(AsciiSeq(sequence), &mut positions);
+    let output =
+        simd_minimizers::canonical_minimizers(k, w).run(AsciiSeq(sequence), &mut positions);
     let minimizers: Vec<(u64, u32)> = output
         .pos_and_values_u64()
         .map(|(pos, val)| (val, pos))
@@ -1721,7 +1816,11 @@ fn jaccard_similarity(a: &MinimizerSketch, b: &MinimizerSketch) -> f64 {
     }
     let intersection = set_a.intersection(&set_b).count();
     let union = set_a.union(&set_b).count();
-    if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
 }
 
 /// Select the centroid sketch — the one with median Jaccard similarity to all others.
@@ -1745,7 +1844,11 @@ pub fn select_centroid(sketches: &[MinimizerSketch]) -> Option<usize> {
                 .collect();
             sims.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let n = sims.len();
-            if n % 2 == 0 { (sims[n / 2 - 1] + sims[n / 2]) / 2.0 } else { sims[n / 2] }
+            if n % 2 == 0 {
+                (sims[n / 2 - 1] + sims[n / 2]) / 2.0
+            } else {
+                sims[n / 2]
+            }
         })
         .collect();
     let mut indexed: Vec<(usize, f64)> = avg_sims.drain(..).enumerate().collect();
