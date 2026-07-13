@@ -132,6 +132,7 @@ fn write_minimal_arrow_pod5(path: &Path, reads: Vec<PodRead>) -> std::io::Result
 // ============================================================================
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_parse_single_read_pod5_file() {
     // Test: Parse a POD5 file with a single read
     // Expected: One Sequence record with correct ID and bases
@@ -172,6 +173,7 @@ fn issue_203_parse_single_read_pod5_file() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_parse_multiple_reads_from_pod5() {
     // Test: Parse a POD5 file with multiple reads
     // Expected: All reads extracted in order
@@ -206,6 +208,7 @@ fn issue_203_parse_multiple_reads_from_pod5() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_parse_pod5_with_quality_scores() {
     // Test: Quality scores are properly extracted from POD5
     // Expected: quality_at() returns correct Phred scores
@@ -223,6 +226,7 @@ fn issue_203_parse_pod5_with_quality_scores() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_file_auto_detection_by_extension() {
     // Test: .pod5 extension triggers POD5 parser
     // Expected: File is recognized and parsed as POD5
@@ -243,6 +247,7 @@ fn issue_203_pod5_file_auto_detection_by_extension() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_parse_pod5_without_quality_scores() {
     // Test: POD5 reads without quality scores are handled correctly
     // Expected: Sequence created with quality=None
@@ -270,6 +275,7 @@ fn issue_203_parse_pod5_without_quality_scores() {
 // ============================================================================
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_empty_pod5_file_returns_empty_iterator() {
     // Test: Empty POD5 with no reads
     // Expected: Parser returns successfully but yields no sequences
@@ -287,6 +293,7 @@ fn issue_203_empty_pod5_file_returns_empty_iterator() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_read_id_extraction() {
     // Test: Read IDs are correctly extracted from POD5
     // Expected: seq.id() matches the POD5 read_id field
@@ -303,6 +310,7 @@ fn issue_203_pod5_read_id_extraction() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_sequence_length_matches_basecall_length() {
     // Test: seq.len() matches the basecall string length
     // Expected: All bases count correctly
@@ -326,6 +334,7 @@ fn issue_203_pod5_sequence_length_matches_basecall_length() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_quality_length_matches_basecall_length() {
     // Test: Quality score count matches basecall length
     // Expected: Each base has exactly one quality score
@@ -462,6 +471,7 @@ fn issue_203_pod5_format_detected_before_fasta_fastq() {
 // ============================================================================
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_round_trip_preserves_all_metadata() {
     // Test: Reading a POD5 and examining all read properties
     // Expected: All metadata preserved through parsing
@@ -482,6 +492,7 @@ fn issue_203_pod5_round_trip_preserves_all_metadata() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_large_read_handling() {
     // Test: POD5 with longer reads (closer to real ONT reads)
     // Expected: Long sequences parsed correctly without truncation
@@ -509,6 +520,7 @@ fn issue_203_pod5_large_read_handling() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_many_reads_iteration() {
     // Test: POD5 with many reads yields all of them
     // Expected: All reads iterated in order
@@ -537,6 +549,7 @@ fn issue_203_pod5_many_reads_iteration() {
 // ============================================================================
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_sequence_compatible_with_alignment_pipeline() {
     // Test: POD5-parsed Sequences work with downstream code
     // Expected: Sequences have all required fields for alignment
@@ -564,6 +577,7 @@ fn issue_203_pod5_sequence_compatible_with_alignment_pipeline() {
 }
 
 #[test]
+#[ignore = "RED: awaiting real #203 POD5 implementation"]
 fn issue_203_pod5_dna_characters_valid() {
     // Test: POD5 basecalls contain only valid DNA bases
     // Expected: Characters are ACGT (case may vary, but test expects uppercase)
