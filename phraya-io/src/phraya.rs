@@ -155,9 +155,11 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
     // Update each observation's local_coverage so downstream filters see merged depth.
     // Also aggregate pair counts and insert stats so paired-end filters work post-merge.
     let mut obs_count: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-    let mut pair_totals: std::collections::HashMap<u32, (u32, u32)> = std::collections::HashMap::new();
+    let mut pair_totals: std::collections::HashMap<u32, (u32, u32)> =
+        std::collections::HashMap::new();
     // (insert_size_sum, insert_size_count) keyed by position
-    let mut insert_totals: std::collections::HashMap<u32, (i64, u32)> = std::collections::HashMap::new();
+    let mut insert_totals: std::collections::HashMap<u32, (i64, u32)> =
+        std::collections::HashMap::new();
     for obs in &observations {
         *obs_count.entry(obs.position()).or_insert(0) += 1;
         let (total, proper) = pair_totals.entry(obs.position()).or_insert((0, 0));
@@ -173,8 +175,12 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
         .into_iter()
         .map(|obs| {
             let depth = *obs_count.get(&obs.position()).unwrap_or(&1);
-            let (total_paired, proper_paired) = pair_totals.get(&obs.position()).copied().unwrap_or((0, 0));
-            let (ins_sum, ins_count) = insert_totals.get(&obs.position()).copied().unwrap_or((0, 0));
+            let (total_paired, proper_paired) =
+                pair_totals.get(&obs.position()).copied().unwrap_or((0, 0));
+            let (ins_sum, ins_count) = insert_totals
+                .get(&obs.position())
+                .copied()
+                .unwrap_or((0, 0));
             phraya_core::types::VariantObservation::new(
                 obs.position(),
                 obs.ref_base(),

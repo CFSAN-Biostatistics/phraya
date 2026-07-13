@@ -19,7 +19,6 @@
 /// ✓ SNP survives --min-coverage 5      (test 7) ← RED: local_coverage=1 bug
 /// ✓ .phraya binary < VCF text size     (test 8) ← RED: needs real content
 /// ✓ throughput ≥ 100 reads/sec         (phraya-align executor tests)
-
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -45,7 +44,9 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
     (0..len)
         .map(|_| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             b"ACGT"[((x >> 33) & 3) as usize]
         })
         .collect()
@@ -100,9 +101,12 @@ fn run_to_merge(dir: &Path) -> (PathBuf, usize, u8, u8) {
 
     let out = phraya(&[
         "plan",
-        "--inputs", reads_path.to_str().unwrap(),
-        "--reference", ref_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--reference",
+        ref_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
     assert!(
         out.status.success(),
@@ -121,8 +125,10 @@ fn run_to_merge(dir: &Path) -> (PathBuf, usize, u8, u8) {
         let out = phraya(&[
             "align",
             plan_path.to_str().unwrap(),
-            id, "ref",
-            "--output", op.to_str().unwrap(),
+            id,
+            "ref",
+            "--output",
+            op.to_str().unwrap(),
         ]);
         assert!(
             out.status.success(),
@@ -133,9 +139,14 @@ fn run_to_merge(dir: &Path) -> (PathBuf, usize, u8, u8) {
     }
 
     let merged = dir.join("merged.phraya");
-    let strs: Vec<String> = per_read.iter().map(|p| p.to_str().unwrap().to_string()).collect();
+    let strs: Vec<String> = per_read
+        .iter()
+        .map(|p| p.to_str().unwrap().to_string())
+        .collect();
     let mut args = vec!["merge"];
-    for s in &strs { args.push(s.as_str()); }
+    for s in &strs {
+        args.push(s.as_str());
+    }
     args.extend(&["--output", merged.to_str().unwrap()]);
     let out = phraya(&args);
     assert!(
@@ -158,15 +169,27 @@ fn issue_88_plan_task_count_equals_read_count() {
 
     let out = phraya(&[
         "plan",
-        "--inputs", reads_path.to_str().unwrap(),
-        "--reference", ref_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--reference",
+        ref_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
-    assert!(out.status.success(), "phraya plan failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "phraya plan failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
     // 2 perfect + 5 snp = 7 reads → 7 tasks
-    assert_eq!(plan.task_list.len(), 7, "7 reads → 7 tasks, got {}", plan.task_list.len());
+    assert_eq!(
+        plan.task_list.len(),
+        7,
+        "7 reads → 7 tasks, got {}",
+        plan.task_list.len()
+    );
     for (q, t) in &plan.task_list {
         assert_eq!(*t, 0, "all tasks must target reference (index 0)");
         assert_ne!(*q, 0, "query must not be the reference");
@@ -184,9 +207,12 @@ fn issue_88_all_align_tasks_exit_zero() {
 
     phraya(&[
         "plan",
-        "--inputs", reads_path.to_str().unwrap(),
-        "--reference", ref_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--reference",
+        ref_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
 
     let ids: Vec<String> = (0..2)
@@ -199,12 +225,21 @@ fn issue_88_all_align_tasks_exit_zero() {
         let out = phraya(&[
             "align",
             plan_path.to_str().unwrap(),
-            id, "ref",
-            "--output", op.to_str().unwrap(),
+            id,
+            "ref",
+            "--output",
+            op.to_str().unwrap(),
         ]);
-        assert!(out.status.success(), "phraya align {id} failed:\n{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "phraya align {id} failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert!(op.exists(), ".phraya missing for {id}");
-        assert!(dir.path().join(format!("{id}.phraya.queries")).exists(), ".queries missing for {id}");
+        assert!(
+            dir.path().join(format!("{id}.phraya.queries")).exists(),
+            ".queries missing for {id}"
+        );
     }
 }
 
@@ -266,11 +301,14 @@ fn issue_88_vcf_correct_ref_alt_alleles() {
     assert_eq!(
         cols[3],
         (ref_base as char).to_string(),
-        "REF should be {} at position {snp_pos}", ref_base as char
+        "REF should be {} at position {snp_pos}",
+        ref_base as char
     );
     assert!(
         cols[4].contains(alt_base as char),
-        "ALT should contain {} (the SNP allele), got {}", alt_base as char, cols[4]
+        "ALT should contain {} (the SNP allele), got {}",
+        alt_base as char,
+        cols[4]
     );
 }
 
@@ -286,38 +324,65 @@ fn issue_88_perfect_reads_no_false_variants() {
     let perfect: Vec<u8> = ref_seq[..100].to_vec();
 
     let ref_path = p.join("ref.fa");
-    std::fs::write(&ref_path, format!(">ref\n{}\n", String::from_utf8(ref_seq).unwrap())).unwrap();
+    std::fs::write(
+        &ref_path,
+        format!(">ref\n{}\n", String::from_utf8(ref_seq).unwrap()),
+    )
+    .unwrap();
 
     let reads_path = p.join("perf.fa");
     let mut content = String::new();
     for i in 0..3 {
-        content.push_str(&format!(">r{i}\n{}\n", String::from_utf8(perfect.clone()).unwrap()));
+        content.push_str(&format!(
+            ">r{i}\n{}\n",
+            String::from_utf8(perfect.clone()).unwrap()
+        ));
     }
     std::fs::write(&reads_path, content).unwrap();
 
     let plan_path = p.join("perf.phrayaplan");
-    phraya(&["plan", "--inputs", reads_path.to_str().unwrap(),
-             "--reference", ref_path.to_str().unwrap(),
-             "--output", plan_path.to_str().unwrap()]);
+    phraya(&[
+        "plan",
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--reference",
+        ref_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
+    ]);
 
     let mut files: Vec<PathBuf> = Vec::new();
     for i in 0..3 {
         let op = p.join(format!("r{i}.phraya"));
-        phraya(&["align", plan_path.to_str().unwrap(), &format!("r{i}"), "ref",
-                 "--output", op.to_str().unwrap()]);
+        phraya(&[
+            "align",
+            plan_path.to_str().unwrap(),
+            &format!("r{i}"),
+            "ref",
+            "--output",
+            op.to_str().unwrap(),
+        ]);
         files.push(op);
     }
 
     let merged = p.join("perf_merged.phraya");
-    let strs: Vec<String> = files.iter().map(|p| p.to_str().unwrap().to_string()).collect();
+    let strs: Vec<String> = files
+        .iter()
+        .map(|p| p.to_str().unwrap().to_string())
+        .collect();
     let mut args = vec!["merge"];
-    for s in &strs { args.push(s.as_str()); }
+    for s in &strs {
+        args.push(s.as_str());
+    }
     args.extend(&["--output", merged.to_str().unwrap()]);
     phraya(&args);
 
     let out = phraya(&["filter", merged.to_str().unwrap(), "--format", "vcf"]);
     let vcf = String::from_utf8_lossy(&out.stdout);
-    let data: Vec<&str> = vcf.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).collect();
+    let data: Vec<&str> = vcf
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .collect();
 
     assert!(
         data.is_empty(),
@@ -336,9 +401,12 @@ fn issue_88_snp_survives_min_coverage_5() {
     let expected_vcf_pos = (snp_pos + 1).to_string();
 
     let out = phraya(&[
-        "filter", merged.to_str().unwrap(),
-        "--min-coverage", "5",
-        "--format", "vcf",
+        "filter",
+        merged.to_str().unwrap(),
+        "--min-coverage",
+        "5",
+        "--format",
+        "vcf",
     ]);
     assert!(out.status.success());
     let vcf = String::from_utf8_lossy(&out.stdout);
@@ -368,7 +436,9 @@ fn issue_88_binary_smaller_than_vcf_text() {
 
     // Require both: VCF has content (not just headers) AND binary is smaller
     let vcf_text = String::from_utf8_lossy(&out.stdout);
-    let vcf_has_data = vcf_text.lines().any(|l| !l.starts_with('#') && !l.is_empty());
+    let vcf_has_data = vcf_text
+        .lines()
+        .any(|l| !l.starts_with('#') && !l.is_empty());
 
     assert!(
         vcf_has_data,

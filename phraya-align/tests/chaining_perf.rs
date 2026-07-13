@@ -30,7 +30,9 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
     (0..len)
         .map(|_| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             b"ACGT"[((x >> 33) & 3) as usize]
         })
         .collect()
@@ -43,7 +45,9 @@ fn simulate_read(target: &[u8], pos: usize, len: usize, divergence: f64, seed: u
     let mut read = target[pos..pos + len].to_vec();
     let mut x = seed;
     for base in read.iter_mut() {
-        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         if (x >> 40) as f64 / (1u64 << 24) as f64 % 1.0 < divergence {
             *base = b"ACGT"[((x >> 33) & 3) as usize];
         }
@@ -93,7 +97,10 @@ fn balanced_strategy_throughput_stays_under_ceiling() {
     }
     let elapsed = t0.elapsed();
 
-    println!("balanced: {:?} ({} / {} placed)", elapsed, placed, NUM_READS);
+    println!(
+        "balanced: {:?} ({} / {} placed)",
+        elapsed, placed, NUM_READS
+    );
 
     assert!(
         placed as f64 / NUM_READS as f64 > 0.9,

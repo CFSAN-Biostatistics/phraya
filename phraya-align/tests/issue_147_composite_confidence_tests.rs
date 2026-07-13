@@ -1,3 +1,6 @@
+use phraya_align::executor::{align_task_with_config, AlignConfig};
+use phraya_core::types::Sequence;
+use phraya_io::plan::{PhrayaPlan, UseCase};
 /// Issue #147: Composite confidence score merging k-mer and alignment evidence (tier 2)
 ///
 /// Tests verify that:
@@ -6,11 +9,7 @@
 /// 3. Variant outside hotspot (kmer_uniqueness=1.0) → confidence ≈ alignment_score
 /// 4. confidence is always in [0.0, 1.0]
 /// 5. Hotspot variant has strictly lower confidence than non-hotspot variant at same alignment quality
-
 use std::collections::HashMap;
-use phraya_align::executor::{align_task_with_config, AlignConfig};
-use phraya_core::types::Sequence;
-use phraya_io::plan::{PhrayaPlan, UseCase};
 
 fn make_plan_with_hotspots(hotspot_intervals: Vec<(u32, u32)>) -> PhrayaPlan {
     let mut plan = PhrayaPlan::new(
@@ -42,16 +41,23 @@ fn issue_147_hotspot_variant_confidence_is_zero() {
     let plan = make_plan_with_hotspots(vec![(40, 60)]);
     let config = AlignConfig::balanced();
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
-    assert!(!result.variants.is_empty(), "should have at least one variant");
-    let var = result.variants.iter().find(|v| v.position() >= 40 && v.position() < 60)
+    assert!(
+        !result.variants.is_empty(),
+        "should have at least one variant"
+    );
+    let var = result
+        .variants
+        .iter()
+        .find(|v| v.position() >= 40 && v.position() < 60)
         .expect("should have variant inside hotspot");
 
     // kmer_uniqueness=0.0 inside hotspot → composite = 0.0 × alignment_score = 0.0
     assert_eq!(
-        var.confidence(), 0.0,
+        var.confidence(),
+        0.0,
         "variant inside hotspot should have confidence=0.0, got {}",
         var.confidence()
     );
@@ -72,10 +78,13 @@ fn issue_147_non_hotspot_variant_confidence_equals_alignment_score() {
     let plan = make_plan_with_hotspots(vec![(80, 100)]);
     let config = AlignConfig::balanced();
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
-    assert!(!result.variants.is_empty(), "should have at least one variant");
+    assert!(
+        !result.variants.is_empty(),
+        "should have at least one variant"
+    );
     let var = &result.variants[0];
 
     // kmer_uniqueness=1.0 outside hotspot → confidence = 1.0 × alignment_score = alignment_score
@@ -104,15 +113,16 @@ fn issue_147_confidence_is_in_unit_interval() {
     let plan = make_plan_with_hotspots(vec![(35, 45)]);
     let config = AlignConfig::balanced();
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     for var in &result.variants {
         let c = var.confidence();
         assert!(
             c >= 0.0 && c <= 1.0,
             "confidence must be in [0.0, 1.0], got {} at position {}",
-            c, var.position()
+            c,
+            var.position()
         );
     }
 }
@@ -133,18 +143,25 @@ fn issue_147_hotspot_confidence_lower_than_non_hotspot() {
     let plan = make_plan_with_hotspots(vec![(20, 40)]);
     let config = AlignConfig::balanced();
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
-    let var_in = result.variants.iter().find(|v| v.position() >= 20 && v.position() < 40)
+    let var_in = result
+        .variants
+        .iter()
+        .find(|v| v.position() >= 20 && v.position() < 40)
         .expect("should have variant inside hotspot");
-    let var_out = result.variants.iter().find(|v| v.position() >= 60 && v.position() < 80)
+    let var_out = result
+        .variants
+        .iter()
+        .find(|v| v.position() >= 60 && v.position() < 80)
         .expect("should have variant outside hotspot");
 
     assert!(
         var_in.confidence() < var_out.confidence(),
         "hotspot variant confidence ({}) should be < non-hotspot confidence ({})",
-        var_in.confidence(), var_out.confidence()
+        var_in.confidence(),
+        var_out.confidence()
     );
 }
 
@@ -161,8 +178,8 @@ fn issue_147_no_hotspots_confidence_equals_alignment_score() {
     let plan = make_plan(); // no hotspots
     let config = AlignConfig::balanced();
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     assert!(!result.variants.is_empty());
     for var in &result.variants {
@@ -193,8 +210,8 @@ fn issue_147_perfect_alignment_outside_hotspot_confidence_near_one() {
     let plan = make_plan_with_hotspots(vec![(80, 90)]);
     let config = AlignConfig::balanced();
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     assert!(!result.variants.is_empty());
     let var = &result.variants[0];

@@ -4,6 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use thiserror::Error;
 
+// Import SHA-256 for content hashing (256-bit cryptographic strength)
+use sha2::{Digest, Sha256};
+
 /// Serialize a `HashMap` with keys in ascending order for deterministic output.
 ///
 /// The plan's per-sequence maps (sketches, uniqueness, membership, mate info) are `HashMap`s
@@ -83,6 +86,18 @@ fn is_false(v: &bool) -> bool {
     !v
 }
 
+/// Content-addressed reference space (ADR-0011): identity by content hash,
+/// with optional human-facing name and per-sequence sketches.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReferenceSpace {
+    /// Strong cryptographic hash (BLAKE3/SHA-256-class, ≥256 bits) of reference content
+    pub content_hash: String,
+    /// Optional human-facing name (e.g., "chr1-v1", "E. coli K-12")
+    pub name: Option<String>,
+    /// Per-sequence k-mer sketches, keyed by sequence ID
+    pub sketches: HashMap<String, MinimizerSketch>,
+}
+
 /// Deduplicate a minimizer sketch, removing duplicate (hash, position) tuples.
 /// Returns a new sketch with only unique minimizers while preserving the k and w parameters.
 fn deduplicate_sketch(sketch: &MinimizerSketch) -> MinimizerSketch {
@@ -146,6 +161,10 @@ pub struct PhrayaPlan {
     pub version: u32,
     /// Detected use case
     pub use_case: UseCase,
+    /// Content-addressed reference space (ADR-0011): optional reference with
+    /// content hash, name, and sketches. Used in plan v6+.
+    #[serde(default)]
+    pub reference_space: Option<ReferenceSpace>,
     /// Input file paths
     pub input_files: Vec<String>,
     /// Timestamp (ISO8601)
@@ -243,6 +262,7 @@ impl PhrayaPlan {
             dense_kmer_index: HashMap::new(),
             w11_membership: HashMap::new(),
             sparse_mode: false,
+            reference_space: None,
         }
     }
 
@@ -364,6 +384,21 @@ pub fn read_plan(path: &Path) -> Result<PhrayaPlan, PlanError> {
     }
 
     Ok(plan)
+}
+
+/// Compute a strong cryptographic hash (SHA-256, 256-bit) of raw bytes.
+/// Returns a lowercase hex-encoded string of 64 characters (256 bits / 4 bits per hex digit).
+pub fn content_hash_for_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let result = hasher.finalize();
+    format!("{:x}", result)
+}
+
+/// Compute a strong cryptographic hash of a sequence's byte content.
+/// The hash depends only on the bases, not on sequence ID or other metadata.
+pub fn content_hash_for_sequence(sequence: &phraya_core::types::Sequence) -> String {
+    content_hash_for_bytes(sequence.bases())
 }
 
 #[cfg(test)]

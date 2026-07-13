@@ -3,14 +3,7 @@ use std::collections::HashMap;
 
 #[test]
 fn variant_observation_with_mate_info_serializes() {
-    let mate_info = MateInfo::new(
-        "mate/2".to_string(),
-        true,
-        450,
-        true,
-        false,
-        true,
-    );
+    let mate_info = MateInfo::new("mate/2".to_string(), true, 450, true, false, true);
 
     let mut alleles = HashMap::new();
     alleles.insert(b'A', 10);
@@ -35,20 +28,19 @@ fn variant_observation_with_mate_info_serializes() {
     // Should contain mate_info fields
     assert!(json.contains("mate_info"), "JSON should contain mate_info");
     assert!(json.contains("mate/2"), "JSON should contain mate_id");
-    assert!(json.contains("insert_size"), "JSON should contain insert_size");
-    assert!(json.contains("450"), "JSON should contain insert_size value");
+    assert!(
+        json.contains("insert_size"),
+        "JSON should contain insert_size"
+    );
+    assert!(
+        json.contains("450"),
+        "JSON should contain insert_size value"
+    );
 }
 
 #[test]
 fn variant_observation_with_mate_info_deserializes() {
-    let mate_info = MateInfo::new(
-        "mate/2".to_string(),
-        true,
-        450,
-        true,
-        false,
-        true,
-    );
+    let mate_info = MateInfo::new("mate/2".to_string(), true, 450, true, false, true);
 
     let mut alleles = HashMap::new();
     alleles.insert(b'A', 10);
@@ -104,7 +96,10 @@ fn variant_observation_without_mate_info_serializes() {
     let json = serde_json::to_string(&obs).unwrap();
 
     // mate_info should be omitted (skip_serializing_if)
-    assert!(!json.contains("mate_info"), "JSON should not contain mate_info when None");
+    assert!(
+        !json.contains("mate_info"),
+        "JSON should not contain mate_info when None"
+    );
 }
 
 #[test]
@@ -153,7 +148,10 @@ fn backward_compatibility_old_json_without_mate_info() {
     let deserialized: VariantObservation = serde_json::from_str(old_json).unwrap();
 
     assert_eq!(deserialized.position(), 100);
-    assert!(deserialized.mate_info().is_none(), "Old JSON should deserialize with mate_info = None");
+    assert!(
+        deserialized.mate_info().is_none(),
+        "Old JSON should deserialize with mate_info = None"
+    );
 }
 
 #[test]
@@ -171,8 +169,16 @@ fn mate_info_with_zero_insert_size() {
     alleles.insert(b'A', 10);
 
     let obs = VariantObservation::new(
-        100, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
-        vec![10], 35.0, "sample:read".to_string(),
+        100,
+        b'A',
+        alleles,
+        0.95,
+        "10M".to_string(),
+        60,
+        0,
+        vec![10],
+        35.0,
+        "sample:read".to_string(),
     )
     .with_mate_info(mate_info);
 
@@ -201,8 +207,16 @@ fn mate_info_with_negative_insert_size() {
     alleles.insert(b'A', 10);
 
     let obs = VariantObservation::new(
-        100, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
-        vec![10], 35.0, "sample:read".to_string(),
+        100,
+        b'A',
+        alleles,
+        0.95,
+        "10M".to_string(),
+        60,
+        0,
+        vec![10],
+        35.0,
+        "sample:read".to_string(),
     )
     .with_mate_info(mate_info);
 

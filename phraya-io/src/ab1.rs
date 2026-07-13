@@ -16,7 +16,6 @@
 /// - Number of elements: u32 big-endian
 /// - Data size: u32 big-endian (total bytes)
 /// - Data offset or value: u32 big-endian (file offset if data > 4 bytes, else inline)
-
 use phraya_core::types::{ParseError, Sequence};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -81,7 +80,8 @@ pub fn parse_ab1_file<P: AsRef<Path>>(path: P) -> Result<Sequence, ParseError> {
         // let element_size = u16::from_be_bytes([tag_entry[10], tag_entry[11]]);
         let _num_elements_in_tag =
             u32::from_be_bytes([tag_entry[12], tag_entry[13], tag_entry[14], tag_entry[15]]);
-        let data_size = u32::from_be_bytes([tag_entry[16], tag_entry[17], tag_entry[18], tag_entry[19]]);
+        let data_size =
+            u32::from_be_bytes([tag_entry[16], tag_entry[17], tag_entry[18], tag_entry[19]]);
         let data_offset_or_value =
             u32::from_be_bytes([tag_entry[20], tag_entry[21], tag_entry[22], tag_entry[23]]);
 

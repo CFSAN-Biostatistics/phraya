@@ -38,7 +38,9 @@ fn issue_176_sensitive_and_balanced_call_identical_variants() {
     // Deterministic pseudo-random reference so seeds actually anchor the read.
     let mut state: u64 = 0xD1B54A32D192ED03;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) as u32
     };
     let bases = [b'A', b'C', b'G', b'T'];
@@ -56,11 +58,20 @@ fn issue_176_sensitive_and_balanced_call_identical_variants() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let sensitive = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Sensitive))
-        .expect("sensitive alignment should succeed");
-    let balanced =
-        align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Balanced))
-            .expect("balanced alignment should succeed");
+    let sensitive = align_task_with_config(
+        &query,
+        &target,
+        &plan,
+        &AlignConfig::new(Strategy::Sensitive),
+    )
+    .expect("sensitive alignment should succeed");
+    let balanced = align_task_with_config(
+        &query,
+        &target,
+        &plan,
+        &AlignConfig::new(Strategy::Balanced),
+    )
+    .expect("balanced alignment should succeed");
 
     let key = |v: &phraya_core::types::VariantObservation| {
         (v.position(), v.ref_base(), {
@@ -87,12 +98,19 @@ fn issue_176_sensitive_and_balanced_call_identical_variants() {
 fn issue_176_coverage_window_radius_override_is_orthogonal() {
     // Preset default still applies when not overridden.
     assert_eq!(AlignConfig::new(Strategy::Fast).coverage_window_radius, 150);
-    assert_eq!(AlignConfig::new(Strategy::Sensitive).coverage_window_radius, 25);
+    assert_eq!(
+        AlignConfig::new(Strategy::Sensitive).coverage_window_radius,
+        25
+    );
 
     // Override decouples the radius from the strategy.
     let cfg = AlignConfig::new(Strategy::Fast).with_coverage_window_radius(10);
     assert_eq!(cfg.coverage_window_radius, 10);
-    assert_eq!(cfg.strategy, Strategy::Fast, "override must not change the strategy");
+    assert_eq!(
+        cfg.strategy,
+        Strategy::Fast,
+        "override must not change the strategy"
+    );
 }
 
 /// Deterministic pseudo-random DNA of a given length.
@@ -134,8 +152,12 @@ fn issue_176_fast_drops_divergent_read_that_balanced_keeps() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let balanced =
-        align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Balanced));
+    let balanced = align_task_with_config(
+        &query,
+        &target,
+        &plan,
+        &AlignConfig::new(Strategy::Balanced),
+    );
     let fast = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Fast));
 
     assert!(
@@ -166,15 +188,22 @@ fn issue_176_fast_matches_balanced_on_clean_read() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let balanced =
-        align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Balanced))
-            .expect("balanced should align");
+    let balanced = align_task_with_config(
+        &query,
+        &target,
+        &plan,
+        &AlignConfig::new(Strategy::Balanced),
+    )
+    .expect("balanced should align");
     let fast = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Fast))
         .expect("fast should align a clean read");
 
     let positions = |r: &phraya_align::executor::AlignmentResult| {
-        let mut p: Vec<(u32, u8)> =
-            r.variants.iter().map(|v| (v.position(), v.ref_base())).collect();
+        let mut p: Vec<(u32, u8)> = r
+            .variants
+            .iter()
+            .map(|v| (v.position(), v.ref_base()))
+            .collect();
         p.sort();
         p
     };
@@ -200,8 +229,13 @@ fn issue_176_fast_underreports_multimapping_vs_sensitive() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let sensitive = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Sensitive))
-        .expect("sensitive should align");
+    let sensitive = align_task_with_config(
+        &query,
+        &target,
+        &plan,
+        &AlignConfig::new(Strategy::Sensitive),
+    )
+    .expect("sensitive should align");
     let fast = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Fast))
         .expect("fast should align");
 
