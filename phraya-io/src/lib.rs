@@ -2,6 +2,7 @@ pub mod ab1;
 pub mod bam_cram;
 pub mod phraya;
 pub mod plan;
+pub mod pod5;
 pub mod queries;
 pub mod sff;
 pub mod use_case;
@@ -18,14 +19,19 @@ use std::path::Path;
 pub struct SequenceParser;
 
 impl SequenceParser {
-    /// Parse sequences from a file (FASTA, FASTQ, AB1, or SFF auto-detected, with optional gzip).
-    /// Supports .fa/.fasta/.fq/.fastq/.ab1/.sff and .gz variants.
+    /// Parse sequences from a file (FASTA, FASTQ, AB1, POD5, or SFF auto-detected, with optional gzip).
+    /// Supports .fa/.fasta/.fq/.fastq/.ab1/.pod5/.sff and .gz variants.
     /// Returns an iterator of Sequence objects.
     pub fn from_path<P: AsRef<Path>>(
         path: P,
     ) -> Result<Box<dyn Iterator<Item = Result<Sequence, ParseError>>>, ParseError> {
         let path = path.as_ref();
         let path_str = path.as_os_str().to_string_lossy();
+
+        // Check for POD5 extension (.pod5)
+        if path_str.ends_with(".pod5") {
+            return pod5::parse_pod5_file(path);
+        }
 
         // Check for AB1 extension
         if path_str.ends_with(".ab1") {
