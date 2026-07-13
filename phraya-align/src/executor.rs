@@ -311,9 +311,15 @@ fn chain_cap(strategy: Strategy) -> usize {
 /// too uniform to distinguish the right position from noise. The `(0,0)` anchor is a
 /// cheap, unconditional safety net for exactly that case).
 fn anchors_from_chains(chains: &[crate::chaining::Chain], k: usize) -> Vec<SeedAnchor> {
-    let mut result = vec![SeedAnchor { query_pos: 0, target_pos: 0 }];
+    let mut result = vec![SeedAnchor {
+        query_pos: 0,
+        target_pos: 0,
+    }];
     for c in chains.iter().take(k) {
-        result.push(SeedAnchor { query_pos: 0, target_pos: c.target_start() });
+        result.push(SeedAnchor {
+            query_pos: 0,
+            target_pos: c.target_start(),
+        });
     }
     result
 }
@@ -380,8 +386,7 @@ impl<'a> TargetContext<'a> {
         // only pathological hyper-repeats (homopolymer/microsatellite k-mers) are trimmed.
         let seed_max_occ = seed_occurrence_cap(&minimizer_index, SEED_OCC_CAP_FLOOR);
         let target_str = String::from_utf8_lossy(target.bases());
-        let repeat_regions =
-            detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
+        let repeat_regions = detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
         TargetContext {
             target,
             minimizer_index,
@@ -555,9 +560,15 @@ pub fn align_read(
     // low-complexity/repetitive background where chaining can't distinguish signal from
     // noise in either orientation, see issue #146), extend both, exactly as before.
     let (fwd, rev) = if !fwd_chains.is_empty() && rev_chains.is_empty() {
-        (extend_chains(config.strategy, ctx, query.bases(), &fwd_chains), None)
+        (
+            extend_chains(config.strategy, ctx, query.bases(), &fwd_chains),
+            None,
+        )
     } else if fwd_chains.is_empty() && !rev_chains.is_empty() {
-        (None, extend_chains(config.strategy, ctx, &rc_bases, &rev_chains))
+        (
+            None,
+            extend_chains(config.strategy, ctx, &rc_bases, &rev_chains),
+        )
     } else {
         (
             extend_chains(config.strategy, ctx, query.bases(), &fwd_chains),
@@ -566,8 +577,7 @@ pub fn align_read(
     };
 
     // Keep the better-scoring orientation; ties resolve to forward deterministically.
-    let (scored, query_bytes, strand): (crate::ScoredAlignments, &[u8], Strand) = match (fwd, rev)
-    {
+    let (scored, query_bytes, strand): (crate::ScoredAlignments, &[u8], Strand) = match (fwd, rev) {
         (Some(f), Some(r)) if r.primary.edit_distance < f.primary.edit_distance => {
             (r, &rc_bases[..], Strand::Reverse)
         }
@@ -612,9 +622,7 @@ pub fn align_read(
     let mate_info = plan.mate_info.get(query.id());
 
     // Pre-compute aggregate insert stats from mate_info so variants are merge-stable.
-    let insert_stats: Option<(i64, u32)> = mate_info.map(|mi| {
-        (mi.insert_size.abs() as i64, 1u32)
-    });
+    let insert_stats: Option<(i64, u32)> = mate_info.map(|mi| (mi.insert_size.abs() as i64, 1u32));
 
     let variants = extract_variants_from_cigar(
         &scored.primary.cigar,
@@ -700,9 +708,15 @@ fn extract_variants_from_cigar(
     insert_stats: Option<(i64, u32)>,
     strand: Strand,
 ) -> Vec<VariantObservation> {
+    use std::sync::Arc;
+
     let mut variants = Vec::new();
     let mut q_pos = 0usize;
     let mut t_pos = target_start;
+
+    // Share CIGAR and provenance allocations across all variants from this read
+    let cigar_arc: Arc<str> = Arc::from(cigar.to_string());
+    let provenance_arc: Arc<str> = Arc::from(provenance);
 
     let ops = parse_cigar(cigar);
     for (count, op) in ops {
@@ -723,7 +737,11 @@ fn extract_variants_from_cigar(
                         alleles.insert(alt_base, 1u32);
 
                         // Local coverage: ±coverage_window_radius bp window, values from the alignment coverage track.
-                        let window_start = if tp >= coverage_window_radius { tp - coverage_window_radius } else { 0 };
+                        let window_start = if tp >= coverage_window_radius {
+                            tp - coverage_window_radius
+                        } else {
+                            0
+                        };
                         let window_end = (tp + coverage_window_radius + 1).min(target.len());
                         let local_coverage: Vec<u32> = (window_start..window_end)
                             .map(|pos| get_abs_multi(coverage, pos))
@@ -738,21 +756,22 @@ fn extract_variants_from_cigar(
                             1.0
                         };
 
-                        let mut obs = VariantObservation::new(
+                        let mut obs = VariantObservation::with_arc(
                             tp as u32,
                             ref_base,
                             alleles,
                             kmer_uniqueness * confidence,
-                            cigar.to_string(),
+                            cigar_arc.clone(),
                             mapq,
                             edit_distance,
                             local_coverage,
                             avg_base_quality,
-                            provenance.clone(),
-                        ).with_tandem_repeat(in_repeat)
-                         .with_kmer_uniqueness(kmer_uniqueness)
-                         .with_coverage_window_offset(variant_offset)
-                         .with_strand(strand);
+                            provenance_arc.clone(),
+                        )
+                        .with_tandem_repeat(in_repeat)
+                        .with_kmer_uniqueness(kmer_uniqueness)
+                        .with_coverage_window_offset(variant_offset)
+                        .with_strand(strand);
 
                         if let Some(mi) = mate_info {
                             obs = obs
@@ -776,7 +795,11 @@ fn extract_variants_from_cigar(
                 // Skipping 'I' at tail-end where query has already ended prevents false deletions
                 if t_pos < target.len() && q_pos < query.len() {
                     let deleted_bases = &target[t_pos..(t_pos + count).min(target.len())];
-                    let window_start = if t_pos >= coverage_window_radius { t_pos - coverage_window_radius } else { 0 };
+                    let window_start = if t_pos >= coverage_window_radius {
+                        t_pos - coverage_window_radius
+                    } else {
+                        0
+                    };
                     let window_end = (t_pos + coverage_window_radius + 1).min(target.len());
                     let local_coverage: Vec<u32> = (window_start..window_end)
                         .map(|pos| get_abs_multi(coverage, pos))
@@ -800,17 +823,17 @@ fn extract_variants_from_cigar(
                     let mut alleles = HashMap::new();
                     alleles.insert(b'.', 1u32);
 
-                    let mut obs = VariantObservation::new(
+                    let mut obs = VariantObservation::with_arc(
                         t_pos as u32,
                         ref_base,
                         alleles,
                         kmer_uniqueness * confidence,
-                        cigar.to_string(),
+                        cigar_arc.clone(),
                         mapq,
                         edit_distance,
                         local_coverage,
                         avg_base_quality,
-                        provenance.clone(),
+                        provenance_arc.clone(),
                     )
                     .with_tandem_repeat(in_repeat)
                     .with_variant_type(phraya_core::types::VariantType::Deletion)
@@ -836,7 +859,11 @@ fn extract_variants_from_cigar(
                 // Emit one VariantObservation for the inserted region
                 if q_pos < query.len() && t_pos < target.len() {
                     let inserted_bases = &query[q_pos..(q_pos + count).min(query.len())];
-                    let window_start = if t_pos >= coverage_window_radius { t_pos - coverage_window_radius } else { 0 };
+                    let window_start = if t_pos >= coverage_window_radius {
+                        t_pos - coverage_window_radius
+                    } else {
+                        0
+                    };
                     let window_end = (t_pos + coverage_window_radius + 1).min(target.len());
                     let local_coverage: Vec<u32> = (window_start..window_end)
                         .map(|pos| get_abs_multi(coverage, pos))
@@ -857,17 +884,17 @@ fn extract_variants_from_cigar(
                         *alleles.entry(base).or_insert(0) += 1;
                     }
 
-                    let mut obs = VariantObservation::new(
+                    let mut obs = VariantObservation::with_arc(
                         t_pos as u32,
                         b'.',
                         alleles,
                         kmer_uniqueness * confidence,
-                        cigar.to_string(),
+                        cigar_arc.clone(),
                         mapq,
                         edit_distance,
                         local_coverage,
                         avg_base_quality,
-                        provenance.clone(),
+                        provenance_arc.clone(),
                     )
                     .with_tandem_repeat(in_repeat)
                     .with_variant_type(phraya_core::types::VariantType::Insertion)
@@ -967,12 +994,18 @@ mod tests {
         let fast = AlignConfig::fast();
         let fast_via_new = AlignConfig::new(Strategy::Fast);
         assert_eq!(fast.strategy, fast_via_new.strategy);
-        assert_eq!(fast.coverage_window_radius, fast_via_new.coverage_window_radius);
+        assert_eq!(
+            fast.coverage_window_radius,
+            fast_via_new.coverage_window_radius
+        );
 
         let sensitive = AlignConfig::sensitive();
         let sensitive_via_new = AlignConfig::new(Strategy::Sensitive);
         assert_eq!(sensitive.strategy, sensitive_via_new.strategy);
-        assert_eq!(sensitive.coverage_window_radius, sensitive_via_new.coverage_window_radius);
+        assert_eq!(
+            sensitive.coverage_window_radius,
+            sensitive_via_new.coverage_window_radius
+        );
     }
 
     #[test]
@@ -1005,25 +1038,56 @@ mod tests {
         let intervals = vec![(10u32, 20u32), (20u32, 30u32), (50u32, 55u32)];
         let linear = |pos: u32| intervals.iter().any(|&(s, e)| pos >= s && pos < e);
         for pos in 0..60u32 {
-            assert_eq!(is_in_hotspot(pos, &intervals), linear(pos), "mismatch at pos {pos}");
+            assert_eq!(
+                is_in_hotspot(pos, &intervals),
+                linear(pos),
+                "mismatch at pos {pos}"
+            );
         }
     }
 
     #[test]
     fn anchors_from_chains_falls_back_to_origin_when_no_chains() {
         let anchors = anchors_from_chains(&[], chain_cap(Strategy::Fast));
-        assert_eq!(anchors, vec![SeedAnchor { query_pos: 0, target_pos: 0 }]);
+        assert_eq!(
+            anchors,
+            vec![SeedAnchor {
+                query_pos: 0,
+                target_pos: 0
+            }]
+        );
     }
 
     #[test]
     fn anchors_from_chains_uses_chain_target_start_and_respects_cap() {
-        let seeds_a = vec![crate::Seed { query_pos: 0, target_pos: 100, minimizer: 1 }];
-        let seeds_b = vec![crate::Seed { query_pos: 0, target_pos: 5000, minimizer: 2 }];
-        let seeds_c = vec![crate::Seed { query_pos: 0, target_pos: 9000, minimizer: 3 }];
+        let seeds_a = vec![crate::Seed {
+            query_pos: 0,
+            target_pos: 100,
+            minimizer: 1,
+        }];
+        let seeds_b = vec![crate::Seed {
+            query_pos: 0,
+            target_pos: 5000,
+            minimizer: 2,
+        }];
+        let seeds_c = vec![crate::Seed {
+            query_pos: 0,
+            target_pos: 9000,
+            minimizer: 3,
+        }];
         let chains = vec![
-            crate::chaining::Chain { seeds: seeds_a, score: 30 },
-            crate::chaining::Chain { seeds: seeds_b, score: 25 },
-            crate::chaining::Chain { seeds: seeds_c, score: 20 },
+            crate::chaining::Chain {
+                seeds: seeds_a,
+                score: 30,
+            },
+            crate::chaining::Chain {
+                seeds: seeds_b,
+                score: 25,
+            },
+            crate::chaining::Chain {
+                seeds: seeds_c,
+                score: 20,
+            },
         ];
         // K=1 (Fast) keeps only the first (highest-scoring, by construction of the input
         // order) chain's target_start, plus the unconditional (0,0) safety net.
@@ -1031,8 +1095,14 @@ mod tests {
         assert_eq!(
             anchors,
             vec![
-                SeedAnchor { query_pos: 0, target_pos: 0 },
-                SeedAnchor { query_pos: 0, target_pos: 100 },
+                SeedAnchor {
+                    query_pos: 0,
+                    target_pos: 0
+                },
+                SeedAnchor {
+                    query_pos: 0,
+                    target_pos: 100
+                },
             ]
         );
 
@@ -1043,10 +1113,22 @@ mod tests {
         assert_eq!(
             anchors,
             vec![
-                SeedAnchor { query_pos: 0, target_pos: 0 },
-                SeedAnchor { query_pos: 0, target_pos: 100 },
-                SeedAnchor { query_pos: 0, target_pos: 5000 },
-                SeedAnchor { query_pos: 0, target_pos: 9000 },
+                SeedAnchor {
+                    query_pos: 0,
+                    target_pos: 0
+                },
+                SeedAnchor {
+                    query_pos: 0,
+                    target_pos: 100
+                },
+                SeedAnchor {
+                    query_pos: 0,
+                    target_pos: 5000
+                },
+                SeedAnchor {
+                    query_pos: 0,
+                    target_pos: 9000
+                },
             ]
         );
     }
@@ -1172,7 +1254,10 @@ mod tests {
             (pos as i64 - 100).abs() <= 1,
             "reverse read should place near forward coord 100, got {pos}"
         );
-        assert!(score > 0.9, "reverse read should place with high score, got {score}");
+        assert!(
+            score > 0.9,
+            "reverse read should place with high score, got {score}"
+        );
 
         // The single SNP is reported at forward position 150, with the reference-strand
         // ref base and the forward-strand allele — NOT their reverse complements.
@@ -1181,12 +1266,20 @@ mod tests {
             .iter()
             .find(|v| v.position() == 150)
             .expect("SNP must be called at forward position 150");
-        assert_eq!(var.ref_base(), orig, "ref base must be the forward-strand reference base");
+        assert_eq!(
+            var.ref_base(),
+            orig,
+            "ref base must be the forward-strand reference base"
+        );
         assert!(
             var.all_alleles().contains_key(&snp),
             "allele must be the forward-strand read base, not its complement"
         );
-        assert_eq!(var.strand(), Strand::Reverse, "variant must record Strand::Reverse");
+        assert_eq!(
+            var.strand(),
+            Strand::Reverse,
+            "variant must record Strand::Reverse"
+        );
     }
 
     #[test]
@@ -1200,7 +1293,12 @@ mod tests {
         let stats = AlignStats::default();
 
         // Perfect substring → placed.
-        let good = Sequence::new(target.bases()[50..150].to_vec(), None, "good".to_string(), None);
+        let good = Sequence::new(
+            target.bases()[50..150].to_vec(),
+            None,
+            "good".to_string(),
+            None,
+        );
         align_read(&ctx, &good, &plan, &cfg, Some(&stats));
 
         // A 150bp read whose divergence is clustered: long exact flanks still yield shared
@@ -1217,8 +1315,16 @@ mod tests {
         let junk = Sequence::new(diverse_dna(120, 987_654), None, "junk".to_string(), None);
         align_read(&ctx, &junk, &plan, &cfg, Some(&stats));
 
-        assert_eq!(stats.placed.load(Ordering::Relaxed), 1, "perfect read is placed");
-        assert_eq!(stats.no_seed.load(Ordering::Relaxed), 1, "unrelated read is no_seed");
+        assert_eq!(
+            stats.placed.load(Ordering::Relaxed),
+            1,
+            "perfect read is placed"
+        );
+        assert_eq!(
+            stats.no_seed.load(Ordering::Relaxed),
+            1,
+            "unrelated read is no_seed"
+        );
         assert_eq!(
             stats.below_threshold.load(Ordering::Relaxed),
             1,
@@ -1246,7 +1352,11 @@ mod tests {
             .iter()
             .find(|v| v.position() == 150)
             .expect("SNP at forward position 150");
-        assert_eq!(var.strand(), Strand::Forward, "forward read must record Strand::Forward");
+        assert_eq!(
+            var.strand(),
+            Strand::Forward,
+            "forward read must record Strand::Forward"
+        );
     }
 
     /// Regression guard for the orientation-skip optimization in [`align_read`]: seeding
@@ -1274,12 +1384,8 @@ mod tests {
         let (fwd_seeds, fwd_chains) = seed_and_chain(&ctx, &fwd_sketch);
 
         let rc_bytes = reverse_complement(&true_fwd_read);
-        let rc_sketch = sketch_sequence_default(&Sequence::new(
-            rc_bytes,
-            None,
-            "q_rc".to_string(),
-            None,
-        ));
+        let rc_sketch =
+            sketch_sequence_default(&Sequence::new(rc_bytes, None, "q_rc".to_string(), None));
         let (rc_seeds, rc_chains) = seed_and_chain(&ctx, &rc_sketch);
 
         assert_eq!(
@@ -1287,7 +1393,10 @@ mod tests {
             "canonical minimizers are strand-invariant: both orientations must find the \
              same raw seed count"
         );
-        assert!(!fwd_chains.is_empty(), "the true orientation must chain to something");
+        assert!(
+            !fwd_chains.is_empty(),
+            "the true orientation must chain to something"
+        );
         assert!(
             rc_chains.is_empty(),
             "the wrong orientation of a genuine match must chain to nothing, despite \
@@ -1340,7 +1449,10 @@ mod tests {
         let plan = make_plan();
 
         let result = align_task(&query, &target, &plan).expect("alignment must succeed");
-        assert!(!result.variants.is_empty(), "must have at least one variant");
+        assert!(
+            !result.variants.is_empty(),
+            "must have at least one variant"
+        );
 
         let var = &result.variants[0];
         let lc = var.local_coverage();
@@ -1375,7 +1487,7 @@ mod tests {
         let mut target_bases = b"TTAACCGGTA".to_vec(); // unique prefix (10bp)
         target_bases.extend_from_slice(b"ATATATATATATATATATATAT"); // tandem repeat (22bp, pos 10..32)
         target_bases.extend_from_slice(b"CGTACCGATT"); // unique suffix (10bp)
-        // Total: 42bp
+                                                       // Total: 42bp
 
         // Query matches target except: SNP in repeat at pos 15, SNP outside repeat at pos 2.
         let mut query_bases = target_bases.clone();
@@ -1552,7 +1664,12 @@ mod tests {
         // verifies that a normal alignment succeeds and produces reasonable output.
 
         let target = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "ref".to_string(), None);
-        let query = Sequence::new(b"ACGTACGTACGTACGT".to_vec(), None, "query".to_string(), None);
+        let query = Sequence::new(
+            b"ACGTACGTACGTACGT".to_vec(),
+            None,
+            "query".to_string(),
+            None,
+        );
         let plan = make_plan();
 
         // At current (uncapped) max_s, this should succeed normally
@@ -1601,7 +1718,10 @@ mod tests {
 
         // score_alignments should work correctly on this
         let scored = score_alignments(&[perfect.clone()], 16);
-        assert_eq!(scored.primary, perfect, "perfect match is selected as primary");
+        assert_eq!(
+            scored.primary, perfect,
+            "perfect match is selected as primary"
+        );
 
         // But an abandoned alignment (empty CIGAR, 0 edit distance) should
         // NEVER reach score_alignments; it's filtered in align_read.
@@ -1625,7 +1745,12 @@ mod tests {
         // The alignments vector should only contain successful ones.
 
         let target = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "ref".to_string(), None);
-        let query = Sequence::new(b"ACGTACGTACGTACGT".to_vec(), None, "query".to_string(), None);
+        let query = Sequence::new(
+            b"ACGTACGTACGTACGT".to_vec(),
+            None,
+            "query".to_string(),
+            None,
+        );
         let plan = make_plan();
 
         // At current (uncapped) max_s, all anchors align successfully
@@ -1648,7 +1773,12 @@ mod tests {
     #[test]
     fn issue_180_backward_compat_uncapped_produces_consistent_results() {
         let target = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "ref".to_string(), None);
-        let query = Sequence::new(b"ACGTACGTACGTACGT".to_vec(), None, "query".to_string(), None);
+        let query = Sequence::new(
+            b"ACGTACGTACGTACGT".to_vec(),
+            None,
+            "query".to_string(),
+            None,
+        );
         let plan = make_plan();
 
         let result1 = align_task(&query, &target, &plan);
@@ -1662,8 +1792,16 @@ mod tests {
         );
 
         if let (Some(r1), Some(r2)) = (result1, result2) {
-            assert_eq!(r1.variants.len(), r2.variants.len(), "variant count must match");
-            assert_eq!(r1.query_positions.len(), r2.query_positions.len(), "query position count must match");
+            assert_eq!(
+                r1.variants.len(),
+                r2.variants.len(),
+                "variant count must match"
+            );
+            assert_eq!(
+                r1.query_positions.len(),
+                r2.query_positions.len(),
+                "query position count must match"
+            );
         }
     }
 
@@ -1675,7 +1813,12 @@ mod tests {
     #[test]
     fn issue_180_primary_alignment_is_never_spurious_fallback() {
         let target = Sequence::new(b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(), None, "ref".to_string(), None);
-        let query = Sequence::new(b"ACGTACGTACGTACGT".to_vec(), None, "query".to_string(), None);
+        let query = Sequence::new(
+            b"ACGTACGTACGTACGT".to_vec(),
+            None,
+            "query".to_string(),
+            None,
+        );
         let plan = make_plan();
 
         let result = align_task(&query, &target, &plan);
