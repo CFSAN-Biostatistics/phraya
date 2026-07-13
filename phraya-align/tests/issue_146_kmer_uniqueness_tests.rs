@@ -1,6 +1,3 @@
-use phraya_align::executor::{align_task_with_config, AlignConfig};
-use phraya_core::types::Sequence;
-use phraya_io::plan::{PhrayaPlan, UseCase};
 /// Issue #146: K-mer evidence tier on VariantObservation (two-tier evidence, tier 1)
 ///
 /// This test file contains RED (failing) acceptance tests for issue #146.
@@ -9,7 +6,11 @@ use phraya_io::plan::{PhrayaPlan, UseCase};
 /// 2. During alignment, variants inside hotspot intervals get kmer_uniqueness < 1.0
 /// 3. Variants outside hotspot intervals get kmer_uniqueness close to 1.0
 /// 4. Old .phraya files deserialize without error (serde default)
+
 use std::collections::HashMap;
+use phraya_align::executor::{align_task_with_config, AlignConfig};
+use phraya_core::types::Sequence;
+use phraya_io::plan::{PhrayaPlan, UseCase};
 
 fn make_plan_with_hotspots(hotspot_intervals: Vec<(u32, u32)>) -> PhrayaPlan {
     let mut plan = PhrayaPlan::new(
@@ -49,11 +50,7 @@ fn issue_146_variant_observation_has_kmer_uniqueness_field() {
     // kmer_uniqueness should have a default getter returning a value close to 1.0
     // since serde default = 1.0 for new observations
     let km = obs.kmer_uniqueness();
-    assert!(
-        km >= 0.99 && km <= 1.0,
-        "default kmer_uniqueness should be 1.0, got {}",
-        km
-    );
+    assert!(km >= 0.99 && km <= 1.0, "default kmer_uniqueness should be 1.0, got {}", km);
 }
 
 /// Test that VariantObservation can be constructed with kmer_uniqueness via builder pattern
@@ -78,11 +75,7 @@ fn issue_146_variant_observation_kmer_uniqueness_builder() {
     )
     .with_kmer_uniqueness(0.5);
 
-    assert_eq!(
-        obs.kmer_uniqueness(),
-        0.5,
-        "kmer_uniqueness should be set to 0.5"
-    );
+    assert_eq!(obs.kmer_uniqueness(), 0.5, "kmer_uniqueness should be set to 0.5");
 }
 
 /// Test that PhrayaPlan has hotspot_intervals field
@@ -118,28 +111,18 @@ fn issue_146_align_task_sets_low_kmer_uniqueness_inside_hotspot() {
     let plan = make_plan_with_hotspots(vec![(40, 60)]);
     let config = AlignConfig::balanced();
 
-    let result =
-        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result = align_task_with_config(&query, &target, &plan, &config)
+        .expect("alignment should succeed");
 
-    assert!(
-        !result.variants.is_empty(),
-        "should have at least one variant"
-    );
+    assert!(!result.variants.is_empty(), "should have at least one variant");
     let var = &result.variants[0];
 
     // The variant at position 50 should be inside hotspot [40, 60]
-    assert!(
-        var.position() >= 40 && var.position() < 60,
-        "variant should be in hotspot range"
-    );
+    assert!(var.position() >= 40 && var.position() < 60, "variant should be in hotspot range");
 
     // kmer_uniqueness should be < 1.0 because position is inside a hotspot
     let km = var.kmer_uniqueness();
-    assert!(
-        km < 1.0,
-        "kmer_uniqueness should be < 1.0 inside hotspot, got {}",
-        km
-    );
+    assert!(km < 1.0, "kmer_uniqueness should be < 1.0 inside hotspot, got {}", km);
 }
 
 /// Test that align_task_with_config sets kmer_uniqueness close to 1.0 for variants outside hotspot
@@ -163,28 +146,18 @@ fn issue_146_align_task_sets_high_kmer_uniqueness_outside_hotspot() {
     let plan = make_plan_with_hotspots(vec![(100, 120)]);
     let config = AlignConfig::balanced();
 
-    let result =
-        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result = align_task_with_config(&query, &target, &plan, &config)
+        .expect("alignment should succeed");
 
-    assert!(
-        !result.variants.is_empty(),
-        "should have at least one variant"
-    );
+    assert!(!result.variants.is_empty(), "should have at least one variant");
     let var = &result.variants[0];
 
     // The variant at position 50 should be outside hotspot [100, 120]
-    assert!(
-        !(var.position() >= 100 && var.position() < 120),
-        "variant should be outside hotspot range"
-    );
+    assert!(!(var.position() >= 100 && var.position() < 120), "variant should be outside hotspot range");
 
     // kmer_uniqueness should be close to 1.0 because position is outside all hotspots
     let km = var.kmer_uniqueness();
-    assert!(
-        km >= 0.99 && km <= 1.0,
-        "kmer_uniqueness should be ~1.0 outside hotspot, got {}",
-        km
-    );
+    assert!(km >= 0.99 && km <= 1.0, "kmer_uniqueness should be ~1.0 outside hotspot, got {}", km);
 }
 
 /// Test that with multiple hotspot intervals, variants are correctly classified
@@ -210,13 +183,10 @@ fn issue_146_multiple_hotspot_intervals() {
     let plan = make_plan_with_hotspots(vec![(20, 40), (90, 110)]);
     let config = AlignConfig::balanced();
 
-    let result =
-        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result = align_task_with_config(&query, &target, &plan, &config)
+        .expect("alignment should succeed");
 
-    assert!(
-        result.variants.len() >= 2,
-        "should have at least 2 variants"
-    );
+    assert!(result.variants.len() >= 2, "should have at least 2 variants");
 
     // Find variants at positions 30 and 80
     let var_at_30 = result.variants.iter().find(|v| v.position() == 30);
@@ -227,19 +197,11 @@ fn issue_146_multiple_hotspot_intervals() {
 
     // Position 30 is inside hotspot [20, 40]
     let km30 = var_at_30.unwrap().kmer_uniqueness();
-    assert!(
-        km30 < 1.0,
-        "position 30 inside [20, 40] should have km < 1.0, got {}",
-        km30
-    );
+    assert!(km30 < 1.0, "position 30 inside [20, 40] should have km < 1.0, got {}", km30);
 
     // Position 80 is outside both hotspots
     let km80 = var_at_80.unwrap().kmer_uniqueness();
-    assert!(
-        km80 >= 0.99 && km80 <= 1.0,
-        "position 80 outside hotspots should have km ~1.0, got {}",
-        km80
-    );
+    assert!(km80 >= 0.99 && km80 <= 1.0, "position 80 outside hotspots should have km ~1.0, got {}", km80);
 }
 
 /// Test that empty hotspot intervals result in all kmer_uniqueness ~1.0
@@ -257,20 +219,13 @@ fn issue_146_empty_hotspot_intervals_all_unique() {
     let plan = make_plan_with_hotspots(vec![]);
     let config = AlignConfig::balanced();
 
-    let result =
-        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result = align_task_with_config(&query, &target, &plan, &config)
+        .expect("alignment should succeed");
 
-    assert!(
-        !result.variants.is_empty(),
-        "should have at least one variant"
-    );
+    assert!(!result.variants.is_empty(), "should have at least one variant");
     for var in &result.variants {
         let km = var.kmer_uniqueness();
-        assert!(
-            km >= 0.99 && km <= 1.0,
-            "with empty hotspots, all variants should have km ~1.0, got {}",
-            km
-        );
+        assert!(km >= 0.99 && km <= 1.0, "with empty hotspots, all variants should have km ~1.0, got {}", km);
     }
 }
 
@@ -301,10 +256,7 @@ fn issue_146_old_phraya_files_deserialize_with_default() {
     );
 
     // Should not panic and should have default value
-    assert!(
-        obs.kmer_uniqueness() >= 0.99 && obs.kmer_uniqueness() <= 1.0,
-        "default should be ~1.0"
-    );
+    assert!(obs.kmer_uniqueness() >= 0.99 && obs.kmer_uniqueness() <= 1.0, "default should be ~1.0");
 }
 
 /// Test that variant hotspot status is orthogonal to tandem repeat status
@@ -333,11 +285,7 @@ fn issue_146_hotspot_and_tandem_repeat_orthogonal() {
 
     // Both should be set independently
     assert_eq!(obs.kmer_uniqueness(), 0.3, "kmer_uniqueness should be 0.3");
-    assert_eq!(
-        obs.in_tandem_repeat(),
-        true,
-        "in_tandem_repeat should be true"
-    );
+    assert_eq!(obs.in_tandem_repeat(), true, "in_tandem_repeat should be true");
 }
 
 #[test]
@@ -372,9 +320,6 @@ fn debug_146_seeds_and_anchors() {
     eprintln!("seed count: {}", seeds.len());
     for s in seeds.iter().take(5) {
         let ts = (s.target_pos as i64 - s.query_pos as i64).max(0);
-        eprintln!(
-            "  seed qp={} tp={} → target_start={}",
-            s.query_pos, s.target_pos, ts
-        );
+        eprintln!("  seed qp={} tp={} → target_start={}", s.query_pos, s.target_pos, ts);
     }
 }

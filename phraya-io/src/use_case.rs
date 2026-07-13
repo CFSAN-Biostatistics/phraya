@@ -86,10 +86,7 @@ mod tests {
     #[test]
     fn classify_empty_file_returns_no_sequences() {
         let f = NamedTempFile::new().unwrap();
-        assert!(matches!(
-            classify_input(f.path()),
-            Err(UseCaseError::NoSequences)
-        ));
+        assert!(matches!(classify_input(f.path()), Err(UseCaseError::NoSequences)));
     }
 
     #[test]

@@ -18,15 +18,15 @@ fn create_test_obs(insert_size: i32, proper_pair: bool, mate_mapped: bool) -> Va
     alleles.insert(b'A', 10);
 
     VariantObservation::new(
-        100,  // position
-        b'A', // ref_base
+        100,             // position
+        b'A',            // ref_base
         alleles,
-        0.95,                      // confidence
-        "10M".to_string(),         // cigar
-        60,                        // mapq
-        0,                         // edit_distance
-        vec![10],                  // local_coverage
-        35.0,                      // avg_base_quality
+        0.95,            // confidence
+        "10M".to_string(), // cigar
+        60,              // mapq
+        0,               // edit_distance
+        vec![10],        // local_coverage
+        35.0,            // avg_base_quality
         "sample:read".to_string(), // provenance
     )
     .with_mate_info(mate_info)
@@ -36,7 +36,9 @@ fn create_test_obs(insert_size: i32, proper_pair: bool, mate_mapped: bool) -> Va
 
 #[test]
 fn filter_requires_proper_pairs() {
-    let filter = FilterBuilder::new().require_proper_pairs(1.0).build();
+    let filter = FilterBuilder::new()
+        .require_proper_pairs(1.0)
+        .build();
 
     let obs_proper = create_test_obs(400, true, true);
     let obs_improper = create_test_obs(400, false, true);
@@ -65,16 +67,15 @@ fn filter_excludes_discordant_pairs() {
 
     // Discordant: 800 > 400+150=550
     let obs_discordant = create_test_obs(800, true, true);
-    assert!(
-        !filter.apply(&obs_discordant),
-        "Should fail discordant pair"
-    );
+    assert!(!filter.apply(&obs_discordant), "Should fail discordant pair");
 }
 
 #[test]
 fn filter_excludes_discordant_without_distribution_passes() {
     // If no distribution provided, discordant filter has no effect
-    let filter = FilterBuilder::new().exclude_discordant_pairs(true).build();
+    let filter = FilterBuilder::new()
+        .exclude_discordant_pairs(true)
+        .build();
 
     let obs = create_test_obs(800, true, true);
     assert!(filter.apply(&obs), "Should pass without distribution");
@@ -106,10 +107,7 @@ fn filter_insert_size_uses_absolute_value() {
 
     // Negative insert size (mate upstream)
     let obs_negative = create_test_obs(-450, true, true);
-    assert!(
-        filter.apply(&obs_negative),
-        "|-450| = 450 within [300, 600]"
-    );
+    assert!(filter.apply(&obs_negative), "|-450| = 450 within [300, 600]");
 
     let obs_negative_above = create_test_obs(-700, true, true);
     assert!(!filter.apply(&obs_negative_above), "|-700| = 700 > 600");
@@ -117,7 +115,9 @@ fn filter_insert_size_uses_absolute_value() {
 
 #[test]
 fn filter_requires_both_mates_mapped() {
-    let filter = FilterBuilder::new().require_both_mates_mapped(true).build();
+    let filter = FilterBuilder::new()
+        .require_both_mates_mapped(true)
+        .build();
 
     let obs_both_mapped = create_test_obs(400, true, true);
     assert!(filter.apply(&obs_both_mapped), "Both mates mapped");
@@ -155,7 +155,9 @@ fn filter_skips_paired_checks_for_unpaired_reads() {
 
 #[test]
 fn filter_rejects_unpaired_when_proper_pairs_required() {
-    let filter = FilterBuilder::new().require_proper_pairs(1.0).build();
+    let filter = FilterBuilder::new()
+        .require_proper_pairs(1.0)
+        .build();
 
     // Observation without mate_info
     let mut alleles = HashMap::new();
@@ -175,10 +177,7 @@ fn filter_rejects_unpaired_when_proper_pairs_required() {
     );
 
     // Should fail (proper pairs required but no mate_info)
-    assert!(
-        !filter.apply(&obs),
-        "Should reject unpaired when proper_pairs required"
-    );
+    assert!(!filter.apply(&obs), "Should reject unpaired when proper_pairs required");
 }
 
 #[test]
@@ -307,18 +306,10 @@ fn filter_with_coverage_and_paired_constraints() {
     let mut alleles = HashMap::new();
     alleles.insert(b'A', 10);
     let obs_low_cov = VariantObservation::new(
-        100,
-        b'A',
-        alleles,
-        0.95,
-        "10M".to_string(),
-        60,
-        0,
+        100, b'A', alleles, 0.95, "10M".to_string(), 60, 0,
         vec![3], // Low coverage
-        35.0,
-        "sample:read".to_string(),
-    )
-    .with_mate_info(mate_info);
+        35.0, "sample:read".to_string(),
+    ).with_mate_info(mate_info);
 
     assert!(!filter.apply(&obs_low_cov), "Should fail low coverage");
 }

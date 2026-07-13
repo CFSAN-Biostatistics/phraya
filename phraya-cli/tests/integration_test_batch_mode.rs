@@ -29,11 +29,7 @@ fn test_batch_mode_end_to_end() {
 
     // Run phraya plan with batch-to 4
     let plan_file = temp_path.join("plan.phrayaplan");
-    let output_pattern = temp_path
-        .join("out_{worker}.phraya")
-        .to_str()
-        .unwrap()
-        .to_string();
+    let output_pattern = temp_path.join("out_{worker}.phraya").to_str().unwrap().to_string();
 
     let plan_status = Command::new("cargo")
         .args([
@@ -134,19 +130,11 @@ fn test_batch_mode_ensure() {
 
     // Generate reference
     let ref_file = temp_path.join("ref.fa");
-    fs::write(
-        &ref_file,
-        ">reference\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n",
-    )
-    .unwrap();
+    fs::write(&ref_file, ">reference\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n").unwrap();
 
     // Run phraya plan with batch-by 20
     let plan_file = temp_path.join("plan.phrayaplan");
-    let output_pattern = temp_path
-        .join("chunk_{worker}.phraya")
-        .to_str()
-        .unwrap()
-        .to_string();
+    let output_pattern = temp_path.join("chunk_{worker}.phraya").to_str().unwrap().to_string();
 
     let plan_status = Command::new("cargo")
         .args([
@@ -185,11 +173,7 @@ fn test_batch_mode_ensure() {
             ])
             .status()
             .unwrap();
-        assert!(
-            align_status.success(),
-            "phraya align --worker {} failed",
-            worker_id
-        );
+        assert!(align_status.success(), "phraya align --worker {} failed", worker_id);
     }
 
     // Run ensure mode to process missing chunks
@@ -210,11 +194,7 @@ fn test_batch_mode_ensure() {
     // Verify all outputs exist (3 chunks: 0-19, 20-39, 40-49)
     for worker_id in 0..3 {
         let output_file = temp_path.join(format!("chunk_{}.phraya", worker_id));
-        assert!(
-            output_file.exists(),
-            "Worker {} output not created",
-            worker_id
-        );
+        assert!(output_file.exists(), "Worker {} output not created", worker_id);
     }
 
     println!("Batch mode ensure test passed");

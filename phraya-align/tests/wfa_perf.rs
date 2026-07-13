@@ -4,18 +4,14 @@
 //! `#[ignore]` by default (microbenchmarks are meaningless in the debug build
 //! `cargo test --all` uses). CI runs it in release with native SIMD enabled:
 //!   RUSTFLAGS="-C target-cpu=native" cargo test --release --test wfa_perf -- --ignored
-use phraya_align::{wfa_extend, wfa_extend_naive, SeedAnchor};
+use phraya_align::{wfa_extend_naive, wfa_extend, SeedAnchor};
 use std::time::{Duration, Instant};
 
 fn make_pair(len: usize, div_pct: usize) -> (Vec<u8>, Vec<u8>) {
     const BASES: &[u8; 4] = b"ACGT";
     let q: Vec<u8> = (0..len).map(|i| BASES[(i * 7 + 3) % 4]).collect();
     let mut t = q.clone();
-    let step = if div_pct == 0 {
-        usize::MAX
-    } else {
-        100 / div_pct
-    };
+    let step = if div_pct == 0 { usize::MAX } else { 100 / div_pct };
     if step != usize::MAX {
         let mut i = step;
         while i < t.len() {

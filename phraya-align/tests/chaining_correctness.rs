@@ -31,9 +31,7 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
     (0..len)
         .map(|_| {
-            x = x
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             b"ACGT"[((x >> 33) & 3) as usize]
         })
         .collect()
@@ -53,9 +51,8 @@ fn clean_read_with_snp_calls_correct_variant_across_strategies() {
     let plan = make_plan();
 
     for strategy in [Strategy::Fast, Strategy::Balanced, Strategy::Sensitive] {
-        let result =
-            align_task_with_config(&query, &target_seq, &plan, &AlignConfig::new(strategy))
-                .expect("alignment should succeed");
+        let result = align_task_with_config(&query, &target_seq, &plan, &AlignConfig::new(strategy))
+            .expect("alignment should succeed");
 
         assert_eq!(
             result.variants.len(),
@@ -93,15 +90,10 @@ fn read_with_short_indel_calls_correct_variant_type() {
     let plan = make_plan();
 
     for strategy in [Strategy::Balanced, Strategy::Sensitive] {
-        let result =
-            align_task_with_config(&query, &target_seq, &plan, &AlignConfig::new(strategy))
-                .expect("alignment should succeed");
+        let result = align_task_with_config(&query, &target_seq, &plan, &AlignConfig::new(strategy))
+            .expect("alignment should succeed");
 
-        assert!(
-            !result.variants.is_empty(),
-            "strategy {:?}: should find the indel",
-            strategy
-        );
+        assert!(!result.variants.is_empty(), "strategy {:?}: should find the indel", strategy);
         assert_eq!(
             result.variants[0].variant_type(),
             VariantType::Deletion,
@@ -121,12 +113,12 @@ fn multi_mapping_read_reports_both_repeat_copies() {
     target.extend_from_slice(&diverse_dna(500, 4)); // filler between copies
     target.extend_from_slice(&unit); // second identical copy
     target.extend_from_slice(&diverse_dna(500, 6)); // trailing filler: gives the second
-                                                    // copy's anchor window enough margin to trigger WFA/Myers *fitting* mode (needs
-                                                    // target substantially longer than the query — see fill_wfa_fitting_impl's
-                                                    // "tn <= qn + qn/2 + 10" global-vs-fitting heuristic in wfa_simd.rs). Without this,
-                                                    // the second copy sits too close to the target's end and extension falls back to
-                                                    // global alignment, penalizing the unconsumed tail with a spuriously bad edit
-                                                    // distance — an artifact of a too-short fixture, not of chaining.
+    // copy's anchor window enough margin to trigger WFA/Myers *fitting* mode (needs
+    // target substantially longer than the query — see fill_wfa_fitting_impl's
+    // "tn <= qn + qn/2 + 10" global-vs-fitting heuristic in wfa_simd.rs). Without this,
+    // the second copy sits too close to the target's end and extension falls back to
+    // global alignment, penalizing the unconsumed tail with a spuriously bad edit
+    // distance — an artifact of a too-short fixture, not of chaining.
 
     let read = unit[20..170].to_vec(); // uniquely lands at both copies equally well
 
@@ -134,13 +126,8 @@ fn multi_mapping_read_reports_both_repeat_copies() {
     let target_seq = Sequence::new(target, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    let result = align_task_with_config(
-        &query,
-        &target_seq,
-        &plan,
-        &AlignConfig::new(Strategy::Sensitive),
-    )
-    .expect("alignment should succeed");
+    let result = align_task_with_config(&query, &target_seq, &plan, &AlignConfig::new(Strategy::Sensitive))
+        .expect("alignment should succeed");
 
     assert!(
         result.query_positions.len() >= 2,
@@ -163,10 +150,5 @@ fn unmappable_read_does_not_panic() {
     // No seeding guarantee against random DNA at this length — the only assertion this
     // test makes is that alignment completes without panicking on the "nothing seeded
     // at all" edge case.
-    let _ = align_task_with_config(
-        &query,
-        &target_seq,
-        &plan,
-        &AlignConfig::new(Strategy::Balanced),
-    );
+    let _ = align_task_with_config(&query, &target_seq, &plan, &AlignConfig::new(Strategy::Balanced));
 }

@@ -311,8 +311,7 @@ mod tests {
         let mut alleles = HashMap::new();
         alleles.insert(b'A', 10);
 
-        let obs =
-            create_observation(99, b'A', alleles, 60).with_variant_type(VariantType::Deletion);
+        let obs = create_observation(99, b'A', alleles, 60).with_variant_type(VariantType::Deletion);
         let vcf = format_vcf(std::iter::once(obs), "chr1", 1000);
 
         let record_line = vcf.lines().find(|l| l.starts_with("chr1\t100\t")).unwrap();
@@ -327,8 +326,7 @@ mod tests {
         let mut alleles = HashMap::new();
         alleles.insert(b'T', 10);
 
-        let obs =
-            create_observation(99, b'.', alleles, 60).with_variant_type(VariantType::Insertion);
+        let obs = create_observation(99, b'.', alleles, 60).with_variant_type(VariantType::Insertion);
         let vcf = format_vcf(std::iter::once(obs), "chr1", 1000);
 
         let record_line = vcf.lines().find(|l| l.starts_with("chr1\t100\t")).unwrap();
@@ -343,8 +341,7 @@ mod tests {
         let mut alleles = HashMap::new();
         alleles.insert(b'.', 10);
 
-        let obs =
-            create_observation(99, b'.', alleles, 60).with_variant_type(VariantType::Insertion);
+        let obs = create_observation(99, b'.', alleles, 60).with_variant_type(VariantType::Insertion);
         let vcf = format_vcf(std::iter::once(obs), "chr1", 1000);
 
         let record_line = vcf.lines().find(|l| l.starts_with("chr1\t100\t")).unwrap();

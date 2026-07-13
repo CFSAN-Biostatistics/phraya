@@ -1,4 +1,3 @@
-use phraya_core::types::ParseError;
 /// Issue #203: feat(io): parse Oxford Nanopore POD5 input (basecalled reads)
 ///
 /// This test file contains RED (failing) acceptance tests for issue #203.
@@ -10,7 +9,9 @@ use phraya_core::types::ParseError;
 /// 2. Multi-read POD5 files iterate all reads
 /// 3. Implemented without non-Rust runtime dependency (arrow-rs)
 /// 4. Round-trip test against a small real/sample POD5
+
 use phraya_io::SequenceParser;
+use phraya_core::types::ParseError;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -28,15 +29,13 @@ fn create_minimal_pod5_single_read() -> (NamedTempFile, PathBuf) {
     // Write minimal POD5 Arrow file with one read
     // This is a placeholder that will be replaced with real POD5 when arrow-rs is available
     // For now, we create the basic structure
-    write_minimal_arrow_pod5(
-        &pod5_path,
-        vec![PodRead {
+    write_minimal_arrow_pod5(&pod5_path, vec![
+        PodRead {
             read_id: "read_00001".to_string(),
             basecall: "ACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_string(),
             quality: Some("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII".to_string()),
-        }],
-    )
-    .unwrap();
+        }
+    ]).unwrap();
 
     (tmp, pod5_path)
 }
@@ -46,27 +45,23 @@ fn create_minimal_pod5_multiple_reads() -> (NamedTempFile, PathBuf) {
     let tmp = NamedTempFile::new().unwrap();
     let pod5_path = tmp.path().with_extension("pod5");
 
-    write_minimal_arrow_pod5(
-        &pod5_path,
-        vec![
-            PodRead {
-                read_id: "read_00001".to_string(),
-                basecall: "ACGTACGTACGTACGTACGTACGTACGT".to_string(),
-                quality: Some("IIIIIIIIIIIIIIIIIIIIIIII".to_string()),
-            },
-            PodRead {
-                read_id: "read_00002".to_string(),
-                basecall: "TGCATGCATGCATGCATGCATGCA".to_string(),
-                quality: Some("HHHHHHHHHHHHHHHHHHHHHHHH".to_string()),
-            },
-            PodRead {
-                read_id: "read_00003".to_string(),
-                basecall: "AAATTTGGGGCCCCAAATTTGGGG".to_string(),
-                quality: Some("JJJJJJJJJJJJJJJJJJJJJJJJ".to_string()),
-            },
-        ],
-    )
-    .unwrap();
+    write_minimal_arrow_pod5(&pod5_path, vec![
+        PodRead {
+            read_id: "read_00001".to_string(),
+            basecall: "ACGTACGTACGTACGTACGTACGTACGT".to_string(),
+            quality: Some("IIIIIIIIIIIIIIIIIIIIIIII".to_string()),
+        },
+        PodRead {
+            read_id: "read_00002".to_string(),
+            basecall: "TGCATGCATGCATGCATGCATGCA".to_string(),
+            quality: Some("HHHHHHHHHHHHHHHHHHHHHHHH".to_string()),
+        },
+        PodRead {
+            read_id: "read_00003".to_string(),
+            basecall: "AAATTTGGGGCCCCAAATTTGGGG".to_string(),
+            quality: Some("JJJJJJJJJJJJJJJJJJJJJJJJ".to_string()),
+        }
+    ]).unwrap();
 
     (tmp, pod5_path)
 }
@@ -76,15 +71,13 @@ fn create_minimal_pod5_no_quality() -> (NamedTempFile, PathBuf) {
     let tmp = NamedTempFile::new().unwrap();
     let pod5_path = tmp.path().with_extension("pod5");
 
-    write_minimal_arrow_pod5(
-        &pod5_path,
-        vec![PodRead {
+    write_minimal_arrow_pod5(&pod5_path, vec![
+        PodRead {
             read_id: "read_00001".to_string(),
             basecall: "ACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_string(),
             quality: None,
-        }],
-    )
-    .unwrap();
+        }
+    ]).unwrap();
 
     (tmp, pod5_path)
 }
@@ -116,7 +109,7 @@ fn write_minimal_arrow_pod5(path: &Path, reads: Vec<PodRead>) -> std::io::Result
     // Write POD5 magic number (Arrow IPC format)
     // Arrow format starts with specific bytes that identify it as Arrow
     // This is a placeholder that will be implemented with arrow-rs
-    file.write_all(b"POD5")?; // POD5 signature
+    file.write_all(b"POD5")?;  // POD5 signature
 
     // In the real implementation, this will use arrow-rs to construct:
     // - RecordBatch with read_id (string), basecall (string), quality (optional string)
@@ -171,22 +164,11 @@ fn issue_203_parse_single_read_pod5_file() {
     );
 
     // Verify sequence length
-    assert_eq!(
-        seq.len(),
-        38,
-        "Sequence length should match basecall length"
-    );
+    assert_eq!(seq.len(), 38, "Sequence length should match basecall length");
 
     // Verify quality scores present
-    assert!(
-        seq.quality_at(0).is_some(),
-        "Quality scores should be present"
-    );
-    assert_eq!(
-        seq.quality_at(0),
-        Some(b'I'),
-        "First quality score should be 'I'"
-    );
+    assert!(seq.quality_at(0).is_some(), "Quality scores should be present");
+    assert_eq!(seq.quality_at(0), Some(b'I'), "First quality score should be 'I'");
 }
 
 #[test]
@@ -201,7 +183,9 @@ fn issue_203_parse_multiple_reads_from_pod5() {
     let parser = result.unwrap();
 
     // Collect all sequences
-    let sequences: Vec<_> = parser.map(|r| r.expect("Each read should parse")).collect();
+    let sequences: Vec<_> = parser
+        .map(|r| r.expect("Each read should parse"))
+        .collect();
 
     // Should have exactly 3 reads
     assert_eq!(sequences.len(), 3, "POD5 should yield 3 reads");
@@ -233,17 +217,8 @@ fn issue_203_parse_pod5_with_quality_scores() {
     // Verify quality scores are present
     for i in 0..seq.len() {
         let qual = seq.quality_at(i);
-        assert!(
-            qual.is_some(),
-            "Quality score at position {} should exist",
-            i
-        );
-        assert_eq!(
-            qual,
-            Some(b'I'),
-            "Quality score at position {} should be 'I'",
-            i
-        );
+        assert!(qual.is_some(), "Quality score at position {} should exist", i);
+        assert_eq!(qual, Some(b'I'), "Quality score at position {} should be 'I'", i);
     }
 }
 
@@ -304,7 +279,11 @@ fn issue_203_empty_pod5_file_returns_empty_iterator() {
     assert!(result.is_ok(), "Empty POD5 should parse without error");
 
     let mut parser = result.unwrap();
-    assert_eq!(parser.next(), None, "Empty POD5 should yield no sequences");
+    assert_eq!(
+        parser.next(),
+        None,
+        "Empty POD5 should yield no sequences"
+    );
 }
 
 #[test]
@@ -364,8 +343,7 @@ fn issue_203_pod5_quality_length_matches_basecall_length() {
     }
 
     assert_eq!(
-        quality_count,
-        seq.len(),
+        quality_count, seq.len(),
         "Quality score count should match sequence length"
     );
 }
@@ -387,7 +365,10 @@ fn issue_203_invalid_pod5_file_returns_error() {
 
     let result = SequenceParser::from_path(&pod5_path);
 
-    assert!(result.is_err(), "Invalid POD5 should return ParseError");
+    assert!(
+        result.is_err(),
+        "Invalid POD5 should return ParseError"
+    );
 
     if let Err(ParseError::InvalidFormat(msg)) = result {
         // Error message should indicate format problem
@@ -429,15 +410,13 @@ fn issue_203_pod5_zero_length_basecall_handled() {
     let tmp = NamedTempFile::new().unwrap();
     let pod5_path = tmp.path().with_extension("pod5");
 
-    write_minimal_arrow_pod5(
-        &pod5_path,
-        vec![PodRead {
+    write_minimal_arrow_pod5(&pod5_path, vec![
+        PodRead {
             read_id: "empty_read".to_string(),
-            basecall: "".to_string(), // Empty basecall
+            basecall: "".to_string(),  // Empty basecall
             quality: None,
-        }],
-    )
-    .unwrap();
+        }
+    ]).unwrap();
 
     let result = SequenceParser::from_path(&pod5_path);
 
@@ -510,18 +489,16 @@ fn issue_203_pod5_large_read_handling() {
     let pod5_path = tmp.path().with_extension("pod5");
 
     // Create a read ~5000bp (realistic for ONT)
-    let long_basecall = "ACGT".repeat(1250); // 5000bp
+    let long_basecall = "ACGT".repeat(1250);  // 5000bp
     let long_quality = "I".repeat(5000);
 
-    write_minimal_arrow_pod5(
-        &pod5_path,
-        vec![PodRead {
+    write_minimal_arrow_pod5(&pod5_path, vec![
+        PodRead {
             read_id: "long_read".to_string(),
             basecall: long_basecall.clone(),
             quality: Some(long_quality),
-        }],
-    )
-    .unwrap();
+        }
+    ]).unwrap();
 
     let mut parser = SequenceParser::from_path(&pod5_path).unwrap();
     let seq = parser.next().unwrap().unwrap();
@@ -579,10 +556,7 @@ fn issue_203_pod5_sequence_compatible_with_alignment_pipeline() {
     assert!(seq.len() > 0, "Must have non-zero length");
 
     // 4. Optional quality scores
-    assert!(
-        seq.quality_at(0).is_some(),
-        "Should have quality if provided"
-    );
+    assert!(seq.quality_at(0).is_some(), "Should have quality if provided");
 
     // 5. Should be cloneable/movable for use in alignment
     let seq_clone = seq.clone();

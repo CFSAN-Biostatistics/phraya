@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use phraya_align::wfa_simd::{count_matching_prefix, count_matching_prefix_scalar};
-use phraya_align::{wfa_extend, wfa_extend_naive, SeedAnchor};
+use phraya_align::{wfa_extend_naive, wfa_extend, SeedAnchor};
 
 /// Micro-benchmark the WFA inner-loop primitive: scalar byte-by-byte vs the
 /// architecture-dispatched SIMD longest-common-prefix. Run with
@@ -13,16 +13,12 @@ fn bench_count_matching_prefix(c: &mut Criterion) {
         let mut b = a.clone();
         *b.last_mut().unwrap() ^= 0x01; // force the mismatch at the final byte
 
-        group.bench_with_input(
-            BenchmarkId::new("scalar", run_len),
-            &(&a, &b),
-            |bn, (a, b)| bn.iter(|| count_matching_prefix_scalar(black_box(a), black_box(b))),
-        );
-        group.bench_with_input(
-            BenchmarkId::new("simd", run_len),
-            &(&a, &b),
-            |bn, (a, b)| bn.iter(|| count_matching_prefix(black_box(a), black_box(b))),
-        );
+        group.bench_with_input(BenchmarkId::new("scalar", run_len), &(&a, &b), |bn, (a, b)| {
+            bn.iter(|| count_matching_prefix_scalar(black_box(a), black_box(b)))
+        });
+        group.bench_with_input(BenchmarkId::new("simd", run_len), &(&a, &b), |bn, (a, b)| {
+            bn.iter(|| count_matching_prefix(black_box(a), black_box(b)))
+        });
     }
     group.finish();
 }
@@ -152,7 +148,9 @@ fn bench_comparison(c: &mut Criterion) {
     group.bench_with_input(
         BenchmarkId::new("simd", "10kb"),
         &(&query, &target, &seed),
-        |b, (q, t, s)| b.iter(|| wfa_extend(black_box(q), black_box(t), black_box((*s).clone()))),
+        |b, (q, t, s)| {
+            b.iter(|| wfa_extend(black_box(q), black_box(t), black_box((*s).clone())))
+        },
     );
 
     group.finish();
