@@ -106,7 +106,7 @@ fn write_minimal_sff(path: &Path, reads: Vec<(&str, &str, &str, u16, u16)>) -> s
 fn create_minimal_sff_single_read() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
     write_minimal_sff(tmp.path(), vec![
-        ("read_00001", "ACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 38, 38),
+        ("read_00001", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 38, 38),
     ]).unwrap();
     tmp
 }
@@ -137,9 +137,9 @@ fn create_minimal_sff_with_quality_clipping() -> NamedTempFile {
 fn create_minimal_sff_with_adapter_clipping() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
     write_minimal_sff(tmp.path(), vec![
-        // Full sequence: "ACGTACGTACGTACGTACGTACGTACGTACGTACGT" (38bp)
+        // Full sequence: "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC" (38bp)
         // After adapter clip right=35: "ACGTACGTACGTACGTACGTACGTACGTACGTAC" (35bp)
-        ("read_adapter", "ACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 38, 35),
+        ("read_adapter", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 38, 35),
     ]).unwrap();
     tmp
 }
@@ -187,7 +187,7 @@ fn sff_auto_detect_single_read() {
 
     assert_eq!(seq.id(), "read_00001");
     assert_eq!(seq.len(), 38);
-    assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGTACGTACGTACGT");
+    assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC");
     assert_eq!(seq.quality_scores(), Some(&vec![b'I'; 38]));
 }
 
@@ -240,7 +240,7 @@ fn sff_adapter_clip_right_boundary() {
 
     // Full bases: 38bp, clipped to 35bp
     assert_eq!(seq.len(), 35);
-    assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGTACGTACGTAC");
+    assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGTACGTACGTACG");
     assert_eq!(seq.quality_scores(), Some(&vec![b'I'; 35]));
 }
 
@@ -305,7 +305,7 @@ fn sff_preserves_base_sequence() {
     let mut parser = SequenceParser::from_path(sff_file.path()).unwrap();
     let seq = parser.next().unwrap().unwrap();
 
-    assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGTACGTACGTACGT");
+    assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC");
     // Verify only ACGT characters (after clipping applied)
     for &base in seq.bases() {
         assert!(matches!(base, b'A' | b'C' | b'G' | b'T' | b'N'));
@@ -347,12 +347,24 @@ fn sff_quality_and_bases_length_match() {
 fn sff_extension_auto_detection() {
     // Test: Files with .sff extension are recognized and parsed
     // (not treated as FASTA/FASTQ)
-    let sff_file = create_minimal_sff_single_read();
-    let path_str = sff_file.path().to_string_lossy();
+    let tmp = NamedTempFile::new().unwrap();
+    let sff_path = tmp.path().with_extension("sff");
+    write_minimal_sff(
+        &sff_path,
+        vec![(
+            "read_00001",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC",
+            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            38,
+            38,
+        )],
+    )
+    .unwrap();
+    let path_str = sff_path.to_string_lossy();
 
-    assert!(path_str.contains(".sff") || path_str.contains("sff"));
+    assert!(path_str.contains(".sff"));
     // Parser should succeed without format errors
-    let result = SequenceParser::from_path(sff_file.path());
+    let result = SequenceParser::from_path(&sff_path);
     assert!(result.is_ok());
 }
 
