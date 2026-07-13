@@ -164,7 +164,7 @@ fn issue_203_parse_single_read_pod5_file() {
     );
 
     // Verify sequence length
-    assert_eq!(seq.len(), 38, "Sequence length should match basecall length");
+    assert_eq!(seq.len(), 36, "Sequence length should match basecall length");
 
     // Verify quality scores present
     assert!(seq.quality_at(0).is_some(), "Quality scores should be present");
@@ -202,7 +202,7 @@ fn issue_203_parse_multiple_reads_from_pod5() {
     // Verify third read
     assert_eq!(sequences[2].id(), "read_00003");
     assert_eq!(sequences[2].bases(), b"AAATTTGGGGCCCCAAATTTGGGG");
-    assert_eq!(sequences[2].len(), 25);
+    assert_eq!(sequences[2].len(), 24);
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn issue_203_pod5_sequence_length_matches_basecall_length() {
     let mut parser = SequenceParser::from_path(&path).unwrap();
 
     // Expected lengths from the test data
-    let expected_lengths = vec![25, 25, 25];
+    let expected_lengths = vec![24, 24, 24];
 
     for (i, expected_len) in expected_lengths.iter().enumerate() {
         let seq = parser.next().unwrap().unwrap();
@@ -473,7 +473,7 @@ fn issue_203_pod5_round_trip_preserves_all_metadata() {
     // Verify all key metadata
     assert_eq!(seq.id(), "read_00001");
     assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGTACGTACGTACGT");
-    assert_eq!(seq.len(), 38);
+    assert_eq!(seq.len(), 36);
 
     // Quality should be consistent for all bases
     for i in 0..seq.len() {
