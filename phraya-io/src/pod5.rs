@@ -42,7 +42,10 @@ fn parse_pod5_records(mut reader: BufReader<Box<dyn Read>>) -> Result<Vec<Sequen
         .map_err(|_| ParseError::InvalidFormat("POD5 file is not valid UTF-8".to_string()))?;
 
     // Handle POD5 magic bytes which may not have a newline after
-    if content_str.starts_with("POD5") && content_str.len() > 4 && content_str.as_bytes()[4] != b'\n' {
+    if content_str.starts_with("POD5")
+        && content_str.len() > 4
+        && content_str.as_bytes()[4] != b'\n'
+    {
         // POD5 signature is directly followed by content (no newline)
         // Insert newline after POD5 without removing any data
         let rest = content_str[4..].to_string();
@@ -99,22 +102,26 @@ fn parse_pod5_records(mut reader: BufReader<Box<dyn Read>>) -> Result<Vec<Sequen
             };
 
             // Create Sequence record
-            let bases = basecall.as_bytes().to_vec();
-            let qual = quality.map(|q| {
+            let mut bases = basecall.as_bytes().to_vec();
+
+            // Handle quality scores
+            let qual = if let Some(q) = quality {
                 let q_bytes = q.as_bytes().to_vec();
-                // If quality length doesn't match basecall length, truncate or pad
-                // For now, truncate to match basecall length
+                // If quality length doesn't match basecall length:
+                // - If quality is too long, truncate it to basecall length
+                // - If quality is too short, truncate basecall to match quality length
                 if q_bytes.len() > bases.len() {
-                    q_bytes[..bases.len()].to_vec()
+                    Some(q_bytes[..bases.len()].to_vec())
                 } else if q_bytes.len() < bases.len() {
-                    // Pad with low-quality 'D' (Phred 3)
-                    let mut padded = q_bytes;
-                    padded.resize(bases.len(), b'D');
-                    padded
+                    // Truncate basecall to match quality length
+                    bases.truncate(q_bytes.len());
+                    Some(q_bytes)
                 } else {
-                    q_bytes
+                    Some(q_bytes)
                 }
-            });
+            } else {
+                None
+            };
 
             if !bases.is_empty() {
                 let seq = Sequence::new(bases, qual, read_id, None);
@@ -149,14 +156,10 @@ mod tests {
         let result = parse_pod5_file(temp.path());
         assert!(result.is_ok());
 
-        let sequences: Vec<_> = result
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+        let sequences: Vec<_> = result.unwrap().collect::<Result<Vec<_>, _>>().unwrap();
 
         assert_eq!(sequences.len(), 1);
         assert_eq!(sequences[0].id(), "test_read");
         assert_eq!(sequences[0].bases(), b"ACGT");
     }
-
 }

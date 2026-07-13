@@ -53,8 +53,9 @@ impl SequenceParser {
             Ok(()) => {
                 if &magic == b".sff" {
                     // Reopen file for SFF parsing
-                    let file = File::open(path)
-                        .map_err(|e| ParseError::InvalidFormat(format!("failed to open file: {}", e)))?;
+                    let file = File::open(path).map_err(|e| {
+                        ParseError::InvalidFormat(format!("failed to open file: {}", e))
+                    })?;
                     return sff::parse_sff_file_from_reader(Box::new(file));
                 }
             }
@@ -384,7 +385,9 @@ mod tests {
         let mut parser = SequenceParser::from_path(temp.path()).unwrap();
         let result = parser.next().unwrap();
 
-        assert!(matches!(result, Err(ParseError::InvalidFormat(ref msg)) if msg.contains("missing quality")));
+        assert!(
+            matches!(result, Err(ParseError::InvalidFormat(ref msg)) if msg.contains("missing quality"))
+        );
     }
 
     #[test]
@@ -487,7 +490,9 @@ mod tests {
 
         let mut parser = SequenceParser::from_path(temp.path()).unwrap();
         let result = parser.next().unwrap();
-        assert!(matches!(result, Err(ParseError::InvalidFormat(msg)) if msg.contains("missing sequence")));
+        assert!(
+            matches!(result, Err(ParseError::InvalidFormat(msg)) if msg.contains("missing sequence"))
+        );
     }
 
     #[test]
@@ -512,7 +517,9 @@ mod tests {
 
         let mut parser = SequenceParser::from_path(temp.path()).unwrap();
         let result = parser.next().unwrap();
-        assert!(matches!(result, Err(ParseError::InvalidFormat(msg)) if msg.contains("missing plus")));
+        assert!(
+            matches!(result, Err(ParseError::InvalidFormat(msg)) if msg.contains("missing plus"))
+        );
     }
 
     #[test]
@@ -528,5 +535,4 @@ mod tests {
         let result = parser.next().unwrap();
         assert!(matches!(result, Err(ParseError::InvalidFormat(_))));
     }
-
 }
