@@ -1,3 +1,5 @@
+use phraya_core::types::Sequence;
+use phraya_io::plan::{PhrayaPlan, UseCase};
 /// Issue #148: Add --strategy flag and tie coverage window size to alignment strategy
 ///
 /// This test file contains RED (failing) acceptance tests for issue #148.
@@ -9,10 +11,7 @@
 /// - AlignConfig struct carrying strategy and coverage_window_radius
 /// - align_task(&query, &target, &plan, &config) instead of align_task(&query, &target, &plan)
 /// - Window radii: fast: ±150bp, balanced: ±50bp (default), sensitive: ±25bp
-
 use std::collections::HashMap;
-use phraya_core::types::Sequence;
-use phraya_io::plan::{PhrayaPlan, UseCase};
 
 fn make_plan() -> PhrayaPlan {
     PhrayaPlan::new(
@@ -31,7 +30,11 @@ fn make_plan() -> PhrayaPlan {
 fn issue_148_align_config_struct_exists() {
     use phraya_align::executor::{AlignConfig, Strategy};
     let config = AlignConfig::default();
-    assert_eq!(config.strategy, Strategy::Balanced, "default strategy should be Balanced");
+    assert_eq!(
+        config.strategy,
+        Strategy::Balanced,
+        "default strategy should be Balanced"
+    );
 }
 
 /// Test that Strategy enum has fast, balanced, and sensitive variants.
@@ -87,8 +90,12 @@ fn issue_148_fast_strategy_produces_wide_coverage_window() {
     let plan = make_plan();
 
     let config = AlignConfig::new(Strategy::Fast);
-    let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
-    assert!(!result.variants.is_empty(), "should have at least one variant");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    assert!(
+        !result.variants.is_empty(),
+        "should have at least one variant"
+    );
     let var = &result.variants[0];
     let lc = var.local_coverage();
 
@@ -119,7 +126,8 @@ fn issue_148_balanced_strategy_produces_default_coverage_window() {
     let plan = make_plan();
 
     let config = AlignConfig::new(Strategy::Balanced);
-    let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
     let var = &result.variants[0];
     let lc = var.local_coverage();
 
@@ -152,7 +160,8 @@ fn issue_148_sensitive_strategy_produces_narrow_coverage_window() {
     let plan = make_plan();
 
     let config = AlignConfig::new(Strategy::Sensitive);
-    let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
     let var = &result.variants[0];
     let lc = var.local_coverage();
 
@@ -173,17 +182,24 @@ fn issue_148_window_radius_boundary_conditions_fast() {
 
     let config = AlignConfig::new(Strategy::Fast);
     assert_eq!(
-        config.coverage_window_radius,
-        150,
+        config.coverage_window_radius, 150,
         "fast strategy must use ±150bp radius, got {}",
         config.coverage_window_radius
     );
     // Window at position 5: [max(0,5-150)=0, min(N, 5+151)] — always < 157 elements
     let pos: usize = 5;
     let target_len: usize = 200;
-    let start = if pos >= config.coverage_window_radius { pos - config.coverage_window_radius } else { 0 };
+    let start = if pos >= config.coverage_window_radius {
+        pos - config.coverage_window_radius
+    } else {
+        0
+    };
     let end = (pos + config.coverage_window_radius + 1).min(target_len);
-    assert_eq!(end - start, 156, "fast window at pos 5 in 200bp target should be 156 elements");
+    assert_eq!(
+        end - start,
+        156,
+        "fast window at pos 5 in 200bp target should be 156 elements"
+    );
 }
 
 /// Test boundary condition: AlignConfig.coverage_window_radius is correct for sensitive strategy.
@@ -193,17 +209,24 @@ fn issue_148_window_radius_boundary_conditions_sensitive() {
 
     let config = AlignConfig::new(Strategy::Sensitive);
     assert_eq!(
-        config.coverage_window_radius,
-        25,
+        config.coverage_window_radius, 25,
         "sensitive strategy must use ±25bp radius, got {}",
         config.coverage_window_radius
     );
     // Window at position 5: [max(0,5-25)=0, min(200, 5+26)] = [0, 31] = 31 elements
     let pos: usize = 5;
     let target_len: usize = 200;
-    let start = if pos >= config.coverage_window_radius { pos - config.coverage_window_radius } else { 0 };
+    let start = if pos >= config.coverage_window_radius {
+        pos - config.coverage_window_radius
+    } else {
+        0
+    };
     let end = (pos + config.coverage_window_radius + 1).min(target_len);
-    assert_eq!(end - start, 31, "sensitive window at pos 5 in 200bp target should be 31 elements");
+    assert_eq!(
+        end - start,
+        31,
+        "sensitive window at pos 5 in 200bp target should be 31 elements"
+    );
 }
 
 /// Test backward compatibility: default strategy should be balanced.
@@ -222,7 +245,8 @@ fn issue_148_balanced_is_default_and_backward_compatible() {
     let plan = make_plan();
 
     let config = AlignConfig::default(); // Should default to balanced
-    let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
     let var = &result.variants[0];
     let lc = var.local_coverage();
 
@@ -255,7 +279,8 @@ fn issue_148_sensitive_strategy_narrows_window_near_variant_cluster() {
     let plan = make_plan();
 
     let config = AlignConfig::new(Strategy::Sensitive);
-    let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     // Alignment places SNPs at target positions index-1. Find the middle variant.
     // Any variant in the cluster should have ±25bp window (51 or 50 elements).
@@ -289,7 +314,8 @@ fn issue_148_fast_strategy_provides_context_for_complex_regions() {
     let plan = make_plan();
 
     let config = AlignConfig::new(Strategy::Fast);
-    let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     // The window should be ±150bp to capture structural context
     let var = result.variants.iter().next().expect("at least one variant");
@@ -322,8 +348,12 @@ fn issue_148_all_variants_in_task_use_same_window_radius() {
     let plan = make_plan();
 
     let config = AlignConfig::new(Strategy::Balanced);
-    let result = align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
-    assert!(!result.variants.is_empty(), "should have at least one variant");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
+    assert!(
+        !result.variants.is_empty(),
+        "should have at least one variant"
+    );
 
     // All variants should have the same window size configuration (balanced: ~100 elements).
     let first_len = result.variants[0].local_coverage().len();

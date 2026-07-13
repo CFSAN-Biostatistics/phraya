@@ -186,7 +186,11 @@ pub struct PhrayaPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insert_size_distribution: Option<InsertSizeDistribution>,
     /// Mate information keyed by sequence ID (for BAM/CRAM inputs)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty", serialize_with = "serialize_map_sorted")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "serialize_map_sorted"
+    )]
     pub mate_info: HashMap<String, phraya_core::types::MateInfo>,
     /// Dense minimizer sketches keyed by sequence ID
     /// Empty if sparse_mode is true

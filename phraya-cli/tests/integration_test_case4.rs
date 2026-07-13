@@ -51,11 +51,18 @@ fn issue_87_case4_with_ref_use_case_is_contigs_only() {
 
     let out = phraya(&[
         "plan",
-        "--inputs", contigs.to_str().unwrap(),
-        "--reference", reference.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs.to_str().unwrap(),
+        "--reference",
+        reference.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
-    assert!(out.status.success(), "phraya plan failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "phraya plan failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
     assert_eq!(
@@ -85,9 +92,12 @@ fn issue_87_case4_with_ref_generates_m_tasks_targeting_ref() {
 
     phraya(&[
         "plan",
-        "--inputs", contigs.to_str().unwrap(),
-        "--reference", reference.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs.to_str().unwrap(),
+        "--reference",
+        reference.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
@@ -129,8 +139,8 @@ fn issue_87_case4_align_contig_to_reference() {
 
     // Write plan directly: ContigsOnly, tasks = (1,0) and (2,0)
     {
-        use std::collections::HashMap;
         use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+        use std::collections::HashMap;
         let plan = PhrayaPlan::new(
             UseCase::ContigsOnly,
             vec![seqs.to_string_lossy().to_string()],
@@ -149,7 +159,8 @@ fn issue_87_case4_align_contig_to_reference() {
         plan_path.to_str().unwrap(),
         "ctg1",
         "ref",
-        "--output", output_path.to_str().unwrap(),
+        "--output",
+        output_path.to_str().unwrap(),
     ]);
 
     assert!(
@@ -157,5 +168,8 @@ fn issue_87_case4_align_contig_to_reference() {
         "phraya align (case 4 task) should succeed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(output_path.exists(), ".phraya output file should be created");
+    assert!(
+        output_path.exists(),
+        ".phraya output file should be created"
+    );
 }

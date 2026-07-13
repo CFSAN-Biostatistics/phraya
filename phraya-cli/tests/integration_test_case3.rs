@@ -12,7 +12,6 @@
 /// [AC4] Tests: 3 contigs + 5 reads → 7 alignment tasks
 /// [AC5] Tests: centroid verified as coordinate system (all target_id == centroid_id)
 /// [AC6] Integration test: plan (case 3) → align all tasks → merge → verify provenance
-
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -38,7 +37,9 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
     (0..len)
         .map(|_| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             b"ACGT"[((x >> 33) & 3) as usize]
         })
         .collect()
@@ -212,8 +213,8 @@ fn issue_86_case3_align_contig_to_centroid() {
 
     // Write plan directly: ContigsWithReads, tasks = (1, 0) (ctg1 → ctg0 centroid)
     {
-        use std::collections::HashMap;
         use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+        use std::collections::HashMap;
 
         let plan = PhrayaPlan::new(
             UseCase::ContigsWithReads,
@@ -242,7 +243,10 @@ fn issue_86_case3_align_contig_to_centroid() {
         "phraya align (case 3 contig-to-centroid) should succeed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(output_path.exists(), ".phraya output file should be created");
+    assert!(
+        output_path.exists(),
+        ".phraya output file should be created"
+    );
 }
 
 /// [AC3 + AC6] Align a read to centroid (Case 3 task)
@@ -269,8 +273,8 @@ fn issue_86_case3_align_read_to_centroid() {
 
     // Write plan directly: ContigsWithReads, tasks = (1, 0) (read0 → ctg0 centroid)
     {
-        use std::collections::HashMap;
         use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+        use std::collections::HashMap;
 
         let plan = PhrayaPlan::new(
             UseCase::ContigsWithReads,
@@ -299,7 +303,10 @@ fn issue_86_case3_align_read_to_centroid() {
         "phraya align (case 3 read-to-centroid) should succeed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(output_path.exists(), ".phraya output file should be created");
+    assert!(
+        output_path.exists(),
+        ".phraya output file should be created"
+    );
 }
 
 /// [AC6] Full integration: plan (case 3) → align all tasks → merge → verify provenance

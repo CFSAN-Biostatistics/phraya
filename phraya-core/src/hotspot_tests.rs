@@ -28,10 +28,7 @@ mod tests {
     #[test]
     fn issue_145_tandem_repeat_produces_hotspot_interval() {
         // Two identical sketches → every shared minimizer has uniqueness = 0.5 < threshold
-        let seq = make_seq(
-            "ACGTACGTACGTATATATATATATATATATATATATACGTACGTACGT",
-            "repeat",
-        );
+        let seq = make_seq("ACGTACGTACGTATATATATATATATATATATATATACGTACGTACGT", "repeat");
         let sketch = sketch_sequence_default(&seq);
         let uniqueness = compute_kmer_uniqueness(&[sketch.clone(), sketch]);
         let intervals = detect_hotspot_intervals(&uniqueness, 0.6);
@@ -56,7 +53,11 @@ mod tests {
         map.insert(1u32, 0.2);
         map.insert(2u32, 0.3);
         let intervals = detect_hotspot_intervals(&map, 0.5);
-        assert_eq!(intervals.len(), 1, "contiguous low-uniqueness run → one interval");
+        assert_eq!(
+            intervals.len(),
+            1,
+            "contiguous low-uniqueness run → one interval"
+        );
         assert_eq!(intervals[0], (0, 2));
     }
 

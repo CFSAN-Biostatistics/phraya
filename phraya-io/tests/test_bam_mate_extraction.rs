@@ -41,26 +41,47 @@ fn bam_parser_returns_err_on_non_bam_input() {
 fn mate_info_is_discordant_semantics() {
     // mean=400, std_dev=50, sigma=3.0 → threshold deviation = 150 → window [250, 550]
     let ok = MateInfo::new("r/2".to_string(), true, 450, true, false, true);
-    assert!(!ok.is_discordant(400, 50, 3.0), "450 within 3σ must be concordant");
+    assert!(
+        !ok.is_discordant(400, 50, 3.0),
+        "450 within 3σ must be concordant"
+    );
 
     let out = MateInfo::new("r/2".to_string(), true, 700, true, false, true);
-    assert!(out.is_discordant(400, 50, 3.0), "700 beyond 3σ must be discordant");
+    assert!(
+        out.is_discordant(400, 50, 3.0),
+        "700 beyond 3σ must be discordant"
+    );
 
     // Negative insert_size: mate is upstream; absolute value must be used.
     let neg_ok = MateInfo::new("r/2".to_string(), true, -450, true, false, true);
-    assert!(!neg_ok.is_discordant(400, 50, 3.0), "|-450| within 3σ must be concordant");
+    assert!(
+        !neg_ok.is_discordant(400, 50, 3.0),
+        "|-450| within 3σ must be concordant"
+    );
 
     let neg_out = MateInfo::new("r/2".to_string(), true, -700, true, false, true);
-    assert!(neg_out.is_discordant(400, 50, 3.0), "|-700| beyond 3σ must be discordant");
+    assert!(
+        neg_out.is_discordant(400, 50, 3.0),
+        "|-700| beyond 3σ must be discordant"
+    );
 
     // Zero insert_size means unmapped mate: must never be considered discordant.
     let zero = MateInfo::new("r/2".to_string(), false, 0, true, false, false);
-    assert!(!zero.is_discordant(400, 50, 3.0), "insert_size=0 must not be discordant");
+    assert!(
+        !zero.is_discordant(400, 50, 3.0),
+        "insert_size=0 must not be discordant"
+    );
 
     // Wider sigma accepts the same value that narrow sigma rejects.
     let borderline = MateInfo::new("r/2".to_string(), true, 600, true, false, true);
-    assert!(borderline.is_discordant(400, 50, 3.0), "600 rejected at 3σ (window [250,550])");
-    assert!(!borderline.is_discordant(400, 50, 5.0), "600 accepted at 5σ (window [150,650])");
+    assert!(
+        borderline.is_discordant(400, 50, 3.0),
+        "600 rejected at 3σ (window [250,550])"
+    );
+    assert!(
+        !borderline.is_discordant(400, 50, 5.0),
+        "600 accepted at 5σ (window [150,650])"
+    );
 }
 
 /// All six fields passed to MateInfo::new must round-trip correctly.
@@ -69,11 +90,11 @@ fn mate_info_is_discordant_semantics() {
 fn mate_info_fields_roundtrip_through_constructor() {
     let first = MateInfo::new(
         "read123/2".to_string(),
-        true,   // proper_pair
-        -450,   // insert_size (negative = mate upstream)
-        true,   // is_first_in_pair
-        false,  // is_second_in_pair
-        true,   // mate_mapped
+        true,  // proper_pair
+        -450,  // insert_size (negative = mate upstream)
+        true,  // is_first_in_pair
+        false, // is_second_in_pair
+        true,  // mate_mapped
     );
     assert_eq!(first.mate_id, "read123/2");
     assert!(first.proper_pair);

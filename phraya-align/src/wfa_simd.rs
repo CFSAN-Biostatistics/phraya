@@ -104,7 +104,7 @@ pub fn count_matching_prefix_arch(a: &[u8], b: &[u8]) -> usize {
             let va = vld1q_u8(a.as_ptr().add(i));
             let vb = vld1q_u8(b.as_ptr().add(i));
             let eq = vceqq_u8(va, vb); // 0xFF per byte where equal, else 0x00.
-            // Horizontal min across the 16 lanes: 0xFF iff every byte matched.
+                                       // Horizontal min across the 16 lanes: 0xFF iff every byte matched.
             if vminvq_u8(eq) != 0xFF {
                 let mut lanes = [0u8; 16];
                 vst1q_u8(lanes.as_mut_ptr(), eq);
@@ -205,12 +205,15 @@ pub fn wfa_extend_naive_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
     // Fitting alignment: query must be fully consumed, target end is free.
     // This is the correct mode for aligning reads against a longer reference window.
     // Global alignment inflates edit distance by the length gap (target extras become deletions).
-    let (cigar, edit_distance, target_consumed) = match fill_wfa_fitting(query_suffix, target_suffix) {
-        Some(result) => result,
-        None => return Err(WfaError::AlignmentFailed(
-            "alignment abandoned: max edit distance exceeded".to_string(),
-        )),
-    };
+    let (cigar, edit_distance, target_consumed) =
+        match fill_wfa_fitting(query_suffix, target_suffix) {
+            Some(result) => result,
+            None => {
+                return Err(WfaError::AlignmentFailed(
+                    "alignment abandoned: max edit distance exceeded".to_string(),
+                ))
+            }
+        };
 
     Ok(Alignment {
         cigar,
@@ -294,23 +297,33 @@ fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
             // mismatch from (s-1, k): q_pos was prev[ki], advance both by 1
             let from_mm = if ki < prev.len() && prev[ki] != UNSET {
                 (prev[ki] + 1, 1u8) // +1 q, +1 t → same diagonal
-            } else { (UNSET, 0) };
+            } else {
+                (UNSET, 0)
+            };
             // insert: from (s-1, k-1): q advances, t stays → diagonal k = (k-1)+1
             // valid when ki_prev = k-1+tn >= 0 → k > -tn
             let from_ins = if k > -tn {
                 let ki_prev = (k - 1 + tn) as usize;
                 if ki_prev < prev.len() && prev[ki_prev] != UNSET {
                     (prev[ki_prev] + 1, 2u8)
-                } else { (UNSET, 0) }
-            } else { (UNSET, 0) };
+                } else {
+                    (UNSET, 0)
+                }
+            } else {
+                (UNSET, 0)
+            };
             // delete: from (s-1, k+1): t advances, q stays → diagonal k = (k+1)-1
             // valid when ki_prev = k+1+tn < size → k < qn
             let from_del = if k < qn {
                 let ki_prev = (k + 1 + tn) as usize;
                 if ki_prev < prev.len() && prev[ki_prev] != UNSET {
                     (prev[ki_prev], 3u8) // q stays same
-                } else { (UNSET, 0) }
-            } else { (UNSET, 0) };
+                } else {
+                    (UNSET, 0)
+                }
+            } else {
+                (UNSET, 0)
+            };
 
             // Pick best (furthest reaching)
             let (best_pos, best_op) = [from_mm, from_ins, from_del]
@@ -319,11 +332,15 @@ fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
                 .max_by_key(|&(p, _)| p)
                 .unwrap_or((UNSET, 0));
 
-            if best_pos == UNSET { continue; }
+            if best_pos == UNSET {
+                continue;
+            }
 
             // Bounds check: ensure target pos is valid
             let j = best_pos - k;
-            if best_pos < 0 || best_pos > qn || j < 0 || j > tn { continue; }
+            if best_pos < 0 || best_pos > qn || j < 0 || j > tn {
+                continue;
+            }
 
             wf_next[ki] = extend(best_pos, k);
             ops_next[ki] = best_op;
@@ -428,7 +445,6 @@ pub fn fill_wfa_fitting_impl(
     wf_hist.push((wf_cur, ops_cur));
 
     for s in 1..=max_s_to_explore {
-
         let prev = &wf_hist[s as usize - 1].0;
         let mut wf_next = vec![UNSET; size];
         let mut ops_next = vec![0u8; size];
@@ -440,19 +456,29 @@ pub fn fill_wfa_fitting_impl(
             let ki = (k + tn) as usize;
             let from_mm = if ki < prev.len() && prev[ki] != UNSET {
                 (prev[ki] + 1, 1u8)
-            } else { (UNSET, 0) };
+            } else {
+                (UNSET, 0)
+            };
             let from_ins = if k > -tn {
                 let ki_prev = (k - 1 + tn) as usize;
                 if ki_prev < prev.len() && prev[ki_prev] != UNSET {
                     (prev[ki_prev] + 1, 2u8)
-                } else { (UNSET, 0) }
-            } else { (UNSET, 0) };
+                } else {
+                    (UNSET, 0)
+                }
+            } else {
+                (UNSET, 0)
+            };
             let from_del = if k < qn {
                 let ki_prev = (k + 1 + tn) as usize;
                 if ki_prev < prev.len() && prev[ki_prev] != UNSET {
                     (prev[ki_prev], 3u8)
-                } else { (UNSET, 0) }
-            } else { (UNSET, 0) };
+                } else {
+                    (UNSET, 0)
+                }
+            } else {
+                (UNSET, 0)
+            };
 
             let (best_pos, best_op) = [from_mm, from_ins, from_del]
                 .into_iter()
@@ -460,9 +486,13 @@ pub fn fill_wfa_fitting_impl(
                 .max_by_key(|&(p, _)| p)
                 .unwrap_or((UNSET, 0));
 
-            if best_pos == UNSET { continue; }
+            if best_pos == UNSET {
+                continue;
+            }
             let j = best_pos - k;
-            if best_pos < 0 || best_pos > qn || j < 0 || j > tn { continue; }
+            if best_pos < 0 || best_pos > qn || j < 0 || j > tn {
+                continue;
+            }
 
             wf_next[ki] = extend(best_pos, k);
             ops_next[ki] = best_op;
@@ -494,9 +524,13 @@ fn fitting_end_k(wf: &[i32], qn: i32, tn: i32) -> Option<(usize, i32)> {
     let mut best: Option<(usize, i32)> = None;
     for k in (qn - tn)..=qn {
         let t_end = qn - k;
-        if t_end < 0 || t_end > tn { continue; }
+        if t_end < 0 || t_end > tn {
+            continue;
+        }
         let ki = (k + tn) as usize;
-        if ki >= wf.len() { continue; }
+        if ki >= wf.len() {
+            continue;
+        }
         if wf[ki] >= qn {
             let te = t_end as usize;
             if best.is_none() || te > best.unwrap().0 {
@@ -528,7 +562,9 @@ fn traceback_wfa_with_tend(
     let mut s = edit_dist as i32;
 
     while qi > 0 || ti > 0 {
-        if s < 0 { break; }
+        if s < 0 {
+            break;
+        }
 
         let ki = (k + tn) as usize;
 
@@ -578,9 +614,19 @@ fn traceback_wfa_with_tend(
         }
 
         match op {
-            1 => { ops.push('X'); qi -= 1; ti -= 1; }
-            2 => { ops.push('D'); qi -= 1; }
-            3 => { ops.push('I'); ti -= 1; }
+            1 => {
+                ops.push('X');
+                qi -= 1;
+                ti -= 1;
+            }
+            2 => {
+                ops.push('D');
+                qi -= 1;
+            }
+            3 => {
+                ops.push('I');
+                ti -= 1;
+            }
             _ => {}
         }
 
@@ -612,7 +658,9 @@ fn traceback_wfa(
     let mut s = edit_dist as i32;
 
     while qi > 0 || ti > 0 {
-        if s < 0 { break; }
+        if s < 0 {
+            break;
+        }
 
         let ki = (k + tn) as usize;
 
@@ -631,19 +679,23 @@ fn traceback_wfa(
 
         let prev_wf = &hist[s as usize - 1].0;
         let (pred_pos, pred_k) = match op {
-            1 => { // mismatch: pred on same diagonal, s-1
+            1 => {
+                // mismatch: pred on same diagonal, s-1
                 let pk = ki;
                 (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k)
             }
-            2 => { // insert (q advances, diagonal was k-1 before)
+            2 => {
+                // insert (q advances, diagonal was k-1 before)
                 let pk = (k - 1 + tn) as usize;
                 (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k - 1)
             }
-            3 => { // delete (t advances, diagonal was k+1 before)
+            3 => {
+                // delete (t advances, diagonal was k+1 before)
                 let pk = (k + 1 + tn) as usize;
                 (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k + 1)
             }
-            _ => { // shouldn't happen mid-trace
+            _ => {
+                // shouldn't happen mid-trace
                 let pk = ki;
                 (if pk < prev_wf.len() { prev_wf[pk] } else { 0 }, k)
             }
@@ -667,9 +719,19 @@ fn traceback_wfa(
 
         // emit the edit op — match traceback_with convention: 'D'=q advances, 'I'=t advances
         match op {
-            1 => { ops.push('X'); qi -= 1; ti -= 1; } // mismatch
-            2 => { ops.push('D'); qi -= 1; }           // q advances (no t) → 'D'
-            3 => { ops.push('I'); ti -= 1; }           // t advances (no q) → 'I'
+            1 => {
+                ops.push('X');
+                qi -= 1;
+                ti -= 1;
+            } // mismatch
+            2 => {
+                ops.push('D');
+                qi -= 1;
+            } // q advances (no t) → 'D'
+            3 => {
+                ops.push('I');
+                ti -= 1;
+            } // t advances (no q) → 'I'
             _ => {}
         }
 
@@ -1073,7 +1135,6 @@ pub fn force_implementation(
     }
 }
 
-
 #[cfg(test)]
 mod simd_diff_tests {
     //! Differential property tests: the portable-SIMD diagonal fill must produce
@@ -1189,7 +1250,8 @@ mod simd_diff_tests {
                     let naive = wfa_extend_naive(&q, &t, seed).unwrap();
                     let simd = wfa_extend(&q, &t, seed).unwrap();
                     assert_eq!(
-                        naive.edit_distance, simd.edit_distance,
+                        naive.edit_distance,
+                        simd.edit_distance,
                         "edit distance mismatch (q.len={}, t.len={}, div={}%)",
                         q.len(),
                         t.len(),
@@ -1368,448 +1430,447 @@ mod tests {
     // architectures, wfa_extend delegates to naive — comparing them is tautological.
     #[cfg(target_arch = "x86_64")]
     mod simd_vs_naive_differential {
-        use crate::{wfa_extend_naive, wfa_extend, SeedAnchor};
-
-    #[test]
-    fn test_simd_matches_naive_exact() {
-        let query = b"ACGTACGTACGT";
-        let target = b"ACGTACGTACGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_mismatch() {
-        let query = b"ACGTACGTACGT";
-        let target = b"ACGTACTTACGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_insertion() {
-        let query = b"ACGTACGT";
-        let target = b"ACGTAACGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_deletion() {
-        let query = b"ACGTAACGT";
-        let target = b"ACGTACGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_long_sequence() {
-        let query = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
-        let target = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_high_divergence() {
-        let query = b"ACGTACGTACGTACGT";
-        let target = b"TGCATGCATGCATGCA";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_short_sequences() {
-        let query = b"ACGT";
-        let target = b"ACGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_mid_seed() {
-        let query = b"ACGTACGTACGT";
-        let target = b"ACGTACGTACGT";
-        let seed = SeedAnchor {
-            query_pos: 4,
-            target_pos: 4,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_multiple_indels() {
-        let query = b"ACGTACGTACGTACGT";
-        let target = b"ACGTTCGTAACGTACG";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_consecutive_indels() {
-        let query = b"ACGTAAAACGT";
-        let target = b"ACGTCGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_complex_pattern_1() {
-        let query = b"ACGTACGTTAGCTTGCA";
-        let target = b"ACGTTCGTAGCGCA";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_complex_pattern_2() {
-        let query = b"TTAACCGGTTAA";
-        let target = b"TTACCGGTAA";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_repeat_regions() {
-        let query = b"ATATATATATATAT";
-        let target = b"ATATATATATAT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_gc_rich() {
-        let query = b"GCGCGCGCGCGCGCGC";
-        let target = b"GCGCGCGGCGCGCGC";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_at_rich() {
-        let query = b"ATATATATATATAT";
-        let target = b"ATATATTATATAT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_edge_case_empty_prefix() {
-        let query = b"ACGTACGTACGT";
-        let target = b"ACGTACGTACGT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_edge_case_near_end() {
-        let query = b"ACGTACGTACGT";
-        let target = b"ACGTACGTACGT";
-        let seed = SeedAnchor {
-            query_pos: 8,
-            target_pos: 8,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_random_sequence_1() {
-        let query = b"ACGTTAGCTAGCTAGC";
-        let target = b"ACGTTAGCTGCTAGC";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_random_sequence_2() {
-        let query = b"TGCATGCATGCATGCA";
-        let target = b"TGCAATGCATGCATGC";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
-    #[test]
-    fn test_simd_matches_naive_random_sequence_3() {
-        let query = b"CCGGAATTCCGGAATT";
-        let target = b"CCGGGAATTCCGGAAT";
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
-
-        let naive_result = wfa_extend_naive(query, target, seed.clone());
-        let simd_result = wfa_extend(query, target, seed);
-
-        assert!(naive_result.is_ok());
-        assert!(simd_result.is_ok());
-
-        let naive = naive_result.unwrap();
-        let simd = simd_result.unwrap();
-
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-        assert_eq!(naive.edit_distance, simd.edit_distance);
-    }
-
+        use crate::{wfa_extend, wfa_extend_naive, SeedAnchor};
+
+        #[test]
+        fn test_simd_matches_naive_exact() {
+            let query = b"ACGTACGTACGT";
+            let target = b"ACGTACGTACGT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_mismatch() {
+            let query = b"ACGTACGTACGT";
+            let target = b"ACGTACTTACGT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_insertion() {
+            let query = b"ACGTACGT";
+            let target = b"ACGTAACGT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_deletion() {
+            let query = b"ACGTAACGT";
+            let target = b"ACGTACGT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_long_sequence() {
+            let query = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+            let target = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_high_divergence() {
+            let query = b"ACGTACGTACGTACGT";
+            let target = b"TGCATGCATGCATGCA";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_short_sequences() {
+            let query = b"ACGT";
+            let target = b"ACGT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_mid_seed() {
+            let query = b"ACGTACGTACGT";
+            let target = b"ACGTACGTACGT";
+            let seed = SeedAnchor {
+                query_pos: 4,
+                target_pos: 4,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_multiple_indels() {
+            let query = b"ACGTACGTACGTACGT";
+            let target = b"ACGTTCGTAACGTACG";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_consecutive_indels() {
+            let query = b"ACGTAAAACGT";
+            let target = b"ACGTCGT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_complex_pattern_1() {
+            let query = b"ACGTACGTTAGCTTGCA";
+            let target = b"ACGTTCGTAGCGCA";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_complex_pattern_2() {
+            let query = b"TTAACCGGTTAA";
+            let target = b"TTACCGGTAA";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_repeat_regions() {
+            let query = b"ATATATATATATAT";
+            let target = b"ATATATATATAT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_gc_rich() {
+            let query = b"GCGCGCGCGCGCGCGC";
+            let target = b"GCGCGCGGCGCGCGC";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_at_rich() {
+            let query = b"ATATATATATATAT";
+            let target = b"ATATATTATATAT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_edge_case_empty_prefix() {
+            let query = b"ACGTACGTACGT";
+            let target = b"ACGTACGTACGT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_edge_case_near_end() {
+            let query = b"ACGTACGTACGT";
+            let target = b"ACGTACGTACGT";
+            let seed = SeedAnchor {
+                query_pos: 8,
+                target_pos: 8,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_random_sequence_1() {
+            let query = b"ACGTTAGCTAGCTAGC";
+            let target = b"ACGTTAGCTGCTAGC";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_random_sequence_2() {
+            let query = b"TGCATGCATGCATGCA";
+            let target = b"TGCAATGCATGCATGC";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
+
+        #[test]
+        fn test_simd_matches_naive_random_sequence_3() {
+            let query = b"CCGGAATTCCGGAATT";
+            let target = b"CCGGGAATTCCGGAAT";
+            let seed = SeedAnchor {
+                query_pos: 0,
+                target_pos: 0,
+            };
+
+            let naive_result = wfa_extend_naive(query, target, seed.clone());
+            let simd_result = wfa_extend(query, target, seed);
+
+            assert!(naive_result.is_ok());
+            assert!(simd_result.is_ok());
+
+            let naive = naive_result.unwrap();
+            let simd = simd_result.unwrap();
+
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+            assert_eq!(naive.edit_distance, simd.edit_distance);
+        }
     } // mod simd_vs_naive_differential
 
     #[test]
@@ -2513,7 +2574,10 @@ mod wfa_algorithm_tests {
         let dp = fill_scalar(q, t);
         let expected_edit = dp[q.len() * (t.len() + 1) + t.len()] as usize;
         let (_, got_edit) = fill_wfa(q, t);
-        assert_eq!(got_edit, expected_edit, "edit distance must match scalar reference");
+        assert_eq!(
+            got_edit, expected_edit,
+            "edit distance must match scalar reference"
+        );
         assert_eq!(got_edit, 1);
     }
 
@@ -2556,7 +2620,9 @@ mod wfa_algorithm_tests {
             z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
             z ^ (z >> 31)
         }
-        fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
     }
     fn random_dna(rng: &mut Rng, len: usize) -> Vec<u8> {
         const B: &[u8; 4] = b"ACGT";
@@ -2570,9 +2636,14 @@ mod wfa_algorithm_tests {
                 match rng.below(3) {
                     0 => out.push(B[rng.below(4)]),
                     1 => {}
-                    _ => { out.push(B[rng.below(4)]); out.push(b); }
+                    _ => {
+                        out.push(B[rng.below(4)]);
+                        out.push(b);
+                    }
                 }
-            } else { out.push(b); }
+            } else {
+                out.push(b);
+            }
         }
         out
     }
@@ -2592,9 +2663,12 @@ mod wfa_algorithm_tests {
                     let expected = dp[q.len() * (t.len() + 1) + t.len()] as usize;
                     let (_, got) = fill_wfa(&q, &t);
                     assert_eq!(
-                        got, expected,
+                        got,
+                        expected,
                         "edit distance mismatch: q.len={} t.len={} div={}%",
-                        q.len(), t.len(), dv
+                        q.len(),
+                        t.len(),
+                        dv
                     );
                     cases += 1;
                 }
@@ -2618,7 +2692,9 @@ mod wfa_algorithm_tests {
         // 150bp query vs 300bp windowed target (2% divergence → edit_dist ≈ 3)
         let q = vec![b'A'; 150];
         let mut t = vec![b'A'; 300];
-        for i in (0..t.len()).step_by(50) { t[i] = b'C'; }
+        for i in (0..t.len()).step_by(50) {
+            t[i] = b'C';
+        }
         let start = Instant::now();
         let (_, edit) = fill_wfa(&q, &t);
         let elapsed = start.elapsed();
@@ -2636,8 +2712,12 @@ mod wfa_algorithm_tests {
         // 10kbp vs 10kbp, 0.1% divergence → edit_dist ≈ 10.
         // O(n×m) = 100M cells, WFA O(s*n) = 100k — ~1000x difference.
         // Even in debug, 100M cells take seconds; O(s*n) = trivial.
-        let q: Vec<u8> = (0..10_000).map(|i| if i % 1000 == 0 { b'C' } else { b'A' }).collect();
-        let t: Vec<u8> = (0..10_000).map(|i| if i % 1001 == 0 { b'C' } else { b'A' }).collect();
+        let q: Vec<u8> = (0..10_000)
+            .map(|i| if i % 1000 == 0 { b'C' } else { b'A' })
+            .collect();
+        let t: Vec<u8> = (0..10_000)
+            .map(|i| if i % 1001 == 0 { b'C' } else { b'A' })
+            .collect();
         let start = Instant::now();
         let (_, edit) = fill_wfa(&q, &t);
         let elapsed = start.elapsed();
@@ -2675,12 +2755,7 @@ fn reconstruct_into(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize, col: 
 
 /// Fill `buf` (length `m + 1`) with edit-distance DP column `j` for the backtrace.
 /// Column 0 is the identity `0..=m`; column `j > 0` is reconstructed from `columns[j-1]`.
-fn fill_dp_column(
-    columns: &[(Vec<u64>, Vec<u64>, usize)],
-    m: usize,
-    j: usize,
-    buf: &mut [usize],
-) {
+fn fill_dp_column(columns: &[(Vec<u64>, Vec<u64>, usize)], m: usize, j: usize, buf: &mut [usize]) {
     if j == 0 {
         for (i, slot) in buf.iter_mut().enumerate() {
             *slot = i;
@@ -2703,7 +2778,11 @@ fn myers_forward(query: &[u8], target: &[u8]) -> Vec<(Vec<u64>, Vec<u64>, usize)
     let num_blocks = (m + W - 1) / W;
     let last_block = num_blocks - 1;
     let last_bits = if m % W == 0 { W } else { m % W };
-    let last_mask: u64 = if last_bits == W { u64::MAX } else { (1u64 << last_bits) - 1 };
+    let last_mask: u64 = if last_bits == W {
+        u64::MAX
+    } else {
+        (1u64 << last_bits) - 1
+    };
     let score_bit = (m - 1) % W;
 
     // Pattern match bitvectors: pm[block][char] has 1 at each query position (within block) matching char.
@@ -2768,11 +2847,19 @@ fn myers_forward(query: &[u8], target: &[u8]) -> Vec<(Vec<u64>, Vec<u64>, usize)
 
             new_vn[k] = x & d0;
             let vp_raw2 = hn_shifted | !(d0 | x);
-            new_vp[k] = if k == last_block && last_bits < W { vp_raw2 & last_mask } else { vp_raw2 };
+            new_vp[k] = if k == last_block && last_bits < W {
+                vp_raw2 & last_mask
+            } else {
+                vp_raw2
+            };
         }
 
-        if (last_hp >> score_bit) & 1 != 0 { score += 1; }
-        if (last_hn >> score_bit) & 1 != 0 { score = score.saturating_sub(1); }
+        if (last_hp >> score_bit) & 1 != 0 {
+            score += 1;
+        }
+        if (last_hn >> score_bit) & 1 != 0 {
+            score = score.saturating_sub(1);
+        }
 
         // The freshly computed column becomes current; the old current buffers become
         // next iteration's scratch (fully overwritten before they are read again).
@@ -2826,7 +2913,11 @@ fn myers_backtrace(
         }
 
         let cur = cur_col[qi];
-        let diag_cost = if query[qi - 1] == target[ti - 1] { 0 } else { 1 };
+        let diag_cost = if query[qi - 1] == target[ti - 1] {
+            0
+        } else {
+            1
+        };
         let from_diag = prev_col[qi - 1] + diag_cost;
         let from_above = cur_col[qi - 1] + 1;
         let from_left = prev_col[qi] + 1;
@@ -2888,7 +2979,11 @@ pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) 
     let n = target.len();
 
     if m == 0 {
-        let cigar = if n > 0 { format!("{n}I") } else { String::new() };
+        let cigar = if n > 0 {
+            format!("{n}I")
+        } else {
+            String::new()
+        };
         return (n, cigar);
     }
     if n == 0 {
@@ -3074,9 +3169,18 @@ mod issue_180_abandonment_tests {
 
         // Sanity checks: normal alignment has non-empty CIGAR and valid metrics
         assert!(!cigar.is_empty(), "happy-path CIGAR must not be empty");
-        assert!(edit_distance < query.len(), "happy-path edit_distance should be small");
-        assert!(target_consumed <= target.len(), "consumed target must not exceed length");
-        assert!(target_consumed > 0, "consumed target must be non-zero for matching sequences");
+        assert!(
+            edit_distance < query.len(),
+            "happy-path edit_distance should be small"
+        );
+        assert!(
+            target_consumed <= target.len(),
+            "consumed target must not exceed length"
+        );
+        assert!(
+            target_consumed > 0,
+            "consumed target must be non-zero for matching sequences"
+        );
     }
 
     /// **ACCEPTANCE CRITERION**: Alignment that exhausts the loop without

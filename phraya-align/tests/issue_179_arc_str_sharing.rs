@@ -1,3 +1,6 @@
+use phraya_align::executor::{align_task_with_config, AlignConfig};
+use phraya_core::types::{Sequence, VariantObservation};
+use phraya_io::plan::{PhrayaPlan, UseCase};
 /// Issue #179: Share per-variant CIGAR/provenance to cut allocations (Tier 4)
 ///
 /// Tests verify that:
@@ -8,12 +11,8 @@
 /// 5. Accessors (cigar(), provenance()) return &str unchanged (black-box API invariant)
 /// 6. Serialization round-trip through .phraya format preserves equality
 /// 7. Merge operations (phraya-io) work correctly with Arc<str> fields
-
 use std::collections::HashMap;
 use std::sync::Arc;
-use phraya_core::types::{VariantObservation, Sequence};
-use phraya_align::executor::{align_task_with_config, AlignConfig};
-use phraya_io::plan::{PhrayaPlan, UseCase};
 
 /// Helper: Create a simple test plan
 fn make_test_plan() -> PhrayaPlan {
@@ -44,12 +43,12 @@ fn issue_179_variant_observation_accepts_arc_str() {
         b'A',
         alleles,
         0.95,
-        cigar_str.to_string(),  // String input
+        cigar_str.to_string(), // String input
         30u8,
         0u32,
         vec![5u32],
         35.0,
-        provenance_str.to_string(),  // String input
+        provenance_str.to_string(), // String input
     );
 
     // After implementation: accessors should return the same &str values
@@ -77,8 +76,8 @@ fn issue_179_multiple_variants_share_cigar_arc() {
     let query = Sequence::new(query_bases, None, "read1".to_string(), None);
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     // Should have multiple SNPs
     assert!(
@@ -118,8 +117,8 @@ fn issue_179_multiple_variants_share_provenance_arc() {
     let query = Sequence::new(query_bases, None, "read1".to_string(), None);
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     assert!(
         result.variants.len() >= 2,
@@ -199,8 +198,8 @@ fn issue_179_extract_variants_shares_arc_allocation() {
     let query = Sequence::new(query_bases, None, "multi_snp_read".to_string(), None);
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     // Should generate multiple variants (at least the 5 SNPs)
     assert!(
@@ -238,7 +237,7 @@ fn issue_179_extract_variants_shares_arc_allocation() {
 /// Count Arc strong_count to prove N variants share one Arc (count == N+1, where +1 is the variant vec)
 /// This test requires a test-only accessor on VariantObservation that will fail on main.
 #[test]
-#[ignore]  // This will fail on main; uncomment after implementation adds cigar_arc() test accessor
+#[ignore] // This will fail on main; uncomment after implementation adds cigar_arc() test accessor
 fn issue_179_arc_strong_count_proves_sharing() {
     let plan = make_test_plan();
     let config = AlignConfig::balanced();
@@ -246,15 +245,18 @@ fn issue_179_arc_strong_count_proves_sharing() {
     let mut query_bases = vec![b'A'; 100];
     let mut target_bases = vec![b'A'; 150];
     // 3 SNPs
-    query_bases[20] = b'T'; target_bases[20] = b'C';
-    query_bases[50] = b'G'; target_bases[50] = b'A';
-    query_bases[80] = b'C'; target_bases[80] = b'T';
+    query_bases[20] = b'T';
+    target_bases[20] = b'C';
+    query_bases[50] = b'G';
+    target_bases[50] = b'A';
+    query_bases[80] = b'C';
+    target_bases[80] = b'T';
 
     let query = Sequence::new(query_bases, None, "read1".to_string(), None);
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
 
-    let result = align_task_with_config(&query, &target, &plan, &config)
-        .expect("alignment should succeed");
+    let result =
+        align_task_with_config(&query, &target, &plan, &config).expect("alignment should succeed");
 
     // After implementation: get the Arc<str> from one variant and check strong_count
     // With N variants from one read sharing the same Arc, strong_count should be N or N+1
@@ -275,7 +277,7 @@ fn issue_179_arc_strong_count_proves_sharing() {
 /// Test that merge operations preserve Arc<str> observations correctly
 /// This ensures compatibility with phraya-io merge path
 #[test]
-#[ignore]  // This test requires phraya-io merge functions; ignore until ready to import
+#[ignore] // This test requires phraya-io merge functions; ignore until ready to import
 fn issue_179_merge_preserves_arc_str_fields() {
     // Placeholder: after implementation, this would test merge_phraya_files
     // with observations containing Arc<str> fields to verify merge compatibility.

@@ -10,7 +10,11 @@ fn from_bam_proper_pairs_calculates_mean_and_stddev() {
     let dist = InsertSizeDistribution::from_bam_proper_pairs(&tlens).unwrap();
 
     // Mean should be ~420
-    assert!(dist.mean >= 415 && dist.mean <= 425, "Mean was {}", dist.mean);
+    assert!(
+        dist.mean >= 415 && dist.mean <= 425,
+        "Mean was {}",
+        dist.mean
+    );
 
     // StdDev should be > 0
     assert!(dist.std_dev > 0, "StdDev was {}", dist.std_dev);
@@ -42,7 +46,11 @@ fn from_bam_proper_pairs_handles_large_dataset() {
     let dist = InsertSizeDistribution::from_bam_proper_pairs(&tlens).unwrap();
 
     assert_eq!(dist.sample_size, 10000);
-    assert!(dist.mean >= 440 && dist.mean <= 460, "Mean was {}", dist.mean);
+    assert!(
+        dist.mean >= 440 && dist.mean <= 460,
+        "Mean was {}",
+        dist.mean
+    );
 }
 
 #[test]
@@ -87,5 +95,9 @@ fn from_bam_proper_pairs_mixed_positive_negative() {
     let dist = dist.unwrap();
 
     // Mean should be near 0 (balanced positive/negative)
-    assert!(dist.mean.abs() < 50, "Mean should be near 0, was {}", dist.mean);
+    assert!(
+        dist.mean.abs() < 50,
+        "Mean should be near 0, was {}",
+        dist.mean
+    );
 }

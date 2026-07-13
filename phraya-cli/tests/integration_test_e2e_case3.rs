@@ -30,7 +30,6 @@
 /// ✓ filter with --min-coverage 5 produces VCF    (test 8)
 /// ✓ VCF has expected variant positions           (test 9)
 /// ✓ no crashes, all exit codes are 0             (test 10)
-
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -55,7 +54,9 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
     (0..len)
         .map(|_| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             b"ACGT"[((x >> 33) & 3) as usize]
         })
         .collect()
@@ -68,18 +69,16 @@ fn mutate_sequence(base: &[u8], mutation_rate: f64, seed: u64) -> Vec<u8> {
     let mut result = base.to_vec();
     for i in 0..result.len() {
         // Generate a pseudo-random number in [0, 1)
-        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let rand_bits = (x >> 32) as u32;
         let rand_01 = rand_bits as f64 / (u32::MAX as f64 + 1.0);
 
         if rand_01 < mutation_rate {
             // Mutate this position: pick a different base
             let current = result[i];
-            let candidates: Vec<u8> = b"ACGT"
-                .iter()
-                .filter(|&&b| b != current)
-                .copied()
-                .collect();
+            let candidates: Vec<u8> = b"ACGT".iter().filter(|&&b| b != current).copied().collect();
             if !candidates.is_empty() {
                 let idx = ((x >> 40) as usize) % candidates.len();
                 result[i] = candidates[idx];
@@ -102,7 +101,10 @@ fn write_fixtures(dir: &Path) -> (PathBuf, PathBuf) {
 
     let contigs_path = dir.join("contigs.fa");
     let mut content = String::new();
-    for (i, seq) in [contig1.clone(), contig2, contig3, contig4, contig5].iter().enumerate() {
+    for (i, seq) in [contig1.clone(), contig2, contig3, contig4, contig5]
+        .iter()
+        .enumerate()
+    {
         let idx = i + 1;
         content.push_str(&format!(
             ">contig{}\n{}\n",
@@ -142,9 +144,12 @@ fn run_to_merge(dir: &Path) -> (PathBuf, String, usize) {
 
     let out = phraya(&[
         "plan",
-        "--inputs", contigs_path.to_str().unwrap(),
-        "--inputs", reads_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
     assert!(
         out.status.success(),
@@ -215,7 +220,8 @@ fn run_to_merge(dir: &Path) -> (PathBuf, String, usize) {
             plan_path.to_str().unwrap(),
             &query_name,
             &target_name,
-            "--output", op.to_str().unwrap(),
+            "--output",
+            op.to_str().unwrap(),
         ]);
         assert!(
             out.status.success(),
@@ -229,7 +235,10 @@ fn run_to_merge(dir: &Path) -> (PathBuf, String, usize) {
     }
 
     let merged = dir.join("merged.phraya");
-    let strs: Vec<String> = per_task.iter().map(|p| p.to_str().unwrap().to_string()).collect();
+    let strs: Vec<String> = per_task
+        .iter()
+        .map(|p| p.to_str().unwrap().to_string())
+        .collect();
     let mut args = vec!["merge"];
     for s in &strs {
         args.push(s.as_str());
@@ -256,9 +265,12 @@ fn issue_89_plan_detects_case3_contigs_with_reads() {
 
     let out = phraya(&[
         "plan",
-        "--inputs", contigs_path.to_str().unwrap(),
-        "--inputs", reads_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
     assert!(
         out.status.success(),
@@ -286,9 +298,12 @@ fn issue_89_plan_selects_centroid() {
 
     let out = phraya(&[
         "plan",
-        "--inputs", contigs_path.to_str().unwrap(),
-        "--inputs", reads_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
     assert!(out.status.success());
 
@@ -313,9 +328,12 @@ fn issue_89_plan_task_count_54() {
 
     let out = phraya(&[
         "plan",
-        "--inputs", contigs_path.to_str().unwrap(),
-        "--inputs", reads_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
     assert!(out.status.success());
 
@@ -339,9 +357,12 @@ fn issue_89_plan_centroid_id_consistent() {
 
     let out = phraya(&[
         "plan",
-        "--inputs", contigs_path.to_str().unwrap(),
-        "--inputs", reads_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
     assert!(out.status.success());
 
@@ -387,9 +408,12 @@ fn issue_89_all_54_align_tasks_exit_zero() {
 
     phraya(&[
         "plan",
-        "--inputs", contigs_path.to_str().unwrap(),
-        "--inputs", reads_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
@@ -413,7 +437,8 @@ fn issue_89_all_54_align_tasks_exit_zero() {
             plan_path.to_str().unwrap(),
             &query_name,
             &target_name,
-            "--output", op.to_str().unwrap(),
+            "--output",
+            op.to_str().unwrap(),
         ]);
         assert!(
             out.status.success(),
@@ -465,11 +490,18 @@ fn issue_89_filter_produces_vcf_output() {
     let (merged, _, _) = run_to_merge(dir.path());
 
     let out = phraya(&[
-        "filter", merged.to_str().unwrap(),
-        "--min-coverage", "5",
-        "--format", "vcf",
+        "filter",
+        merged.to_str().unwrap(),
+        "--min-coverage",
+        "5",
+        "--format",
+        "vcf",
     ]);
-    assert!(out.status.success(), "phraya filter failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "phraya filter failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let vcf = String::from_utf8_lossy(&out.stdout);
     // Verify VCF header
@@ -488,9 +520,12 @@ fn issue_89_vcf_contains_variant_records() {
     let (merged, _, _) = run_to_merge(dir.path());
 
     let out = phraya(&[
-        "filter", merged.to_str().unwrap(),
-        "--min-coverage", "1",
-        "--format", "vcf",
+        "filter",
+        merged.to_str().unwrap(),
+        "--min-coverage",
+        "1",
+        "--format",
+        "vcf",
     ]);
     assert!(out.status.success());
 
@@ -518,9 +553,12 @@ fn issue_89_e2e_case3_pipeline_succeeds() {
     // Step 1: plan
     let out = phraya(&[
         "plan",
-        "--inputs", contigs_path.to_str().unwrap(),
-        "--inputs", reads_path.to_str().unwrap(),
-        "--output", plan_path.to_str().unwrap(),
+        "--inputs",
+        contigs_path.to_str().unwrap(),
+        "--inputs",
+        reads_path.to_str().unwrap(),
+        "--output",
+        plan_path.to_str().unwrap(),
     ]);
     assert!(out.status.success(), "plan failed");
 
@@ -546,7 +584,8 @@ fn issue_89_e2e_case3_pipeline_succeeds() {
             plan_path.to_str().unwrap(),
             &query_name,
             &target_name,
-            "--output", op.to_str().unwrap(),
+            "--output",
+            op.to_str().unwrap(),
         ]);
         assert!(out.status.success(), "align failed");
         align_files.push(op);
@@ -554,7 +593,10 @@ fn issue_89_e2e_case3_pipeline_succeeds() {
 
     // Step 3: merge (just the first 5 tasks for speed)
     let merged = dir.path().join("merged.phraya");
-    let strs: Vec<String> = align_files.iter().map(|p| p.to_str().unwrap().to_string()).collect();
+    let strs: Vec<String> = align_files
+        .iter()
+        .map(|p| p.to_str().unwrap().to_string())
+        .collect();
     let mut args = vec!["merge"];
     for s in &strs {
         args.push(s.as_str());
@@ -564,9 +606,6 @@ fn issue_89_e2e_case3_pipeline_succeeds() {
     assert!(out.status.success(), "merge failed");
 
     // Step 4: filter
-    let out = phraya(&[
-        "filter", merged.to_str().unwrap(),
-        "--format", "vcf",
-    ]);
+    let out = phraya(&["filter", merged.to_str().unwrap(), "--format", "vcf"]);
     assert!(out.status.success(), "filter failed");
 }
