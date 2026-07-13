@@ -26,6 +26,21 @@ where
     sorted.serialize(serializer)
 }
 
+/// Fast 64-bit non-cryptographic hash for read content (ADR-0011).
+/// Uses FNV-1a for speed and determinism. Fast hash is suitable for caching
+/// by content within a single pipeline run; it is NOT a cryptographic identity.
+pub fn read_content_hash(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 /// PhrayaPlan format version for forward compatibility
 pub const PHRAYAPLAN_VERSION: u32 = 6;
 
@@ -80,6 +95,10 @@ fn default_w11_membership() -> HashMap<String, Vec<bool>> {
 
 fn default_sparse_mode() -> bool {
     false
+}
+
+fn default_read_sketches() -> HashMap<u64, MinimizerSketch> {
+    HashMap::new()
 }
 
 fn is_false(v: &bool) -> bool {
@@ -177,6 +196,11 @@ pub struct PhrayaPlan {
     pub kmer_uniqueness: HashMap<u32, f64>,
     /// Task list: (query_id, target_id) pairs
     pub task_list: Vec<(u32, u32)>,
+    /// Read sketches keyed by content hash, for reuse across pipeline stages
+    /// (ADR-0011). Distinct from kmer_index, which is keyed by sequence ID
+    /// and holds reference sketches. Empty by default.
+    #[serde(default = "default_read_sketches")]
+    pub read_sketches: HashMap<u64, MinimizerSketch>,
     /// Variation hotspot intervals detected at plan time: (start, end) pairs
     #[serde(default)]
     pub hotspot_intervals: Vec<(u32, u32)>,
@@ -261,6 +285,7 @@ impl PhrayaPlan {
             mate_info: HashMap::new(),
             dense_kmer_index: HashMap::new(),
             w11_membership: HashMap::new(),
+            read_sketches: HashMap::new(),
             sparse_mode: false,
             reference_space: None,
         }
@@ -294,6 +319,11 @@ impl PhrayaPlan {
     /// Check if this plan was created with --sparse (dense sketches not stored).
     pub fn is_sparse(&self) -> bool {
         self.sparse_mode
+    }
+
+    /// Look up a stored read sketch by content hash
+    pub fn get_read_sketch(&self, hash: u64) -> Option<&MinimizerSketch> {
+        self.read_sketches.get(&hash)
     }
 
     /// Compute and store dense sketches for all sequences in the kmer_index.
@@ -1044,4 +1074,5 @@ mod tests {
 
         assert!(read_plan.read_sketches.is_empty());
     }
+
 }
