@@ -1,5 +1,6 @@
 /// Issue #148: CLI strategy flag acceptance tests.
 /// Uses library API directly rather than subprocess invocation for speed and reliability.
+
 use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::Sequence;
 use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
@@ -57,9 +58,7 @@ fn issue_148_align_rejects_invalid_strategy() {
         "fast" => Ok(Strategy::Fast),
         "balanced" => Ok(Strategy::Balanced),
         "sensitive" => Ok(Strategy::Sensitive),
-        other => Err(format!(
-            "unknown strategy: {other}; expected fast, balanced, or sensitive"
-        )),
+        other => Err(format!("unknown strategy: {other}; expected fast, balanced, or sensitive")),
     };
     assert!(result.is_err(), "invalid strategy must be rejected");
     let err = result.unwrap_err();
@@ -91,25 +90,13 @@ fn issue_148_cli_different_strategies_produce_different_windows() {
 
     let (query, target) = make_seqs();
 
-    let result_fast =
-        align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Fast))
-            .expect("fast alignment should succeed");
-    let result_balanced = align_task_with_config(
-        &query,
-        &target,
-        &plan,
-        &AlignConfig::new(Strategy::Balanced),
-    )
-    .expect("balanced alignment should succeed");
+    let result_fast = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Fast))
+        .expect("fast alignment should succeed");
+    let result_balanced = align_task_with_config(&query, &target, &plan, &AlignConfig::new(Strategy::Balanced))
+        .expect("balanced alignment should succeed");
 
-    assert!(
-        !result_fast.variants.is_empty(),
-        "fast should produce variants"
-    );
-    assert!(
-        !result_balanced.variants.is_empty(),
-        "balanced should produce variants"
-    );
+    assert!(!result_fast.variants.is_empty(), "fast should produce variants");
+    assert!(!result_balanced.variants.is_empty(), "balanced should produce variants");
 
     let fast_window = result_fast.variants[0].local_coverage().len();
     let balanced_window = result_balanced.variants[0].local_coverage().len();

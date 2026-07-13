@@ -1579,11 +1579,7 @@ mod tests {
     fn select_centroid_all_empty_sketches_uses_jaccard_identity() {
         // Two sketches with zero minimizers are treated as fully similar (Jaccard 1.0
         // for the empty/empty case), so centroid selection still terminates cleanly.
-        let sketches = vec![
-            make_sketch(vec![]),
-            make_sketch(vec![]),
-            make_sketch(vec![]),
-        ];
+        let sketches = vec![make_sketch(vec![]), make_sketch(vec![]), make_sketch(vec![])];
         let centroid = select_centroid(&sketches);
         assert!(centroid.is_some());
     }
@@ -1602,9 +1598,7 @@ mod tests {
 
         let uniqueness = compute_kmer_uniqueness(&[s0, s1]);
 
-        assert!(
-            uniqueness.get(&0).copied().unwrap_or(0.0) > uniqueness.get(&1).copied().unwrap_or(0.0)
-        );
+        assert!(uniqueness.get(&0).copied().unwrap_or(0.0) > uniqueness.get(&1).copied().unwrap_or(0.0));
     }
 
     /// A `VariantObservation`'s `all_alleles` map must serialize in a canonical (ascending
@@ -1637,18 +1631,12 @@ mod tests {
 
         let ja = serde_json::to_string(&forward).unwrap();
         let jb = serde_json::to_string(&reverse).unwrap();
-        assert_eq!(
-            ja, jb,
-            "allele map must serialize independent of insertion order"
-        );
+        assert_eq!(ja, jb, "allele map must serialize independent of insertion order");
 
         // And the canonical order is ascending by base: A(65) < C(67) < G(71) < T(84).
         let a_idx = ja.find("65").unwrap();
         let t_idx = ja.find("84").unwrap();
-        assert!(
-            a_idx < t_idx,
-            "alleles must serialize in ascending key order"
-        );
+        assert!(a_idx < t_idx, "alleles must serialize in ascending key order");
     }
 }
 
@@ -1706,8 +1694,8 @@ impl MinimizerSketch {
 pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimizerSketch {
     use packed_seq::AsciiSeq;
     let mut positions = Vec::new();
-    let output =
-        simd_minimizers::canonical_minimizers(k, w).run(AsciiSeq(sequence), &mut positions);
+    let output = simd_minimizers::canonical_minimizers(k, w)
+        .run(AsciiSeq(sequence), &mut positions);
     let minimizers: Vec<(u64, u32)> = output
         .pos_and_values_u64()
         .map(|(pos, val)| (val, pos))
@@ -1733,11 +1721,7 @@ fn jaccard_similarity(a: &MinimizerSketch, b: &MinimizerSketch) -> f64 {
     }
     let intersection = set_a.intersection(&set_b).count();
     let union = set_a.union(&set_b).count();
-    if union == 0 {
-        0.0
-    } else {
-        intersection as f64 / union as f64
-    }
+    if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
 }
 
 /// Select the centroid sketch — the one with median Jaccard similarity to all others.
@@ -1761,11 +1745,7 @@ pub fn select_centroid(sketches: &[MinimizerSketch]) -> Option<usize> {
                 .collect();
             sims.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let n = sims.len();
-            if n % 2 == 0 {
-                (sims[n / 2 - 1] + sims[n / 2]) / 2.0
-            } else {
-                sims[n / 2]
-            }
+            if n % 2 == 0 { (sims[n / 2 - 1] + sims[n / 2]) / 2.0 } else { sims[n / 2] }
         })
         .collect();
     let mut indexed: Vec<(usize, f64)> = avg_sims.drain(..).enumerate().collect();

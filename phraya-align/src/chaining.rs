@@ -232,12 +232,7 @@ mod tests {
     /// Deterministic filler seeds along a clean diagonal: `target_pos = target_start +
     /// query_pos` for each of `count` seeds spaced `spacing` apart, starting at
     /// `query_start`.
-    fn diagonal_seeds(
-        target_start: usize,
-        query_start: u32,
-        count: u32,
-        spacing: u32,
-    ) -> Vec<Seed> {
+    fn diagonal_seeds(target_start: usize, query_start: u32, count: u32, spacing: u32) -> Vec<Seed> {
         (0..count)
             .map(|i| {
                 let qpos = query_start + i * spacing;
@@ -259,31 +254,15 @@ mod tests {
     fn single_seed_below_min_score_produces_no_chain() {
         // seed_len=21 alone must clear min_chain_score=25 by default — a lone seed
         // scores exactly seed_len, so it's dropped unless min_chain_score <= seed_len.
-        let seeds = vec![Seed {
-            query_pos: 0,
-            target_pos: 1000,
-            minimizer: 1,
-        }];
-        let params = ChainParams {
-            min_chain_score: 25,
-            seed_len: 21,
-            ..Default::default()
-        };
+        let seeds = vec![Seed { query_pos: 0, target_pos: 1000, minimizer: 1 }];
+        let params = ChainParams { min_chain_score: 25, seed_len: 21, ..Default::default() };
         assert!(chain_seeds(&seeds, &params).is_empty());
     }
 
     #[test]
     fn single_seed_produces_single_chain_when_above_min_score() {
-        let seeds = vec![Seed {
-            query_pos: 0,
-            target_pos: 1000,
-            minimizer: 1,
-        }];
-        let params = ChainParams {
-            min_chain_score: 10,
-            seed_len: 21,
-            ..Default::default()
-        };
+        let seeds = vec![Seed { query_pos: 0, target_pos: 1000, minimizer: 1 }];
+        let params = ChainParams { min_chain_score: 10, seed_len: 21, ..Default::default() };
         let chains = chain_seeds(&seeds, &params);
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].seeds.len(), 1);
@@ -296,11 +275,7 @@ mod tests {
         // covering all 5 seeds, not 5 separate chains.
         let seeds = diagonal_seeds(1000, 0, 5, 40);
         let chains = chain_seeds(&seeds, &ChainParams::default());
-        assert_eq!(
-            chains.len(),
-            1,
-            "clean co-linear seeds must collapse into one chain"
-        );
+        assert_eq!(chains.len(), 1, "clean co-linear seeds must collapse into one chain");
         assert_eq!(chains[0].seeds.len(), 5);
         assert_eq!(chains[0].target_start(), 1000);
     }
@@ -347,11 +322,7 @@ mod tests {
     #[test]
     fn longer_chain_outscores_isolated_spurious_seed() {
         let mut seeds = diagonal_seeds(1000, 0, 6, 40); // a strong 6-seed chain
-        seeds.push(Seed {
-            query_pos: 500,
-            target_pos: 9000,
-            minimizer: 0xdead,
-        }); // isolated noise
+        seeds.push(Seed { query_pos: 500, target_pos: 9000, minimizer: 0xdead }); // isolated noise
 
         let chains = chain_seeds(&seeds, &ChainParams::default());
         assert!(chains.len() >= 1);
@@ -365,26 +336,11 @@ mod tests {
         // Second seed's diagonal drifts by 200 (target_pos jumps far more than query_pos
         // advances) — beyond max_band=100 default, so it must not chain with the first.
         let seeds = vec![
-            Seed {
-                query_pos: 0,
-                target_pos: 1000,
-                minimizer: 1,
-            },
-            Seed {
-                query_pos: 40,
-                target_pos: 1240,
-                minimizer: 2,
-            }, // drift = |240-40|=200
+            Seed { query_pos: 0, target_pos: 1000, minimizer: 1 },
+            Seed { query_pos: 40, target_pos: 1240, minimizer: 2 }, // drift = |240-40|=200
         ];
-        let params = ChainParams {
-            min_chain_score: 10,
-            ..Default::default()
-        };
+        let params = ChainParams { min_chain_score: 10, ..Default::default() };
         let chains = chain_seeds(&seeds, &params);
-        assert_eq!(
-            chains.len(),
-            2,
-            "seeds beyond the band must not chain together"
-        );
+        assert_eq!(chains.len(), 2, "seeds beyond the band must not chain together");
     }
 }

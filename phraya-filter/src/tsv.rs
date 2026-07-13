@@ -51,7 +51,10 @@ impl Column {
                     alts.iter().map(|&b| b as char).collect::<String>()
                 }
             }
-            Column::Coverage => obs.coverage_at_variant().unwrap_or(0).to_string(),
+            Column::Coverage => obs
+                .coverage_at_variant()
+                .unwrap_or(0)
+                .to_string(),
             Column::Mapq => obs.mapq().to_string(),
             Column::Cigar => obs.cigar().to_string(),
             Column::EditDistance => obs.edit_distance().to_string(),

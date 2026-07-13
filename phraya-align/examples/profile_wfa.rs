@@ -16,9 +16,7 @@ fn main() {
         println!("--- {} ---", desc);
 
         // Generate query
-        let query: Vec<u8> = (0..*size)
-            .map(|i| [b'A', b'C', b'G', b'T'][i % 4])
-            .collect();
+        let query: Vec<u8> = (0..*size).map(|i| [b'A', b'C', b'G', b'T'][i % 4]).collect();
 
         // Generate target with 5% divergence (95% identity - typical bacterial)
         let mut target = query.clone();
@@ -26,10 +24,7 @@ fn main() {
             target[i] = b'T'; // mismatch every 20 bases
         }
 
-        let seed = SeedAnchor {
-            query_pos: 0,
-            target_pos: 0,
-        };
+        let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
 
         // Warmup
         for _ in 0..10 {
@@ -37,13 +32,7 @@ fn main() {
         }
 
         // Benchmark
-        let iterations = if *size <= 150 {
-            1000
-        } else if *size <= 1000 {
-            100
-        } else {
-            20
-        };
+        let iterations = if *size <= 150 { 1000 } else if *size <= 1000 { 100 } else { 20 };
 
         let start = Instant::now();
         for _ in 0..iterations {
@@ -55,10 +44,7 @@ fn main() {
         println!("  Iterations: {}", iterations);
         println!("  Total time: {:?}", elapsed);
         println!("  Per-alignment: {:?}", per_align);
-        println!(
-            "  Throughput: {:.0} alignments/sec",
-            1.0 / per_align.as_secs_f64()
-        );
+        println!("  Throughput: {:.0} alignments/sec", 1.0 / per_align.as_secs_f64());
 
         // Estimate operations
         let matches = (size * 95) / 100;
@@ -85,7 +71,5 @@ fn main() {
     println!("    - SIMD more beneficial");
     println!("    - Expected speedup: 2-4×");
     println!();
-    println!(
-        "Run with: RUSTFLAGS=\"-C target-cpu=native\" cargo run --release --example profile_wfa"
-    );
+    println!("Run with: RUSTFLAGS=\"-C target-cpu=native\" cargo run --release --example profile_wfa");
 }

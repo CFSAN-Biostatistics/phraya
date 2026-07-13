@@ -29,7 +29,9 @@ impl BamCramParser {
     ///
     /// # Errors
     /// Returns ParseError::InvalidFormat for malformed files
-    pub fn from_bam_path<P: AsRef<Path>>(path: P) -> Result<ParsedReads, ParseError> {
+    pub fn from_bam_path<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<ParsedReads, ParseError> {
         let path = path.as_ref();
 
         // Try to open the file
@@ -41,8 +43,7 @@ impl BamCramParser {
         // Try to create a BAM reader and validate file format
         let mut bam_reader = noodles_bam::io::Reader::new(reader);
 
-        let _header = bam_reader
-            .read_header()
+        let _header = bam_reader.read_header()
             .map_err(|_| ParseError::InvalidFormat("invalid BAM file or header".to_string()))?;
 
         // Collect records and mate info
@@ -53,8 +54,7 @@ impl BamCramParser {
             match result {
                 Ok(record) => {
                     // Extract sequence information from BAM record
-                    let id = record
-                        .name()
+                    let id = record.name()
                         .map(|n| String::from_utf8_lossy(n).to_string())
                         .unwrap_or_else(|| String::from("unknown"));
 
@@ -119,7 +119,7 @@ impl BamCramParser {
                 }
                 Err(_) => {
                     return Err(ParseError::InvalidFormat(
-                        "failed to read BAM record".to_string(),
+                        "failed to read BAM record".to_string()
                     ));
                 }
             }
@@ -139,7 +139,9 @@ impl BamCramParser {
     ///
     /// # Errors
     /// Returns ParseError::InvalidFormat for malformed files
-    pub fn from_cram_path<P: AsRef<Path>>(path: P) -> Result<ParsedReads, ParseError> {
+    pub fn from_cram_path<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<ParsedReads, ParseError> {
         let path = path.as_ref();
 
         let file = File::open(path)
@@ -276,9 +278,7 @@ mod tests {
         let header = sam::Header::builder().build();
         writer.write_header(&header).unwrap();
         for _ in 0..n_records {
-            writer
-                .write_record(&header, cram::Record::default())
-                .unwrap();
+            writer.write_record(&header, cram::Record::default()).unwrap();
         }
         writer.try_finish(&header).unwrap();
         (tmp, cram_path)
@@ -362,8 +362,8 @@ mod tests {
     fn test_issue_61_parse_bam_paired_read_builds_mate_info() {
         use noodles_bam as bam;
         use noodles_sam as sam;
-        use noodles_sam::alignment::io::Write as _;
         use noodles_sam::alignment::record::Flags;
+        use noodles_sam::alignment::io::Write as _;
         use noodles_sam::alignment::record_buf::{RecordBuf, Sequence};
 
         let tmp = NamedTempFile::new().unwrap();
@@ -386,10 +386,7 @@ mod tests {
         let parsed = BamCramParser::from_bam_path(&bam_path).unwrap();
         assert_eq!(parsed.sequences.len(), 1);
 
-        let mate = parsed
-            .mate_info
-            .get("read1")
-            .expect("mate info for paired read");
+        let mate = parsed.mate_info.get("read1").expect("mate info for paired read");
         assert_eq!(mate.mate_id, "read1/2");
         assert!(mate.proper_pair);
         assert_eq!(mate.insert_size, 300);
@@ -402,8 +399,8 @@ mod tests {
     fn test_issue_61_parse_bam_second_in_pair_mate_id_uses_slash_one() {
         use noodles_bam as bam;
         use noodles_sam as sam;
-        use noodles_sam::alignment::io::Write as _;
         use noodles_sam::alignment::record::Flags;
+        use noodles_sam::alignment::io::Write as _;
         use noodles_sam::alignment::record_buf::{RecordBuf, Sequence};
 
         let tmp = NamedTempFile::new().unwrap();
@@ -424,10 +421,7 @@ mod tests {
         drop(writer);
 
         let parsed = BamCramParser::from_bam_path(&bam_path).unwrap();
-        let mate = parsed
-            .mate_info
-            .get("read2")
-            .expect("mate info for paired read");
+        let mate = parsed.mate_info.get("read2").expect("mate info for paired read");
         assert_eq!(mate.mate_id, "read2/1");
         assert!(!mate.is_first_in_pair);
         assert!(mate.is_second_in_pair);
@@ -516,10 +510,7 @@ mod tests {
         let record = cram::Record::builder()
             .set_name("read1")
             .set_bam_flags(
-                Flags::UNMAPPED
-                    | Flags::SEGMENTED
-                    | Flags::PROPERLY_SEGMENTED
-                    | Flags::FIRST_SEGMENT,
+                Flags::UNMAPPED | Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::FIRST_SEGMENT,
             )
             .set_template_size(300)
             .build();
@@ -530,10 +521,7 @@ mod tests {
         let parsed = BamCramParser::from_cram_path(&cram_path).unwrap();
         assert_eq!(parsed.sequences.len(), 1);
 
-        let mate = parsed
-            .mate_info
-            .get("read1")
-            .expect("mate info for paired read");
+        let mate = parsed.mate_info.get("read1").expect("mate info for paired read");
         assert_eq!(mate.mate_id, "read1/2");
         assert!(mate.proper_pair);
         assert_eq!(mate.insert_size, 300);
@@ -558,10 +546,7 @@ mod tests {
         let record = cram::Record::builder()
             .set_name("read2")
             .set_bam_flags(
-                Flags::UNMAPPED
-                    | Flags::SEGMENTED
-                    | Flags::PROPERLY_SEGMENTED
-                    | Flags::LAST_SEGMENT,
+                Flags::UNMAPPED | Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::LAST_SEGMENT,
             )
             .set_template_size(-300)
             .build();
@@ -570,10 +555,7 @@ mod tests {
         drop(writer);
 
         let parsed = BamCramParser::from_cram_path(&cram_path).unwrap();
-        let mate = parsed
-            .mate_info
-            .get("read2")
-            .expect("mate info for paired read");
+        let mate = parsed.mate_info.get("read2").expect("mate info for paired read");
         assert_eq!(mate.mate_id, "read2/1");
         assert!(!mate.is_first_in_pair);
         assert!(mate.is_second_in_pair);

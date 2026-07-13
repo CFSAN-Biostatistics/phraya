@@ -107,11 +107,7 @@ mod tests {
     use phraya_core::types::MinimizerSketch;
 
     fn sketch(mins: &[(u64, u32)]) -> MinimizerSketch {
-        MinimizerSketch {
-            minimizers: mins.to_vec(),
-            k: 21,
-            w: 11,
-        }
+        MinimizerSketch { minimizers: mins.to_vec(), k: 21, w: 11 }
     }
 
     #[test]
@@ -123,10 +119,7 @@ mod tests {
         let query = sketch(&[(7, 0), (9, 5)]);
 
         // Uncapped: both contribute (5 + 1 = 6 seeds).
-        assert_eq!(
-            find_seeds_indexed_capped(&query, &index, usize::MAX).len(),
-            6
-        );
+        assert_eq!(find_seeds_indexed_capped(&query, &index, usize::MAX).len(), 6);
         // Cap at 4: the 5×-occurring value 7 is masked, only value 9's single seed remains.
         let capped = find_seeds_indexed_capped(&query, &index, 4);
         assert_eq!(capped.len(), 1);
@@ -155,10 +148,7 @@ mod tests {
         index.insert(9999, vec![0u32; 10_000]);
         let cap = seed_occurrence_cap(&index, 256);
         assert_eq!(cap, 256);
-        assert!(
-            10_000 > cap,
-            "the hyper-repeat must exceed the cap and be maskable"
-        );
+        assert!(10_000 > cap, "the hyper-repeat must exceed the cap and be maskable");
     }
 
     #[test]

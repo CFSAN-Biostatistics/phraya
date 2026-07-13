@@ -2,6 +2,7 @@
 ///
 /// Parses the standard SFF file format and extracts clipped sequences with quality scores.
 /// Reference: https://trace.ncbi.nlm.nih.gov/Traces/trace.cgi?cmd=show&f=formats&m=doc&s=formats
+
 use phraya_core::types::{ParseError, Sequence};
 use std::io::Read;
 
@@ -62,27 +63,27 @@ impl SffHeader {
         }
 
         let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - version".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - version".to_string()))?;
         let version = u32::from_be_bytes(buf);
 
         let mut buf = [0u8; 8];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - index_offset".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - index_offset".to_string()))?;
         let index_offset = u64::from_be_bytes(buf);
 
         let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - index_length".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - index_length".to_string()))?;
         let index_length = u32::from_be_bytes(buf);
 
         let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - num_reads".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - num_reads".to_string()))?;
         let num_reads = u32::from_be_bytes(buf);
 
         // If no reads, return a minimal header (allow truncation for empty files)
@@ -102,41 +103,41 @@ impl SffHeader {
         }
 
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - header_length".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - header_length".to_string()))?;
         let header_length = u16::from_be_bytes(buf);
 
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - key_length".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - key_length".to_string()))?;
         let key_length = u16::from_be_bytes(buf);
 
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - num_flows".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - num_flows".to_string()))?;
         let num_flows = u16::from_be_bytes(buf);
 
         let mut buf = [0u8; 1];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - flowgram_format".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - flowgram_format".to_string()))?;
         let flowgram_format = buf[0];
 
         // Flow chars: 4 bytes + 252 bytes padding = 256 bytes total
         let mut flow_chars = vec![0u8; 256];
-        reader.read_exact(&mut flow_chars).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - flow_chars".to_string())
-        })?;
+        reader
+            .read_exact(&mut flow_chars)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - flow_chars".to_string()))?;
         let flow_chars = flow_chars[0..4].to_vec();
 
         // Key sequence: 4 bytes + 252 bytes padding = 256 bytes total
         let mut key_sequence = vec![0u8; 256];
-        reader.read_exact(&mut key_sequence).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated header - key_sequence".to_string())
-        })?;
+        reader
+            .read_exact(&mut key_sequence)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated header - key_sequence".to_string()))?;
         let key_sequence = key_sequence[0..key_length as usize].to_vec();
 
         Ok(SffHeader {
@@ -164,39 +165,39 @@ impl ReadHeader {
         let read_header_length = u16::from_be_bytes(buf);
 
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated read header - name_length".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated read header - name_length".to_string()))?;
         let name_length = u16::from_be_bytes(buf);
 
         let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated read header - num_bases".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated read header - num_bases".to_string()))?;
         let num_bases = u32::from_be_bytes(buf);
 
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated read header - clip_qual_left".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated read header - clip_qual_left".to_string()))?;
         let clip_qual_left = u16::from_be_bytes(buf);
 
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated read header - clip_qual_right".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated read header - clip_qual_right".to_string()))?;
         let clip_qual_right = u16::from_be_bytes(buf);
 
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated read header - clip_adapter_left".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated read header - clip_adapter_left".to_string()))?;
         let clip_adapter_left = u16::from_be_bytes(buf);
 
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat("SFF: truncated read header - clip_adapter_right".to_string())
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat("SFF: truncated read header - clip_adapter_right".to_string()))?;
         let clip_adapter_right = u16::from_be_bytes(buf);
 
         Ok(ReadHeader {
@@ -228,8 +229,7 @@ fn read_padded_string(reader: &mut dyn Read, length: usize) -> Result<String, Pa
             .map_err(|_| ParseError::InvalidFormat("SFF: truncated padding".to_string()))?;
     }
 
-    String::from_utf8(buf)
-        .map_err(|_| ParseError::InvalidFormat("SFF: invalid UTF-8 in read name".to_string()))
+    String::from_utf8(buf).map_err(|_| ParseError::InvalidFormat("SFF: invalid UTF-8 in read name".to_string()))
 }
 
 /// Skip padding to 8-byte boundary
@@ -237,14 +237,12 @@ fn skip_padding(reader: &mut dyn Read, size: usize) -> Result<(), ParseError> {
     let padding = (8 - (size % 8)) % 8;
     if padding > 0 {
         let mut buf = vec![0u8; padding];
-        reader.read_exact(&mut buf).map_err(|_| {
-            ParseError::InvalidFormat(format!(
-                "SFF: truncated padding - expected {} bytes, size was {} (size % 8 = {})",
-                padding,
-                size,
-                size % 8
-            ))
-        })?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|_| ParseError::InvalidFormat(
+                format!("SFF: truncated padding - expected {} bytes, size was {} (size % 8 = {})",
+                        padding, size, size % 8)
+            ))?;
     }
     Ok(())
 }
@@ -298,9 +296,9 @@ impl SffIterator {
         let padding_before_name = (8 - (header_with_name_size % 8)) % 8;
         if padding_before_name > 0 {
             let mut pad_buf = vec![0u8; padding_before_name];
-            self.reader.read_exact(&mut pad_buf).map_err(|_| {
-                ParseError::InvalidFormat("SFF: truncated padding before name".to_string())
-            })?;
+            self.reader
+                .read_exact(&mut pad_buf)
+                .map_err(|_| ParseError::InvalidFormat("SFF: truncated padding before name".to_string()))?;
         }
 
         // Read read name
