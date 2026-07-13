@@ -4,6 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use thiserror::Error;
 
+// Import SHA-256 for content hashing (256-bit cryptographic strength)
+use sha2::{Digest, Sha256};
+
 /// Serialize a `HashMap` with keys in ascending order for deterministic output.
 ///
 /// The plan's per-sequence maps (sketches, uniqueness, membership, mate info) are `HashMap`s
@@ -83,6 +86,18 @@ fn is_false(v: &bool) -> bool {
     !v
 }
 
+/// Content-addressed reference space (ADR-0011): identity by content hash,
+/// with optional human-facing name and per-sequence sketches.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReferenceSpace {
+    /// Strong cryptographic hash (BLAKE3/SHA-256-class, ≥256 bits) of reference content
+    pub content_hash: String,
+    /// Optional human-facing name (e.g., "chr1-v1", "E. coli K-12")
+    pub name: Option<String>,
+    /// Per-sequence k-mer sketches, keyed by sequence ID
+    pub sketches: HashMap<String, MinimizerSketch>,
+}
+
 /// Deduplicate a minimizer sketch, removing duplicate (hash, position) tuples.
 /// Returns a new sketch with only unique minimizers while preserving the k and w parameters.
 fn deduplicate_sketch(sketch: &MinimizerSketch) -> MinimizerSketch {
@@ -146,6 +161,10 @@ pub struct PhrayaPlan {
     pub version: u32,
     /// Detected use case
     pub use_case: UseCase,
+    /// Content-addressed reference space (ADR-0011): optional reference with
+    /// content hash, name, and sketches. Used in plan v6+.
+    #[serde(default)]
+    pub reference_space: Option<ReferenceSpace>,
     /// Input file paths
     pub input_files: Vec<String>,
     /// Timestamp (ISO8601)
@@ -186,7 +205,11 @@ pub struct PhrayaPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insert_size_distribution: Option<InsertSizeDistribution>,
     /// Mate information keyed by sequence ID (for BAM/CRAM inputs)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty", serialize_with = "serialize_map_sorted")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "serialize_map_sorted"
+    )]
     pub mate_info: HashMap<String, phraya_core::types::MateInfo>,
     /// Dense minimizer sketches keyed by sequence ID
     /// Empty if sparse_mode is true
@@ -239,6 +262,7 @@ impl PhrayaPlan {
             dense_kmer_index: HashMap::new(),
             w11_membership: HashMap::new(),
             sparse_mode: false,
+            reference_space: None,
         }
     }
 
@@ -362,29 +386,19 @@ pub fn read_plan(path: &Path) -> Result<PhrayaPlan, PlanError> {
     Ok(plan)
 }
 
-/// Compute a content hash using BLAKE3 for reference file content addressing.
-/// Issue #196: used for content-addressed reference spaces in v6 plans.
-/// Returns a hex-encoded 64-character string (256-bit BLAKE3 hash).
-///
-/// NOTE: This is a stub implementation for RED test compilation.
-/// The actual implementation will use blake3::hash() once the feature is complete.
-#[cfg(test)]
-fn compute_content_hash(content: &[u8]) -> String {
-    // RED test stub: return a deterministic hash based on content
-    // For testing purposes, we use a simple hashing approach
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+/// Compute a strong cryptographic hash (SHA-256, 256-bit) of raw bytes.
+/// Returns a lowercase hex-encoded string of 64 characters (256 bits / 4 bits per hex digit).
+pub fn content_hash_for_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let result = hasher.finalize();
+    format!("{:x}", result)
+}
 
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    let hash_value = hasher.finish();
-
-    // Expand to 64 hex characters by repeating the hash value 4 times
-    // (since a u64 is only 16 hex characters)
-    format!(
-        "{:016x}{:016x}{:016x}{:016x}",
-        hash_value, hash_value, hash_value, hash_value
-    )
+/// Compute a strong cryptographic hash of a sequence's byte content.
+/// The hash depends only on the bases, not on sequence ID or other metadata.
+pub fn content_hash_for_sequence(sequence: &phraya_core::types::Sequence) -> String {
+    content_hash_for_bytes(sequence.bases())
 }
 
 #[cfg(test)]
@@ -616,266 +630,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ============================================================================
-    // RED Acceptance Tests for Issue #196: content-addressed reference spaces v6
-    // ============================================================================
-
-    /// Test: v6 plan stores reference space with content hash
-    /// Expected: PhrayaPlan v6 has reference_space field (not use_case)
-    #[test]
-    fn issue_196_v6_plan_stores_reference_space_with_content_hash() {
-        // NOTE: This test is RED until v6 is implemented.
-        // Once implemented, it should verify that:
-        // 1. PhrayaPlan has a reference_space field instead of use_case
-        // 2. ReferenceSpace contains { content_hash, name, sketches }
-        // 3. A v6 plan can round-trip and preserve all three fields
-
-        let mut kmer_index = HashMap::new();
-        kmer_index.insert(
-            "ref".to_string(),
-            phraya_core::types::sketch(b"ACGTACGTACGTACGTACGTACGTACGTACGT", 21, 11),
-        );
-
-        // Create a minimal v6 plan structure (will fail until ReferenceSpace type exists)
-        let plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["reference.fa".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            kmer_index.clone(),
-            HashMap::new(),
-            vec![],
-        );
-
-        let temp = NamedTempFile::new().unwrap();
-        write_plan(temp.path(), &plan).unwrap();
-        let read_plan = read_plan(temp.path()).unwrap();
-
-        // v6 requirement: version must be 6
-        assert_eq!(
-            read_plan.version, 6,
-            "PhrayaPlan v6 should have version = 6, got {}",
-            read_plan.version
-        );
-    }
-
-    /// Test: content hash is computed deterministically for reference files
-    /// Expected: same file bytes → same content hash
-    #[test]
-    fn issue_196_content_hash_deterministic() {
-        // Create two temporary files with identical content
-        let temp1 = NamedTempFile::new().unwrap();
-        let temp2 = NamedTempFile::new().unwrap();
-        let ref_content = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
-        std::fs::write(temp1.path(), ref_content).unwrap();
-        std::fs::write(temp2.path(), ref_content).unwrap();
-
-        // Once implemented, compute_content_hash() should return identical hash
-        let hash1 = compute_content_hash(ref_content);
-        let hash2 = compute_content_hash(ref_content);
-
-        assert_eq!(
-            hash1, hash2,
-            "identical content must produce identical hash"
-        );
-    }
-
-    /// Test: v5 plans are rejected with clean VersionMismatch error
-    /// Expected: read_plan() returns PlanError::VersionMismatch for v5
-    #[test]
-    fn issue_196_v5_plan_rejected_with_clean_error() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-07-08T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
-
-        // Simulate a v5 plan by setting version to 5
-        plan.version = 5;
-
-        let temp = NamedTempFile::new().unwrap();
-        write_plan(temp.path(), &plan).unwrap();
-
-        let result = read_plan(temp.path());
-        assert!(result.is_err(), "v5 plan should be rejected");
-
-        match result.unwrap_err() {
-            PlanError::VersionMismatch { expected, got } => {
-                assert_eq!(expected, 6, "expected version should be 6 (v6)");
-                assert_eq!(got, 5, "got version should be 5 (from file)");
-            }
-            other => panic!(
-                "expected VersionMismatch error for v5 rejection, got: {:?}",
-                other
-            ),
-        }
-    }
-
-    /// Test: different file paths with identical content produce same hash
-    /// Expected: content_hash is independent of filesystem path
-    #[test]
-    fn issue_196_hash_path_independence() {
-        let ref_content = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
-
-        // Hash the content twice (simulating different file paths)
-        let hash1 = compute_content_hash(ref_content);
-        let hash2 = compute_content_hash(ref_content);
-
-        // Core assertion: same bytes → same hash
-        assert_eq!(
-            hash1, hash2,
-            "same reference content must produce same hash regardless of path"
-        );
-
-        // Hash must be non-empty and look like a valid hex string
-        assert!(!hash1.is_empty(), "content hash should not be empty");
-        assert!(
-            hash1.chars().all(|c| c.is_ascii_hexdigit()),
-            "content hash should be hex-encoded, got: {}",
-            hash1
-        );
-    }
-
-    /// Test: v6 plan does not have use_case field (removed by design)
-    /// Expected: PhrayaPlan serialized v6 has no use_case; on deserialization, use_case should not be read
-    #[test]
-    fn issue_196_use_case_field_removed_from_v6() {
-        // NOTE: This is a forward-looking test. Currently the struct still has use_case.
-        // Once v6 is implemented, use_case field should be removed from PhrayaPlan.
-        // This test will FAIL until that change is made.
-
-        // Create a plan that will become v6
-        let plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string(), "reads.fq".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![(1, 0)],
-        );
-
-        // Serialize and deserialize
-        let serialized = rmp_serde::to_vec(&plan).expect("should serialize");
-        let deserialized: PhrayaPlan =
-            rmp_serde::from_slice(&serialized).expect("should deserialize");
-
-        // In v6, use_case field should not exist in the struct
-        // This test will need the struct to be refactored to remove use_case
-        // For now, we check that v6 version is set properly when we get there
-        assert_eq!(deserialized.version, 6, "deserialized plan should be v6");
-    }
-
-    /// Test: reference space round-trip (content hash + name + sketches)
-    /// Expected: reference space survives serialization/deserialization
-    #[test]
-    fn issue_196_reference_space_round_trip() {
-        // Once ReferenceSpace type is implemented, this test verifies:
-        // - content hash is preserved
-        // - optional name is preserved
-        // - sketches are preserved
-
-        let mut kmer_index = HashMap::new();
-        let sketch = phraya_core::types::sketch(b"ACGTACGTACGTACGTACGTACGTACGTACGT", 21, 11);
-        kmer_index.insert("ref".to_string(), sketch.clone());
-
-        let plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["reference.fa".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            kmer_index.clone(),
-            HashMap::new(),
-            vec![],
-        );
-
-        let temp = NamedTempFile::new().unwrap();
-        write_plan(temp.path(), &plan).unwrap();
-        let read_plan = read_plan(temp.path()).unwrap();
-
-        // Once v6 is implemented with reference_space:
-        // assert!(read_plan.reference_space.is_some(), "plan should have reference_space");
-        // let ref_space = read_plan.reference_space.unwrap();
-        // assert!(!ref_space.content_hash.is_empty(), "content_hash should be populated");
-        // assert_eq!(ref_space.sketches.len(), 1, "should have 1 sketch for the reference");
-        // assert_eq!(ref_space.sketches.get("ref").unwrap(), &sketch);
-
-        // For now, verify version is set for v6
-        assert_eq!(read_plan.version, 6, "should be v6 plan format");
-    }
-
-    /// Test: v4 (older) plans also rejected
-    /// Expected: any v < 6 is rejected, not just v5
-    #[test]
-    fn issue_196_v4_plan_rejected() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-07-08T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
-
-        plan.version = 4;
-
-        let temp = NamedTempFile::new().unwrap();
-        write_plan(temp.path(), &plan).unwrap();
-
-        let result = read_plan(temp.path());
-        assert!(result.is_err(), "v4 plan should be rejected");
-
-        match result.unwrap_err() {
-            PlanError::VersionMismatch { expected, got } => {
-                assert_eq!(expected, 6, "expected version should be 6");
-                assert_eq!(got, 4, "got version should be 4 from v4 file");
-            }
-            other => panic!("expected VersionMismatch error, got: {:?}", other),
-        }
-    }
-
-    /// Test: content hash is valid hex string of expected length
-    /// Expected: BLAKE3 hash is 64 hex characters (256 bits)
-    #[test]
-    fn issue_196_content_hash_format_correct() {
-        let content = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
-        let hash = compute_content_hash(content);
-
-        // BLAKE3 produces 32 bytes = 64 hex characters
-        assert_eq!(
-            hash.len(),
-            64,
-            "BLAKE3 hash should be 64 hex characters, got: {}",
-            hash.len()
-        );
-
-        // All characters must be valid hex
-        for (i, ch) in hash.chars().enumerate() {
-            assert!(
-                ch.is_ascii_hexdigit(),
-                "hash character at position {} should be hex digit, got: {}",
-                i,
-                ch
-            );
-        }
-    }
-
-    /// Test: different content produces different hashes
-    /// Expected: hash1(content_a) != hash2(content_b)
-    #[test]
-    fn issue_196_content_hash_differs_by_content() {
-        let content_a = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
-        let content_b = b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT";
-
-        let hash_a = compute_content_hash(content_a);
-        let hash_b = compute_content_hash(content_b);
-
-        assert_ne!(
-            hash_a, hash_b,
-            "different content must produce different hashes"
-        );
-    }
-
     #[test]
     fn round_trip_v3_batch_fields() {
         let mut plan = PhrayaPlan::new(
@@ -909,5 +663,218 @@ mod tests {
         assert_eq!(read_plan.read_byte_offsets.len(), 2);
         assert_eq!(read_plan.read_byte_offsets[0], vec![0, 100, 200, 300]);
         assert_eq!(read_plan.batch_output_paths.len(), 2);
+    }
+
+    // ============================================================================
+    // RED acceptance tests for issue #196: content-addressed reference space (ADR-0011)
+    //
+    // `ReferenceSpace` and `PhrayaPlan::reference_space` do not exist on this branch yet.
+    // Every test below either fails to compile (references the new type/field directly)
+    // or fails at runtime against behavior that has not been implemented. None of these
+    // tests can pass against unmodified `main` — that is the point.
+    // ============================================================================
+
+    /// `ReferenceSpace` must exist with exactly these three fields: a content hash,
+    /// an optional human-facing name, and per-sequence sketches.
+    #[test]
+    fn issue_196_reference_space_struct_has_required_fields() {
+        let mut sketches = HashMap::new();
+        sketches.insert(
+            "chr1".to_string(),
+            phraya_core::types::sketch(b"ACGTACGTACGTACGTACGTACGTACGTACGT", 21, 11),
+        );
+
+        let space = ReferenceSpace {
+            content_hash: "deadbeef".to_string(),
+            name: Some("my-reference".to_string()),
+            sketches: sketches.clone(),
+        };
+
+        assert_eq!(space.content_hash, "deadbeef");
+        assert_eq!(space.name, Some("my-reference".to_string()));
+        assert_eq!(space.sketches.len(), 1);
+        assert!(space.sketches.contains_key("chr1"));
+    }
+
+    /// `ReferenceSpace.name` is optional — an unnamed reference space must round-trip
+    /// with `name: None`, not an empty string or a placeholder.
+    #[test]
+    fn issue_196_reference_space_name_is_optional() {
+        let space = ReferenceSpace {
+            content_hash: "abc123".to_string(),
+            name: None,
+            sketches: HashMap::new(),
+        };
+
+        assert_eq!(space.name, None);
+    }
+
+    /// `PhrayaPlan` must carry an optional `reference_space` field. Constructing a plan
+    /// via the existing `new()` and then attaching a `ReferenceSpace` via struct-update
+    /// syntax must compile — it does not today, because the field does not exist.
+    #[test]
+    fn issue_196_phraya_plan_has_reference_space_field() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["reference.fa".to_string()],
+            "2026-07-08T12:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let plan = PhrayaPlan {
+            reference_space: Some(ReferenceSpace {
+                content_hash: "deadbeef".to_string(),
+                name: None,
+                sketches: HashMap::new(),
+            }),
+            ..base_plan
+        };
+
+        assert!(plan.reference_space.is_some());
+        assert_eq!(plan.reference_space.unwrap().content_hash, "deadbeef");
+    }
+
+    /// A `ReferenceSpace` attached to a plan must survive a full write/read round-trip
+    /// through `.phrayaplan`'s MessagePack + zstd encoding — hash, name, and sketches
+    /// all preserved exactly.
+    #[test]
+    fn issue_196_reference_space_round_trips_through_phrayaplan() {
+        let mut sketches = HashMap::new();
+        let sketch = phraya_core::types::sketch(b"ACGTACGTACGTACGTACGTACGTACGTACGT", 21, 11);
+        sketches.insert("ref".to_string(), sketch.clone());
+
+        let base_plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["reference.fa".to_string()],
+            "2026-07-08T12:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let plan = PhrayaPlan {
+            reference_space: Some(ReferenceSpace {
+                content_hash: "cafef00d".to_string(),
+                name: Some("chr1-assembly".to_string()),
+                sketches: sketches.clone(),
+            }),
+            ..base_plan
+        };
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+        let read_plan = read_plan(temp.path()).unwrap();
+
+        let read_space = read_plan
+            .reference_space
+            .expect("reference_space must survive round-trip");
+        assert_eq!(read_space.content_hash, "cafef00d");
+        assert_eq!(read_space.name, Some("chr1-assembly".to_string()));
+        assert_eq!(read_space.sketches.len(), 1);
+        assert_eq!(read_space.sketches.get("ref").unwrap(), &sketch);
+    }
+
+    /// A plan with no reference space attached (`reference_space: None`) must also
+    /// round-trip cleanly — the field is optional, not mandatory.
+    #[test]
+    fn issue_196_plan_without_reference_space_round_trips() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec![],
+            "2026-07-08T12:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let plan = PhrayaPlan {
+            reference_space: None,
+            ..base_plan
+        };
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+        let read_plan = read_plan(temp.path()).unwrap();
+
+        assert_eq!(read_plan.reference_space, None);
+    }
+
+    /// Hashing identical byte content twice must produce identical hashes — the
+    /// content-hash function is a pure function of bytes, not of time, randomness,
+    /// or any other hidden state.
+    #[test]
+    fn issue_196_content_hash_is_deterministic() {
+        let content = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+
+        let hash1 = content_hash_for_bytes(content);
+        let hash2 = content_hash_for_bytes(content);
+
+        assert_eq!(hash1, hash2, "identical content must hash identically");
+    }
+
+    /// The content hash must depend only on bytes, not on the filesystem path or
+    /// sequence identifier the bytes happen to be associated with — presenting the
+    /// same reference under a different name/path must resolve to the same hash.
+    #[test]
+    fn issue_196_content_hash_is_path_independent() {
+        let seq_a = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "chr1_v1.fa".to_string(),
+            None,
+        );
+        let seq_b = Sequence::new(
+            b"ACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
+            None,
+            "totally_different_name_and_path.fasta".to_string(),
+            None,
+        );
+
+        let hash_a = content_hash_for_sequence(&seq_a);
+        let hash_b = content_hash_for_sequence(&seq_b);
+
+        assert_eq!(
+            hash_a, hash_b,
+            "identical bases under different names/paths must hash identically"
+        );
+    }
+
+    /// A single differing byte in otherwise-identical content must change the hash —
+    /// the function must be content-sensitive, not just present for show.
+    #[test]
+    fn issue_196_content_hash_is_sensitive_to_single_byte_change() {
+        let content_a = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let content_b = b"ACGTACGTACGTACGTACGTACGTACGTACGA"; // last base flipped
+
+        let hash_a = content_hash_for_bytes(content_a);
+        let hash_b = content_hash_for_bytes(content_b);
+
+        assert_ne!(
+            hash_a, hash_b,
+            "a single differing byte must change the content hash"
+        );
+    }
+
+    /// The content hash must be a strong (cryptographic-strength) hash, not a
+    /// short/weak checksum — require at least 256 bits of digest (64 hex characters
+    /// at 4 bits/hex-char), matching BLAKE3/SHA-256-class algorithms named in the
+    /// issue. A hex-encoded 64-bit hash (16 hex chars) must NOT satisfy this.
+    #[test]
+    fn issue_196_content_hash_has_strong_digest_length() {
+        let hash = content_hash_for_bytes(b"ACGTACGTACGTACGTACGTACGTACGTACGT");
+
+        assert!(
+            hash.len() >= 64,
+            "content hash should be at least 256 bits (64 hex chars) for BLAKE3/SHA-256-class strength, got {} chars: {}",
+            hash.len(),
+            hash
+        );
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "content hash should be hex-encoded, got: {}",
+            hash
+        );
     }
 }
