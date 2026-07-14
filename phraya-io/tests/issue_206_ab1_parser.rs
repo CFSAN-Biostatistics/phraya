@@ -1,4 +1,3 @@
-use phraya_core::types::ParseError;
 /// Issue #206: feat(io): parse Sanger AB1/ABIF trace input
 ///
 /// This test file contains RED (failing) acceptance tests for issue #206.
@@ -11,7 +10,9 @@ use phraya_core::types::ParseError;
 /// 3. No non-Rust dependency (pure-Rust ABIF parser)
 /// 4. Extracts basecalls from PBAS tag and qualities from PCON tag
 /// 5. Test against a small sample AB1
+
 use phraya_io::SequenceParser;
+use phraya_core::types::ParseError;
 use std::io::Write;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
@@ -44,12 +45,7 @@ fn create_minimal_ab1_single_sequence() -> (NamedTempFile, PathBuf) {
     let ab1_path = tmp.path().with_extension("ab1");
 
     // Write minimal valid AB1 file
-    write_minimal_ab1(
-        &ab1_path,
-        "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC",
-        Some("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"),
-    )
-    .unwrap();
+    write_minimal_ab1(&ab1_path, "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC", Some("IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII")).unwrap();
 
     (tmp, ab1_path)
 }
@@ -59,12 +55,7 @@ fn create_ab1_with_quality() -> (NamedTempFile, PathBuf) {
     let tmp = NamedTempFile::new().unwrap();
     let ab1_path = tmp.path().with_extension("ab1");
 
-    write_minimal_ab1(
-        &ab1_path,
-        "ACGTACGTACGTACGTACGTACGTACGT",
-        Some("HHHHHHHHHHHHHHHHHHHHHHHHHHHH"),
-    )
-    .unwrap();
+    write_minimal_ab1(&ab1_path, "ACGTACGTACGTACGTACGTACGTACGT", Some("HHHHHHHHHHHHHHHHHHHHHHHHHHHH")).unwrap();
 
     (tmp, ab1_path)
 }
@@ -202,20 +193,9 @@ fn parse_ab1_with_bases_and_quality() {
     assert!(seq.is_ok(), "should parse sequence without error");
 
     let seq = seq.unwrap();
-    assert_eq!(
-        seq.bases(),
-        b"ACGTACGTACGTACGTACGTACGTACGT",
-        "should extract bases from PBAS tag"
-    );
-    assert!(
-        seq.quality_scores().is_some(),
-        "should have quality scores from PCON tag"
-    );
-    assert_eq!(
-        seq.quality_scores().unwrap(),
-        b"HHHHHHHHHHHHHHHHHHHHHHHHHHHH",
-        "quality should match PCON tag"
-    );
+    assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGTACGT", "should extract bases from PBAS tag");
+    assert!(seq.quality_scores().is_some(), "should have quality scores from PCON tag");
+    assert_eq!(seq.quality_scores().unwrap(), b"HHHHHHHHHHHHHHHHHHHHHHHHHHHH", "quality should match PCON tag");
 }
 
 /// Parse AB1 with bases but no quality tag (PCON missing)
@@ -232,21 +212,11 @@ fn parse_ab1_no_quality_tolerates_missing_pcon() {
     assert!(seq_result.is_some(), "should yield at least one sequence");
 
     let seq = seq_result.unwrap();
-    assert!(
-        seq.is_ok(),
-        "should parse successfully even without PCON tag"
-    );
+    assert!(seq.is_ok(), "should parse successfully even without PCON tag");
 
     let seq = seq.unwrap();
-    assert_eq!(
-        seq.bases(),
-        b"ACGTACGTACGTACGTACGTACGT",
-        "should extract bases from PBAS tag"
-    );
-    assert!(
-        seq.quality_scores().is_none(),
-        "should have no quality when PCON tag absent"
-    );
+    assert_eq!(seq.bases(), b"ACGTACGTACGTACGTACGTACGT", "should extract bases from PBAS tag");
+    assert!(seq.quality_scores().is_none(), "should have no quality when PCON tag absent");
 }
 
 /// Parse minimal AB1 with single sequence
@@ -283,10 +253,7 @@ fn parse_corrupt_ab1_missing_pbas_returns_error() {
             );
         } else if let Some(Ok(seq)) = seq_result {
             // Empty bases should also be considered an error
-            assert!(
-                seq.bases().is_empty(),
-                "if parsed, should have empty bases as fallback"
-            );
+            assert!(seq.bases().is_empty(), "if parsed, should have empty bases as fallback");
         }
     }
 }
@@ -307,8 +274,7 @@ fn parse_invalid_ab1_magic_returns_error() {
         // Error message should hint at invalid format
         assert!(
             msg.contains("AB1") || msg.contains("magic") || msg.contains("invalid"),
-            "error message should indicate AB1 format issue: {}",
-            msg
+            "error message should indicate AB1 format issue: {}", msg
         );
     }
 }

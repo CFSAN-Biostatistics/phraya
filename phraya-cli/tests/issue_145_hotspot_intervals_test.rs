@@ -1,7 +1,6 @@
 /// RED integration tests for issue #145 — hotspot_intervals field in PhrayaPlan.
-use phraya_core::types::{
-    compute_kmer_uniqueness, detect_hotspot_intervals, sketch_sequence_default, Sequence,
-};
+
+use phraya_core::types::{compute_kmer_uniqueness, detect_hotspot_intervals, sketch_sequence_default, Sequence};
 use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase, PHRAYAPLAN_VERSION};
 use std::collections::HashMap;
 use tempfile::NamedTempFile;

@@ -14,6 +14,7 @@
 /// totaling 16s+ across 54 subprocess invocations → test timeout.
 ///
 /// Fix: Contigs 2-5 should be ~5% mutated copies of contig1, so alignments are fast.
+
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -38,9 +39,7 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
     (0..len)
         .map(|_| {
-            x = x
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             b"ACGT"[((x >> 33) & 3) as usize]
         })
         .collect()
@@ -58,16 +57,18 @@ fn mutate_sequence(base: &[u8], mutation_rate: f64, seed: u64) -> Vec<u8> {
     let mut result = base.to_vec();
     for i in 0..result.len() {
         // Generate a pseudo-random number in [0, 1)
-        x = x
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         let rand_bits = (x >> 32) as u32;
         let rand_01 = rand_bits as f64 / (u32::MAX as f64 + 1.0);
 
         if rand_01 < mutation_rate {
             // Mutate this position: pick a different base
             let current = result[i];
-            let candidates: Vec<u8> = b"ACGT".iter().filter(|&&b| b != current).copied().collect();
+            let candidates: Vec<u8> = b"ACGT"
+                .iter()
+                .filter(|&&b| b != current)
+                .copied()
+                .collect();
             if !candidates.is_empty() {
                 let idx = ((x >> 40) as usize) % candidates.len();
                 result[i] = candidates[idx];
@@ -82,7 +83,11 @@ fn divergence_fraction(seq1: &[u8], seq2: &[u8]) -> f64 {
     if seq1.len() != seq2.len() {
         panic!("sequences must have equal length for divergence measurement");
     }
-    let mismatches = seq1.iter().zip(seq2.iter()).filter(|(a, b)| a != b).count();
+    let mismatches = seq1
+        .iter()
+        .zip(seq2.iter())
+        .filter(|(a, b)| a != b)
+        .count();
     mismatches as f64 / seq1.len() as f64
 }
 
@@ -95,21 +100,13 @@ fn issue_210_divergence_measurement_works() {
     let seq1 = b"ACGTACGT";
     let seq2 = b"ACGTACGT";
     let div = divergence_fraction(seq1, seq2);
-    assert_eq!(
-        div, 0.0,
-        "identical sequences should have 0% divergence, got {}",
-        div
-    );
+    assert_eq!(div, 0.0, "identical sequences should have 0% divergence, got {}", div);
 
     // Two sequences differing in 1/8 bases → 12.5% divergence
     let seq1 = b"ACGTACGT";
     let seq2 = b"AGGTACGT"; // C→G at position 1
     let div = divergence_fraction(seq1, seq2);
-    assert!(
-        (div - 0.125).abs() < 0.001,
-        "one mismatch in 8 bases = 12.5%, got {}",
-        div
-    );
+    assert!((div - 0.125).abs() < 0.001, "one mismatch in 8 bases = 12.5%, got {}", div);
 }
 
 // ── Test 2: Original fixture (independent seeds) produces ~75% divergence ────
@@ -213,23 +210,18 @@ fn issue_210_high_divergence_alignment_is_slow() {
     std::fs::write(
         &ref_path,
         format!(">ref\n{}\n", String::from_utf8(ref_seq.clone()).unwrap()),
-    )
-    .unwrap();
+    ).unwrap();
     std::fs::write(
         &query_path,
         format!(">query\n{}\n", String::from_utf8(query_seq).unwrap()),
-    )
-    .unwrap();
+    ).unwrap();
 
     let plan_path = dir.path().join("plan.phrayaplan");
     phraya(&[
         "plan",
-        "--inputs",
-        query_path.to_str().unwrap(),
-        "--reference",
-        ref_path.to_str().unwrap(),
-        "--output",
-        plan_path.to_str().unwrap(),
+        "--inputs", query_path.to_str().unwrap(),
+        "--reference", ref_path.to_str().unwrap(),
+        "--output", plan_path.to_str().unwrap(),
     ]);
 
     let output = dir.path().join("align.phraya");
@@ -239,8 +231,7 @@ fn issue_210_high_divergence_alignment_is_slow() {
         plan_path.to_str().unwrap(),
         "query",
         "ref",
-        "--output",
-        output.to_str().unwrap(),
+        "--output", output.to_str().unwrap(),
     ]);
     let elapsed = start.elapsed();
 
@@ -248,8 +239,5 @@ fn issue_210_high_divergence_alignment_is_slow() {
 
     // Document that high-divergence alignments are slow (order of magnitude ~100ms+)
     // This test merely documents the problem; the implementation fix will make this fast.
-    eprintln!(
-        "High-divergence (75%) 1kb alignment: {:.2}s",
-        elapsed.as_secs_f64()
-    );
+    eprintln!("High-divergence (75%) 1kb alignment: {:.2}s", elapsed.as_secs_f64());
 }

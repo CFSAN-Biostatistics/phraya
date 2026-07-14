@@ -376,9 +376,7 @@ fn issue_176_myers_fitting_edit_distance_matches_wfa_sweep() {
     // Small deterministic LCG — no external rng dependency.
     let mut state: u64 = 0x9E3779B97F4A7C15;
     let mut next = || {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         (state >> 33) as u32
     };
     let bases = [b'A', b'C', b'G', b'T'];
@@ -387,18 +385,14 @@ fn issue_176_myers_fitting_edit_distance_matches_wfa_sweep() {
     for query_len in [60usize, 120, 200, 350] {
         for trial in 0..80 {
             // Random query.
-            let query: Vec<u8> = (0..query_len)
-                .map(|_| bases[(next() % 4) as usize])
-                .collect();
+            let query: Vec<u8> = (0..query_len).map(|_| bases[(next() % 4) as usize]).collect();
 
             // Build a target whose first region derives from the query (with a few SNPs and
             // maybe a small indel), followed by an unrelated reference tail to ~2× length.
             let mut region = query.clone();
             let num_snps = (next() % 5) as usize; // 0..4 substitutions
             for _ in 0..num_snps {
-                if region.is_empty() {
-                    break;
-                }
+                if region.is_empty() { break; }
                 let p = (next() as usize) % region.len();
                 region[p] = bases[(next() % 4) as usize];
             }
@@ -420,16 +414,11 @@ fn issue_176_myers_fitting_edit_distance_matches_wfa_sweep() {
 
             // Unrelated reference tail so target ≈ 2× query (exercises the fitting path).
             let tail_len = query_len + query_len / 2 + 20;
-            let tail: Vec<u8> = (0..tail_len)
-                .map(|_| bases[(next() % 4) as usize])
-                .collect();
+            let tail: Vec<u8> = (0..tail_len).map(|_| bases[(next() % 4) as usize]).collect();
             let mut target = region;
             target.extend_from_slice(&tail);
 
-            let seed = SeedAnchor {
-                query_pos: 0,
-                target_pos: 0,
-            };
+            let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
             let myers = phraya_align::myers_extend(&query, &target, seed.clone())
                 .expect("myers_extend should succeed");
             let wfa = wfa_extend(&query, &target, seed).expect("wfa_extend should succeed");

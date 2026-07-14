@@ -530,11 +530,11 @@ pub fn align_read(
     // - Fast/Balanced: use w=11 subset to maintain byte-identity with pre-#182
     // - Sensitive: use full dense set for better recall in variant-dense regions
     //
-    // Issue #200: For reads, prefer stored sketches keyed by content hash over recomputation.
-    // Content hash is stable across pipeline stages (unlike sequence ID).
-    // Issue #200: Track whether we used a stored read sketch (by content hash).
-    // If we did use a stored one and it's empty, and both orientations find zero seeds,
-    // that's a sign the read shouldn't be placed (the stored sketch was intentional, e.g., poisoned).
+    // Issue #200: prefer a stored read sketch (keyed by content hash, stable across
+    // pipeline stages unlike sequence ID) over recomputing one. `used_stored_sketch`
+    // tracks whether the forward sketch came from the plan's cache, so an empty cached
+    // sketch (a caller intentionally supplied no minimizers for this read) can be
+    // distinguished below from a sketch that's merely too short to seed anything.
     let (fwd_sketch, used_stored_sketch) = {
         let hash = read_content_hash(query.bases());
         if let Some(stored) = plan.get_read_sketch(hash) {
@@ -550,8 +550,8 @@ pub fn align_read(
     // Compute reverse complement bytes for potential use below.
     let rc_bases = reverse_complement(query.bases());
 
-    // If the forward sketch itself is empty (e.g., due to a poisoned/empty sketch from issue #200),
-    // and that caused zero seeds, skip the expensive reverse orientation entirely.
+    // If the forward sketch itself is empty and that caused zero seeds, skip the
+    // expensive reverse orientation entirely.
     // Canonical minimizers are strand-invariant, so if the forward has no match due to an empty
     // sketch, the reverse is very unlikely to match either.
     let (rev_seeds, rev_chains) = if fwd_seeds == 0 && fwd_sketch.minimizers.is_empty() {
@@ -576,10 +576,10 @@ pub fn align_read(
     // a seeding loss from an extension/divergence loss when classifying an unplaced read.
     let had_seeds = fwd_seeds > 0 || rev_seeds > 0;
 
-    // Issue #200: If we used a stored read sketch (by content hash) and it's empty, and both
-    // orientations found zero seeds, the read has no genuine seeding evidence and should not
-    // be aligned. The stored sketch was intentional (e.g., deliberately poisoned for testing),
-    // not just an artifact of short sequences.
+    // Issue #200: an empty *stored* read sketch is a deliberate signal from the caller
+    // that this read has no minimizers to seed with (as opposed to a short/degenerate
+    // read that merely recomputed to an empty sketch) — treat it as unplaceable rather
+    // than falling through to the (0,0) anchor's fallback alignment.
     if used_stored_sketch && fwd_sketch.minimizers.is_empty() && !had_seeds {
         record(Outcome::NoSeed);
         return None;

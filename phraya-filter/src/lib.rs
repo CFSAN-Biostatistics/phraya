@@ -159,10 +159,7 @@ impl ThresholdFilter {
         self
     }
 
-    pub fn with_insert_distribution(
-        mut self,
-        dist: phraya_io::plan::InsertSizeDistribution,
-    ) -> Self {
+    pub fn with_insert_distribution(mut self, dist: phraya_io::plan::InsertSizeDistribution) -> Self {
         self.insert_distribution = Some(dist);
         self
     }
@@ -260,11 +257,8 @@ impl ThresholdFilter {
         // Filter 2: Exclude discordant pairs — uses mean_insert_size (merge-stable) compared
         // against the plan's insert-size distribution at the configured sigma threshold.
         if self.exclude_discordant_pairs {
-            if let (Some(mean_ins), Some(ref dist)) =
-                (obs.mean_insert_size(), &self.insert_distribution)
-            {
-                let threshold =
-                    dist.mean as f64 + self.discordant_sigma_threshold * dist.std_dev as f64;
+            if let (Some(mean_ins), Some(ref dist)) = (obs.mean_insert_size(), &self.insert_distribution) {
+                let threshold = dist.mean as f64 + self.discordant_sigma_threshold * dist.std_dev as f64;
                 if mean_ins > threshold {
                     return false;
                 }
@@ -314,8 +308,8 @@ impl ThresholdFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phraya_io;
     use std::collections::HashMap;
+    use phraya_io;
 
     fn create_observation(
         position: u32,
@@ -640,9 +634,7 @@ mod tests {
     fn require_both_mates_mapped_false_ignores_missing_mate_info() {
         let obs = create_observation(100, 60, 10, 35.0);
 
-        let filter = FilterBuilder::new()
-            .require_both_mates_mapped(false)
-            .build();
+        let filter = FilterBuilder::new().require_both_mates_mapped(false).build();
         assert!(filter.apply(&obs));
     }
 
@@ -704,23 +696,11 @@ mod tests {
         alleles.insert(b'T', 5u32); // 5/100 = 5% alt freq — below 10%
         alleles.insert(b'A', 95u32);
         let low_quality = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.5,
-            "10M".to_string(),
-            25,
-            1,
-            vec![100],
-            30.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.5, "10M".to_string(), 25, 1, vec![100], 30.0, "s:r".to_string(),
         );
 
         let filter = FilterPreset::Strict.builder().build();
-        assert!(
-            !filter.apply(&low_quality),
-            "strict must reject low-quality obs"
-        );
+        assert!(!filter.apply(&low_quality), "strict must reject low-quality obs");
     }
 
     #[test]
@@ -729,23 +709,11 @@ mod tests {
         alleles.insert(b'T', 20u32); // 20/100 = 20% alt freq — above 10%
         alleles.insert(b'A', 80u32);
         let high_quality = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.95,
-            "10M".to_string(),
-            40,
-            0,
-            vec![100],
-            35.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![100], 35.0, "s:r".to_string(),
         );
 
         let filter = FilterPreset::Strict.builder().build();
-        assert!(
-            filter.apply(&high_quality),
-            "strict must pass high-quality obs"
-        );
+        assert!(filter.apply(&high_quality), "strict must pass high-quality obs");
     }
 
     #[test]
@@ -755,23 +723,11 @@ mod tests {
         alleles.insert(b'T', 3u32);
         alleles.insert(b'A', 97u32); // 3% alt freq
         let obs = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.9,
-            "10M".to_string(),
-            20,
-            1,
-            vec![3],
-            30.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.9, "10M".to_string(), 20, 1, vec![3], 30.0, "s:r".to_string(),
         );
 
         let filter = FilterPreset::Tolerant.builder().build();
-        assert!(
-            filter.apply(&obs),
-            "tolerant must pass low-coverage variants"
-        );
+        assert!(filter.apply(&obs), "tolerant must pass low-coverage variants");
     }
 
     #[test]
@@ -791,29 +747,14 @@ mod tests {
         alleles.insert(b'A', 8u32);
         // local_coverage[0]=7 → below strict's min_coverage=10, above override of 5
         let obs = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.95,
-            "10M".to_string(),
-            40,
-            0,
-            vec![7],
-            35.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![7], 35.0, "s:r".to_string(),
         );
 
         let default_filter = FilterPreset::Strict.builder().build();
-        assert!(
-            !default_filter.apply(&obs),
-            "local_coverage[0]=7 fails strict default (min=10)"
-        );
+        assert!(!default_filter.apply(&obs), "local_coverage[0]=7 fails strict default (min=10)");
 
         let overridden = FilterPreset::Strict.builder().min_coverage(5).build();
-        assert!(
-            overridden.apply(&obs),
-            "local_coverage[0]=7 passes after override to min_coverage=5"
-        );
+        assert!(overridden.apply(&obs), "local_coverage[0]=7 passes after override to min_coverage=5");
     }
 
     #[test]
@@ -822,24 +763,11 @@ mod tests {
         alleles.insert(b'T', 20u32);
         alleles.insert(b'A', 80u32);
         let obs = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.95,
-            "10M".to_string(),
-            40,
-            0,
-            vec![100],
-            35.0,
-            "s:r".to_string(),
-        )
-        .with_tandem_repeat(true);
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![100], 35.0, "s:r".to_string(),
+        ).with_tandem_repeat(true);
 
         let filter = FilterPreset::Strict.builder().build();
-        assert!(
-            !filter.apply(&obs),
-            "strict must exclude tandem repeat variants"
-        );
+        assert!(!filter.apply(&obs), "strict must exclude tandem repeat variants");
     }
 
     #[test]
@@ -848,24 +776,11 @@ mod tests {
         alleles.insert(b'T', 5u32);
         alleles.insert(b'A', 95u32);
         let obs = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.9,
-            "10M".to_string(),
-            25,
-            0,
-            vec![10],
-            30.0,
-            "s:r".to_string(),
-        )
-        .with_tandem_repeat(true);
+            100, b'A', alleles, 0.9, "10M".to_string(), 25, 0, vec![10], 30.0, "s:r".to_string(),
+        ).with_tandem_repeat(true);
 
         let filter = FilterPreset::Tolerant.builder().build();
-        assert!(
-            filter.apply(&obs),
-            "tolerant must not exclude tandem repeat variants"
-        );
+        assert!(filter.apply(&obs), "tolerant must not exclude tandem repeat variants");
     }
 
     /// Issue #181: strict preset exists and rejects low-quality observations
@@ -876,23 +791,11 @@ mod tests {
         alleles.insert(b'T', 5u32); // 5/100 = 5% alt freq — below 10%
         alleles.insert(b'A', 95u32);
         let low_quality = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.5,
-            "10M".to_string(),
-            25,
-            1,
-            vec![100],
-            30.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.5, "10M".to_string(), 25, 1, vec![100], 30.0, "s:r".to_string(),
         );
 
         let filter = FilterPreset::Strict.builder().build();
-        assert!(
-            !filter.apply(&low_quality),
-            "strict must reject low-quality obs"
-        );
+        assert!(!filter.apply(&low_quality), "strict must reject low-quality obs");
     }
 
     /// Issue #181: strict preset exists and passes high-quality observations
@@ -902,23 +805,11 @@ mod tests {
         alleles.insert(b'T', 20u32); // 20/100 = 20% alt freq — above 10%
         alleles.insert(b'A', 80u32);
         let high_quality = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.95,
-            "10M".to_string(),
-            40,
-            0,
-            vec![100],
-            35.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![100], 35.0, "s:r".to_string(),
         );
 
         let filter = FilterPreset::Strict.builder().build();
-        assert!(
-            filter.apply(&high_quality),
-            "strict must pass high-quality obs"
-        );
+        assert!(filter.apply(&high_quality), "strict must pass high-quality obs");
     }
 
     /// Issue #181: tolerant preset exists and passes low-coverage variants
@@ -929,23 +820,11 @@ mod tests {
         alleles.insert(b'T', 3u32);
         alleles.insert(b'A', 97u32); // 3% alt freq
         let obs = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.9,
-            "10M".to_string(),
-            20,
-            1,
-            vec![3],
-            30.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.9, "10M".to_string(), 20, 1, vec![3], 30.0, "s:r".to_string(),
         );
 
         let filter = FilterPreset::Tolerant.builder().build();
-        assert!(
-            filter.apply(&obs),
-            "tolerant must pass low-coverage variants"
-        );
+        assert!(filter.apply(&obs), "tolerant must pass low-coverage variants");
     }
 
     /// Issue #181: tolerant preset rejects below its thresholds
@@ -964,24 +843,11 @@ mod tests {
         alleles.insert(b'T', 20u32);
         alleles.insert(b'A', 80u32);
         let obs = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.95,
-            "10M".to_string(),
-            40,
-            0,
-            vec![100],
-            35.0,
-            "s:r".to_string(),
-        )
-        .with_tandem_repeat(true);
+            100, b'A', alleles, 0.95, "10M".to_string(), 40, 0, vec![100], 35.0, "s:r".to_string(),
+        ).with_tandem_repeat(true);
 
         let filter = FilterPreset::Strict.builder().build();
-        assert!(
-            !filter.apply(&obs),
-            "strict must exclude tandem repeat variants"
-        );
+        assert!(!filter.apply(&obs), "strict must exclude tandem repeat variants");
     }
 
     /// Issue #181: tolerant does not exclude tandem repeats by default
@@ -991,24 +857,11 @@ mod tests {
         alleles.insert(b'T', 5u32);
         alleles.insert(b'A', 95u32);
         let obs = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.9,
-            "10M".to_string(),
-            25,
-            0,
-            vec![10],
-            30.0,
-            "s:r".to_string(),
-        )
-        .with_tandem_repeat(true);
+            100, b'A', alleles, 0.9, "10M".to_string(), 25, 0, vec![10], 30.0, "s:r".to_string(),
+        ).with_tandem_repeat(true);
 
         let filter = FilterPreset::Tolerant.builder().build();
-        assert!(
-            filter.apply(&obs),
-            "tolerant must not exclude tandem repeat variants"
-        );
+        assert!(filter.apply(&obs), "tolerant must not exclude tandem repeat variants");
     }
 
     /// Issue #181: strict preset threshold values match old conservative
@@ -1019,44 +872,20 @@ mod tests {
         alleles.insert(b'T', 10u32); // 10/100 = 10% alt freq — exactly at threshold
         alleles.insert(b'A', 90u32);
         let obs_at_boundary = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.95,
-            "10M".to_string(),
-            30,
-            0,
-            vec![10],
-            35.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.95, "10M".to_string(), 30, 0, vec![10], 35.0, "s:r".to_string(),
         );
 
         let filter = FilterPreset::Strict.builder().build();
-        assert!(
-            filter.apply(&obs_at_boundary),
-            "strict must pass obs at coverage=10, mapq=30, allele_freq=10%"
-        );
+        assert!(filter.apply(&obs_at_boundary), "strict must pass obs at coverage=10, mapq=30, allele_freq=10%");
 
         // Just below coverage
         let mut alleles2 = HashMap::new();
         alleles2.insert(b'T', 10u32);
         alleles2.insert(b'A', 90u32);
         let obs_below_cov = VariantObservation::new(
-            100,
-            b'A',
-            alleles2,
-            0.95,
-            "10M".to_string(),
-            30,
-            0,
-            vec![9],
-            35.0,
-            "s:r".to_string(),
+            100, b'A', alleles2, 0.95, "10M".to_string(), 30, 0, vec![9], 35.0, "s:r".to_string(),
         );
-        assert!(
-            !filter.apply(&obs_below_cov),
-            "strict must reject coverage<10"
-        );
+        assert!(!filter.apply(&obs_below_cov), "strict must reject coverage<10");
     }
 
     /// Issue #181: tolerant preset threshold values match old sensitive
@@ -1067,44 +896,20 @@ mod tests {
         alleles.insert(b'T', 2u32); // 2/100 = 2% alt freq — exactly at threshold
         alleles.insert(b'A', 98u32);
         let obs_at_boundary = VariantObservation::new(
-            100,
-            b'A',
-            alleles,
-            0.9,
-            "10M".to_string(),
-            20,
-            0,
-            vec![3],
-            30.0,
-            "s:r".to_string(),
+            100, b'A', alleles, 0.9, "10M".to_string(), 20, 0, vec![3], 30.0, "s:r".to_string(),
         );
 
         let filter = FilterPreset::Tolerant.builder().build();
-        assert!(
-            filter.apply(&obs_at_boundary),
-            "tolerant must pass obs at coverage=3, mapq=20, allele_freq=2%"
-        );
+        assert!(filter.apply(&obs_at_boundary), "tolerant must pass obs at coverage=3, mapq=20, allele_freq=2%");
 
         // Just below allele frequency
         let mut alleles2 = HashMap::new();
         alleles2.insert(b'T', 1u32); // 1/100 = 1% alt freq — below 2%
         alleles2.insert(b'A', 99u32);
         let obs_below_freq = VariantObservation::new(
-            100,
-            b'A',
-            alleles2,
-            0.9,
-            "10M".to_string(),
-            20,
-            0,
-            vec![3],
-            30.0,
-            "s:r".to_string(),
+            100, b'A', alleles2, 0.9, "10M".to_string(), 20, 0, vec![3], 30.0, "s:r".to_string(),
         );
-        assert!(
-            !filter.apply(&obs_below_freq),
-            "tolerant must reject allele_freq<2%"
-        );
+        assert!(!filter.apply(&obs_below_freq), "tolerant must reject allele_freq<2%");
     }
 
     /// Issue #181: FilterPreset::Strict and FilterPreset::Tolerant variants exist
@@ -1121,11 +926,7 @@ mod tests {
         }
     }
 
-    fn obs_with_insert_stats(
-        insert_size_sum: i64,
-        insert_size_count: u32,
-        total_paired: u32,
-    ) -> VariantObservation {
+    fn obs_with_insert_stats(insert_size_sum: i64, insert_size_count: u32, total_paired: u32) -> VariantObservation {
         create_observation(100, 60, 10, 35.0)
             .with_pair_counts(total_paired, total_paired) // all properly paired for simplicity
             .with_insert_stats(insert_size_sum, insert_size_count)
@@ -1176,24 +977,15 @@ mod tests {
     fn insert_size_filter_passes_when_no_paired_reads() {
         // No insert data (count=0) → filter is not applicable, pass through
         let obs = obs_with_insert_stats(0, 0, 0);
-        let filter = FilterBuilder::new()
-            .min_insert_size(200)
-            .max_insert_size(500)
-            .build();
-        assert!(
-            filter.apply(&obs),
-            "no paired reads → insert size filter should not apply"
-        );
+        let filter = FilterBuilder::new().min_insert_size(200).max_insert_size(500).build();
+        assert!(filter.apply(&obs), "no paired reads → insert size filter should not apply");
     }
 
     #[test]
     fn insert_size_filter_works_after_merge_with_aggregate_stats() {
         // Two reads merged: inserts 300+500=800, count=2 → mean=400 → passes [300,500]
         let obs = obs_with_insert_stats(800, 2, 2);
-        let filter = FilterBuilder::new()
-            .min_insert_size(300)
-            .max_insert_size(500)
-            .build();
+        let filter = FilterBuilder::new().min_insert_size(300).max_insert_size(500).build();
         assert!(filter.apply(&obs), "mean=400 passes [300,500]");
 
         // Two reads: 50+150=200, count=2 → mean=100 → fails min=300
@@ -1231,10 +1023,7 @@ mod tests {
             .exclude_discordant_pairs(true)
             .with_insert_distribution(test_dist())
             .build();
-        assert!(
-            filter.apply(&obs),
-            "no paired reads → discordant filter should not apply"
-        );
+        assert!(filter.apply(&obs), "no paired reads → discordant filter should not apply");
     }
 
     #[test]
@@ -1242,10 +1031,7 @@ mod tests {
         // No distribution provided → cannot determine discordance → pass
         let obs = obs_with_insert_stats(800, 1, 1);
         let filter = FilterBuilder::new().exclude_discordant_pairs(true).build();
-        assert!(
-            filter.apply(&obs),
-            "no distribution → discordant filter has no effect"
-        );
+        assert!(filter.apply(&obs), "no distribution → discordant filter has no effect");
     }
 
     #[test]
@@ -1277,17 +1063,11 @@ mod tests {
             .exclude_discordant_pairs(true)
             .with_insert_distribution(test_dist())
             .build();
-        assert!(
-            filter.apply(&obs_pass),
-            "mean=520 is within 3σ=550 post-merge"
-        );
+        assert!(filter.apply(&obs_pass), "mean=520 is within 3σ=550 post-merge");
 
         // 2 extreme reads: sum=2000, count=2 → mean=1000 > 550 → reject
         let obs_fail = obs_with_insert_stats(2000, 2, 2);
-        assert!(
-            !filter.apply(&obs_fail),
-            "mean=1000 exceeds 3σ=550 post-merge"
-        );
+        assert!(!filter.apply(&obs_fail), "mean=1000 exceeds 3σ=550 post-merge");
     }
 }
 
@@ -1525,9 +1305,7 @@ impl Parser {
     fn parse_field(&mut self) -> Result<String, ExprParseError> {
         self.skip_whitespace();
         let start = self.pos;
-        while self.pos < self.input.len()
-            && (self.input[self.pos].is_alphanumeric() || self.input[self.pos] == '_')
-        {
+        while self.pos < self.input.len() && (self.input[self.pos].is_alphanumeric() || self.input[self.pos] == '_') {
             self.pos += 1;
         }
         if start == self.pos {
@@ -1537,8 +1315,8 @@ impl Parser {
 
         // Validate field name
         match field.as_str() {
-            "coverage" | "mapq" | "allele_frequency" | "base_quality" | "confidence"
-            | "kmer_uniqueness" | "edit_distance" | "in_tandem_repeat" => Ok(field),
+            "coverage" | "mapq" | "allele_frequency" | "base_quality" | "confidence" |
+            "kmer_uniqueness" | "edit_distance" | "in_tandem_repeat" => Ok(field),
             _ => Err(ExprParseError::UnknownField(field)),
         }
     }
@@ -1569,9 +1347,7 @@ impl Parser {
         let start = self.pos;
 
         // Optional sign
-        if self.pos < self.input.len()
-            && (self.input[self.pos] == '+' || self.input[self.pos] == '-')
-        {
+        if self.pos < self.input.len() && (self.input[self.pos] == '+' || self.input[self.pos] == '-') {
             self.pos += 1;
         }
 
@@ -1593,8 +1369,7 @@ impl Parser {
         }
 
         let num_str: String = self.input[start..self.pos].iter().collect();
-        num_str
-            .parse::<f64>()
+        num_str.parse::<f64>()
             .map_err(|_| ExprParseError::MalformedExpression("invalid number".to_string()))
     }
 
@@ -1678,7 +1453,8 @@ mod expr_filter_tests {
     /// Issue #150: AND operator combines two conditions
     #[test]
     fn issue_150_expr_and_operator() {
-        let filter = ExprFilter::new("mapq > 30 && allele_frequency >= 0.1").expect("valid expr");
+        let filter = ExprFilter::new("mapq > 30 && allele_frequency >= 0.1")
+            .expect("valid expr");
 
         let obs_both_pass = create_obs(100, 40, 20, 35.0, 0.95, 0, false);
         let obs_mapq_fails = create_obs(100, 20, 20, 35.0, 0.95, 0, false);
@@ -1751,12 +1527,8 @@ mod expr_filter_tests {
 
     #[test]
     fn expr_parse_error_display_variants() {
-        assert!(ExprParseError::UnmatchedParen
-            .to_string()
-            .contains("parenthesis"));
-        assert!(ExprParseError::MissingOperand
-            .to_string()
-            .contains("missing operand"));
+        assert!(ExprParseError::UnmatchedParen.to_string().contains("parenthesis"));
+        assert!(ExprParseError::MissingOperand.to_string().contains("missing operand"));
         assert!(ExprParseError::MalformedExpression("bad token".to_string())
             .to_string()
             .contains("bad token"));
@@ -1780,10 +1552,7 @@ mod expr_filter_tests {
     fn expr_trailing_garbage_after_expression_is_malformed() {
         let result = ExprFilter::new("coverage >= 10 extra");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unexpected characters"));
+        assert!(result.unwrap_err().to_string().contains("unexpected characters"));
     }
 
     #[test]
@@ -1796,10 +1565,7 @@ mod expr_filter_tests {
     fn expr_unrecognized_operator_is_malformed() {
         let result = ExprFilter::new("coverage ~ 10");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("comparison operator"));
+        assert!(result.unwrap_err().to_string().contains("comparison operator"));
     }
 
     #[test]
@@ -1872,8 +1638,8 @@ mod expr_filter_tests {
     /// Issue #150: Parentheses work correctly
     #[test]
     fn issue_150_expr_parentheses() {
-        let filter =
-            ExprFilter::new("(coverage >= 10 && mapq > 30) || mapq > 50").expect("valid expr");
+        let filter = ExprFilter::new("(coverage >= 10 && mapq > 30) || mapq > 50")
+            .expect("valid expr");
 
         let obs1 = create_obs(100, 20, 15, 35.0, 0.95, 0, false); // coverage ok, mapq not
         let obs2 = create_obs(100, 60, 5, 35.0, 0.95, 0, false); // high mapq saves it
@@ -1897,7 +1663,10 @@ mod expr_filter_tests {
         let obs_fail = create_obs(100, 60, 10, 25.0, 0.95, 0, false);
 
         assert!(filter.apply(&obs_pass), "base_quality >= 30.0 should pass");
-        assert!(!filter.apply(&obs_fail), "base_quality >= 30.0 should fail");
+        assert!(
+            !filter.apply(&obs_fail),
+            "base_quality >= 30.0 should fail"
+        );
     }
 
     /// Issue #150: confidence field comparison
@@ -1909,7 +1678,10 @@ mod expr_filter_tests {
         let obs_fail = create_obs(100, 60, 10, 35.0, 0.85, 0, false);
 
         assert!(filter.apply(&obs_pass), "confidence >= 0.9 should pass");
-        assert!(!filter.apply(&obs_fail), "confidence >= 0.9 should fail");
+        assert!(
+            !filter.apply(&obs_fail),
+            "confidence >= 0.9 should fail"
+        );
     }
 
     /// Issue #150: edit_distance field comparison
@@ -1920,8 +1692,14 @@ mod expr_filter_tests {
         let obs_pass = create_obs(100, 60, 10, 35.0, 0.95, 3, false);
         let obs_fail = create_obs(100, 60, 10, 35.0, 0.95, 10, false);
 
-        assert!(filter.apply(&obs_pass), "edit_distance <= 5 should pass");
-        assert!(!filter.apply(&obs_fail), "edit_distance <= 5 should fail");
+        assert!(
+            filter.apply(&obs_pass),
+            "edit_distance <= 5 should pass"
+        );
+        assert!(
+            !filter.apply(&obs_fail),
+            "edit_distance <= 5 should fail"
+        );
     }
 
     /// Issue #150: in_tandem_repeat boolean field
@@ -1975,10 +1753,7 @@ mod expr_filter_tests {
             "should pass with coverage & mapq condition"
         );
         assert!(filter.apply(&obs2), "should pass with base_quality");
-        assert!(
-            !filter.apply(&obs3),
-            "should fail when all conditions false"
-        );
+        assert!(!filter.apply(&obs3), "should fail when all conditions false");
     }
 
     /// Issue #150: Filter iterator
@@ -2032,32 +1807,17 @@ mod expr_filter_tests {
             alleles.insert(b'A', 80u32);
             alleles.insert(b'T', 20u32);
             VariantObservation::new(
-                100,
-                b'A',
-                alleles,
-                0.9,
-                "10M".to_string(),
-                60,
-                0,
-                vec![20],
-                35.0,
-                "test:read".to_string(),
-            )
-            .with_kmer_uniqueness(0.2)
+                100, b'A', alleles, 0.9, "10M".to_string(), 60, 0,
+                vec![20], 35.0, "test:read".to_string(),
+            ).with_kmer_uniqueness(0.2)
         };
 
-        let expr_filter = ExprFilter::new("kmer_uniqueness >= 0.5").expect("valid expr");
+        let expr_filter  = ExprFilter::new("kmer_uniqueness >= 0.5").expect("valid expr");
         let thresh_filter = FilterBuilder::new().min_kmer_uniqueness(0.5).build();
 
         // Both filters must agree: 0.2 < 0.5, so reject.
-        assert!(
-            !expr_filter.apply(&low_uniq_obs),
-            "expr filter must reject low kmer_uniqueness"
-        );
-        assert!(
-            !thresh_filter.apply(&low_uniq_obs),
-            "threshold filter must reject low kmer_uniqueness"
-        );
+        assert!(!expr_filter.apply(&low_uniq_obs),  "expr filter must reject low kmer_uniqueness");
+        assert!(!thresh_filter.apply(&low_uniq_obs), "threshold filter must reject low kmer_uniqueness");
 
         // High uniqueness: both must pass.
         let high_uniq_obs = {
@@ -2065,27 +1825,12 @@ mod expr_filter_tests {
             alleles.insert(b'A', 80u32);
             alleles.insert(b'T', 20u32);
             VariantObservation::new(
-                200,
-                b'A',
-                alleles,
-                0.9,
-                "10M".to_string(),
-                60,
-                0,
-                vec![20],
-                35.0,
-                "test:read".to_string(),
-            )
-            .with_kmer_uniqueness(0.8)
+                200, b'A', alleles, 0.9, "10M".to_string(), 60, 0,
+                vec![20], 35.0, "test:read".to_string(),
+            ).with_kmer_uniqueness(0.8)
         };
-        assert!(
-            expr_filter.apply(&high_uniq_obs),
-            "expr filter must pass high kmer_uniqueness"
-        );
-        assert!(
-            thresh_filter.apply(&high_uniq_obs),
-            "threshold filter must pass high kmer_uniqueness"
-        );
+        assert!(expr_filter.apply(&high_uniq_obs),  "expr filter must pass high kmer_uniqueness");
+        assert!(thresh_filter.apply(&high_uniq_obs), "threshold filter must pass high kmer_uniqueness");
     }
 
     /// Issue #150: Inequality operator
@@ -2097,10 +1842,7 @@ mod expr_filter_tests {
         let obs_pass2 = create_obs(100, 20, 10, 35.0, 0.95, 0, false);
         let obs_fail = create_obs(100, 30, 10, 35.0, 0.95, 0, false);
 
-        assert!(
-            filter.apply(&obs_pass1),
-            "mapq != 30 should pass for mapq=60"
-        );
+        assert!(filter.apply(&obs_pass1), "mapq != 30 should pass for mapq=60");
         assert!(
             filter.apply(&obs_pass2),
             "mapq != 30 should pass for mapq=20"

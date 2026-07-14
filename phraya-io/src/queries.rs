@@ -138,19 +138,13 @@ mod tests {
 
         let mut forward = HashMap::new();
         for (i, k) in keys.iter().enumerate() {
-            forward.insert(
-                k.clone(),
-                vec![(i as u32 * 7, 0.99f64), (i as u32 * 7 + 3, 0.96f64)],
-            );
+            forward.insert(k.clone(), vec![(i as u32 * 7, 0.99f64), (i as u32 * 7 + 3, 0.96f64)]);
         }
         let mut reverse = HashMap::new();
         for (i, k) in keys.iter().enumerate().rev() {
             // Same key -> same value, inserted in the opposite order and with the positions
             // provided in the opposite (score) order to also exercise the per-query sort.
-            reverse.insert(
-                k.clone(),
-                vec![(i as u32 * 7 + 3, 0.96f64), (i as u32 * 7, 0.99f64)],
-            );
+            reverse.insert(k.clone(), vec![(i as u32 * 7 + 3, 0.96f64), (i as u32 * 7, 0.99f64)]);
         }
 
         let ta = NamedTempFile::new().unwrap();
@@ -246,11 +240,7 @@ mod tests {
         write_queries(temp.path(), &index).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
-        assert_eq!(
-            read_index.len(),
-            0,
-            "empty and all-sub-threshold reads must be dropped"
-        );
+        assert_eq!(read_index.len(), 0, "empty and all-sub-threshold reads must be dropped");
     }
 
     #[test]
