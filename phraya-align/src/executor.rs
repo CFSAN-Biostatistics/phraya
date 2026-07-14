@@ -7,7 +7,7 @@ use phraya_core::types::{
     VariantObservation,
 };
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
-use phraya_io::plan::PhrayaPlan;
+use phraya_io::plan::{read_content_hash, PhrayaPlan};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -529,28 +529,61 @@ pub fn align_read(
     // Issue #185: Both forward and reverse sketches are filtered based on strategy:
     // - Fast/Balanced: use w=11 subset to maintain byte-identity with pre-#182
     // - Sensitive: use full dense set for better recall in variant-dense regions
-    let fwd_sketch = get_effective_sketch(query.id(), plan, config.strategy)
-        .unwrap_or_else(|| sketch_sequence_default(query));
+    //
+    // Issue #200: prefer a stored read sketch (keyed by content hash, stable across
+    // pipeline stages unlike sequence ID) over recomputing one. `used_stored_sketch`
+    // tracks whether the forward sketch came from the plan's cache, so an empty cached
+    // sketch (a caller intentionally supplied no minimizers for this read) can be
+    // distinguished below from a sketch that's merely too short to seed anything.
+    let (fwd_sketch, used_stored_sketch) = {
+        let hash = read_content_hash(query.bases());
+        if let Some(stored) = plan.get_read_sketch(hash) {
+            (stored.clone(), true)
+        } else {
+            let fallback = get_effective_sketch(query.id(), plan, config.strategy)
+                .unwrap_or_else(|| sketch_sequence_default(query));
+            (fallback, false)
+        }
+    };
     let (fwd_seeds, fwd_chains) = seed_and_chain(ctx, &fwd_sketch);
 
+    // Compute reverse complement bytes for potential use below.
     let rc_bases = reverse_complement(query.bases());
-    let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
-    // Reverse complement must be re-sketched (positions are orientation-specific)
-    // and must use the same strategy-based filtering as the forward strand
-    let rev_sketch = {
-        // For reverse complement, we can't use the plan's stored sketch (which is for the
-        // forward orientation). So we must re-sketch. But we still apply strategy filtering:
-        // For Fast/Balanced on a dense plan, we need to compute the dense sketch of the RC
-        // and filter it to w=11. For Sensitive, we use the full dense sketch of the RC.
-        // For simplicity and correctness, we compute a default w=11 sketch here, which will
-        // be automatically dense-capable if simd-minimizers supports it, or just w=11 otherwise.
-        sketch_sequence_default(&rc_seq)
+
+    // If the forward sketch itself is empty and that caused zero seeds, skip the
+    // expensive reverse orientation entirely.
+    // Canonical minimizers are strand-invariant, so if the forward has no match due to an empty
+    // sketch, the reverse is very unlikely to match either.
+    let (rev_seeds, rev_chains) = if fwd_seeds == 0 && fwd_sketch.minimizers.is_empty() {
+        (0, vec![])
+    } else {
+        let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
+        // Reverse complement must be re-sketched (positions are orientation-specific)
+        // and must use the same strategy-based filtering as the forward strand
+        let rev_sketch = {
+            // For reverse complement, we can't use the plan's stored sketch (which is for the
+            // forward orientation). So we must re-sketch. But we still apply strategy filtering:
+            // For Fast/Balanced on a dense plan, we need to compute the dense sketch of the RC
+            // and filter it to w=11. For Sensitive, we use the full dense sketch of the RC.
+            // For simplicity and correctness, we compute a default w=11 sketch here, which will
+            // be automatically dense-capable if simd-minimizers supports it, or just w=11 otherwise.
+            sketch_sequence_default(&rc_seq)
+        };
+        seed_and_chain(ctx, &rev_sketch)
     };
-    let (rev_seeds, rev_chains) = seed_and_chain(ctx, &rev_sketch);
 
     // Whether the read shared any minimizer with the target (in either orientation). Distinguishes
     // a seeding loss from an extension/divergence loss when classifying an unplaced read.
     let had_seeds = fwd_seeds > 0 || rev_seeds > 0;
+
+    // Issue #200: an empty *stored* read sketch is a deliberate signal from the caller
+    // that this read has no minimizers to seed with (as opposed to a short/degenerate
+    // read that merely recomputed to an empty sketch) — treat it as unplaceable rather
+    // than falling through to the (0,0) anchor's fallback alignment.
+    if used_stored_sketch && fwd_sketch.minimizers.is_empty() && !had_seeds {
+        record(Outcome::NoSeed);
+        return None;
+    }
 
     // Extend only the orientation(s) worth extending. If exactly one orientation has
     // chain support and the other has none, the chainless side can only ever produce a
