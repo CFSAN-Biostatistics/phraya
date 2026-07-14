@@ -57,9 +57,7 @@ pub fn extract_multi_map_fraction(position: u32, query_index: &QueryIndex) -> f6
     // Count reads that have multiple alignments overall (multi-map reads)
     let multi_map_reads: usize = query_index
         .values()
-        .filter(|alignments| {
-            alignments.iter().any(|&(p, _)| p == position) && alignments.len() > 1
-        })
+        .filter(|alignments| alignments.iter().any(|&(p, _)| p == position) && alignments.len() > 1)
         .count();
 
     multi_map_reads as f64 / total_reads_at_position as f64

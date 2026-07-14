@@ -1,3 +1,6 @@
+use phraya_core::types::{sketch_sequence_default, Sequence, DEFAULT_K, DEFAULT_W};
+use phraya_io::plan::{read_plan, write_plan, PlanError};
+use phraya_io::plan::{PhrayaPlan, UseCase, PHRAYAPLAN_VERSION};
 /// Issue #182: feat(plan): dense-rated minimizer sketches with w=11 tag; --sparse opt-out (ADR-0009)
 ///
 /// This test file contains RED (failing) acceptance tests for issue #182.
@@ -10,12 +13,8 @@
 /// 3. `PHRAYAPLAN_VERSION` bumped; old plans rejected with a clear regenerate message.
 /// 4. In-domain plan-size increase is bounded (~2–3× of the tiny sketch payload) and measured.
 /// 5. `align --strategy sensitive` on a `--sparse` plan errors rather than silently under-seeding.
-
 use std::collections::HashMap;
-use phraya_io::plan::{PhrayaPlan, UseCase, PHRAYAPLAN_VERSION};
-use phraya_core::types::{Sequence, sketch_sequence_default, DEFAULT_K, DEFAULT_W};
 use tempfile::NamedTempFile;
-use phraya_io::plan::{write_plan, read_plan, PlanError};
 
 // ============================================================================
 // Helper Functions
@@ -67,7 +66,10 @@ fn issue_182_plan_has_new_version() {
     let plan = minimal_plan();
 
     // The plan should have the bumped version number for dense sketch support
-    assert_eq!(plan.version, PHRAYAPLAN_VERSION, "plan version should be set to current version");
+    assert_eq!(
+        plan.version, PHRAYAPLAN_VERSION,
+        "plan version should be set to current version"
+    );
 }
 
 /// Test that dense sketches produce more minimizers than w=11.
@@ -98,15 +100,20 @@ fn issue_182_dense_sketch_has_more_minimizers_than_w11() {
     sequences.insert(seq.id().to_string(), seq.clone());
     plan.populate_dense_sketches(&sequences);
 
-    let dense_sketch = plan.get_dense_sketch(&seq.id())
+    let dense_sketch = plan
+        .get_dense_sketch(&seq.id())
         .expect("plan should have dense sketch after implementation");
-    let stored_w11 = plan.get_sketch(&seq.id())
+    let stored_w11 = plan
+        .get_sketch(&seq.id())
         .expect("plan should still have w=11 sketch");
 
     // The dense sketch (with smaller w) should have strictly more minimizers
-    assert!(dense_sketch.len() > stored_w11.len(),
+    assert!(
+        dense_sketch.len() > stored_w11.len(),
         "dense sketch ({}) should have more minimizers than w=11 ({})",
-        dense_sketch.len(), stored_w11.len());
+        dense_sketch.len(),
+        stored_w11.len()
+    );
 }
 
 /// Test that the w=11 subset extracted from dense sketch is byte-identical to default.
@@ -136,19 +143,23 @@ fn issue_182_w11_subset_of_dense_is_byte_identical_to_default() {
     sequences.insert(seq.id().to_string(), seq.clone());
     plan.populate_dense_sketches(&sequences);
 
-    let stored_w11 = plan.get_sketch(&seq.id())
+    let stored_w11 = plan
+        .get_sketch(&seq.id())
         .expect("plan should still have w=11 sketch")
         .clone();
 
     // After implementation, the plan should provide w=11 membership tags:
-    let w11_membership = plan.get_w11_membership(&seq.id())
+    let w11_membership = plan
+        .get_w11_membership(&seq.id())
         .expect("plan should have w=11 membership tag after implementation");
 
     // Extract w=11 minimizers from the dense sketch using the tag
-    let dense_sketch = plan.get_dense_sketch(&seq.id())
+    let dense_sketch = plan
+        .get_dense_sketch(&seq.id())
         .expect("plan should have dense sketch");
 
-    let extracted_w11: Vec<(u64, u32)> = dense_sketch.minimizers
+    let extracted_w11: Vec<(u64, u32)> = dense_sketch
+        .minimizers
         .iter()
         .zip(w11_membership.iter())
         .filter(|(_, &is_w11)| is_w11)
@@ -158,8 +169,11 @@ fn issue_182_w11_subset_of_dense_is_byte_identical_to_default() {
     // The extracted w=11 set should be byte-identical to the plan's own canonical
     // w=11 sketch (same minimizers in same order) — this is what align time actually
     // reads via get_sketch(), so it's the meaningful equivalence to prove.
-    assert_eq!(extracted_w11.len(), stored_w11.minimizers.len(),
-        "extracted w=11 minimizers should match canonical w=11 count");
+    assert_eq!(
+        extracted_w11.len(),
+        stored_w11.minimizers.len(),
+        "extracted w=11 minimizers should match canonical w=11 count"
+    );
 
     // Verify the actual minimizers match
     for (expected, actual) in stored_w11.minimizers.iter().zip(extracted_w11.iter()) {
@@ -217,8 +231,13 @@ fn issue_182_old_plan_v4_rejected_with_clear_message() {
         Ok(p) => {
             // Before implementation: version is still 4, so v4 plans are accepted
             // After implementation: this branch should not execute
-            assert!(p.version == 4, "before version bump, v4 plans are still accepted");
-            panic!("after version bump to 5+, old v4 plans should be rejected with VersionMismatch");
+            assert!(
+                p.version == 4,
+                "before version bump, v4 plans are still accepted"
+            );
+            panic!(
+                "after version bump to 5+, old v4 plans should be rejected with VersionMismatch"
+            );
         }
         Err(e) => panic!("unexpected error type: {:?}", e),
     }
@@ -278,11 +297,17 @@ fn issue_182_sparse_plan_omits_dense_sketches() {
     // After implementation, a sparse plan should:
     // 1. Have sparse_mode == true
     // 2. Not store dense sketches (to save space)
-    assert!(plan.is_sparse(), "plan created with --sparse should have is_sparse() == true");
+    assert!(
+        plan.is_sparse(),
+        "plan created with --sparse should have is_sparse() == true"
+    );
 
     // Attempting to get a dense sketch should return None for sparse plans
     let dense = plan.get_dense_sketch(&seq.id());
-    assert!(dense.is_none(), "sparse plan should not have dense sketches");
+    assert!(
+        dense.is_none(),
+        "sparse plan should not have dense sketches"
+    );
 }
 
 /// Test that dense plans (default) DO store dense sketches.
@@ -312,17 +337,24 @@ fn issue_182_dense_mode_stores_dense_sketches() {
     plan.populate_dense_sketches(&sequences);
 
     // By default (not --sparse), the plan should store dense sketches
-    assert!(!plan.is_sparse(), "default plan should not have sparse mode");
+    assert!(
+        !plan.is_sparse(),
+        "default plan should not have sparse mode"
+    );
 
     // The plan should have dense sketches available
-    let dense = plan.get_dense_sketch(&seq.id())
+    let dense = plan
+        .get_dense_sketch(&seq.id())
         .expect("dense mode plan should have dense sketches");
 
     // Verify the dense sketch is actually denser (more minimizers)
     let w11 = plan.get_sketch(&seq.id()).expect("should have w=11 sketch");
-    assert!(dense.len() > w11.len(),
+    assert!(
+        dense.len() > w11.len(),
         "dense sketch ({}) should have more minimizers than w=11 ({})",
-        dense.len(), w11.len());
+        dense.len(),
+        w11.len()
+    );
 }
 
 // ============================================================================
@@ -378,13 +410,17 @@ fn issue_182_dense_sketch_maintains_window_coverage() {
     // Window size for w=11, k=21 is 11 + 21 - 1 = 31
     let window_size = DEFAULT_W + DEFAULT_K - 1;
 
-    assert_eq!(window_size, 31, "window size for default params should be 31");
+    assert_eq!(
+        window_size, 31,
+        "window size for default params should be 31"
+    );
 
     // Verify that w=11 sketch satisfies window coverage
     let seq_len = seq.len();
     for start in 0..=(seq_len.saturating_sub(window_size)) {
         let window_end = start + window_size;
-        let minimizers_in_window: Vec<_> = w11_sketch.minimizers
+        let minimizers_in_window: Vec<_> = w11_sketch
+            .minimizers
             .iter()
             .filter(|(_, pos)| *pos >= start as u32 && *pos < window_end as u32)
             .collect();
@@ -392,7 +428,11 @@ fn issue_182_dense_sketch_maintains_window_coverage() {
         // The issue says: every window should contain at least one minimizer
         // However, positions are 0-indexed into the sequence, so we need to be careful
         // Let's just verify the current sketch is valid
-        assert_eq!(minimizers_in_window.len() > 0, true, "window coverage check");
+        assert_eq!(
+            minimizers_in_window.len() > 0,
+            true,
+            "window coverage check"
+        );
     }
 
     // After implementation, do the same check for dense sketch
@@ -418,7 +458,10 @@ fn issue_182_sensitive_strategy_on_sparse_plan_errors() {
     let plan = minimal_plan();
 
     // Verify the plan is properly constructed
-    assert_eq!(plan.version, PHRAYAPLAN_VERSION, "plan version should be current");
+    assert_eq!(
+        plan.version, PHRAYAPLAN_VERSION,
+        "plan version should be current"
+    );
 
     // After implementation, we expect:
     // 1. PhrayaPlan to have a sparse_mode field
@@ -437,7 +480,10 @@ fn issue_182_sensitive_strategy_on_sparse_plan_errors() {
 fn issue_182_fast_strategy_on_sparse_plan_succeeds() {
     let plan = minimal_plan();
 
-    assert_eq!(plan.version, PHRAYAPLAN_VERSION, "plan version should be current");
+    assert_eq!(
+        plan.version, PHRAYAPLAN_VERSION,
+        "plan version should be current"
+    );
 
     // After implementation:
     // let config = AlignConfig::new(Strategy::Fast);
@@ -499,8 +545,10 @@ fn issue_182_w11_membership_tags_are_deterministic() {
     let plan2 = read_plan(temp.path()).unwrap();
 
     // The w=11 membership should be identical in both reads
-    assert_eq!(plan1.kmer_index, plan2.kmer_index,
-        "kmer_index should be deterministic across reads");
+    assert_eq!(
+        plan1.kmer_index, plan2.kmer_index,
+        "kmer_index should be deterministic across reads"
+    );
 }
 
 // ============================================================================
@@ -518,7 +566,11 @@ fn issue_182_empty_plan_with_dense_mode() {
     write_plan(temp.path(), &plan).unwrap();
     let round_trip = read_plan(temp.path()).unwrap();
 
-    assert_eq!(round_trip.kmer_index.len(), 0, "empty plan should have no sketches");
+    assert_eq!(
+        round_trip.kmer_index.len(),
+        0,
+        "empty plan should have no sketches"
+    );
     assert_eq!(round_trip.version, PHRAYAPLAN_VERSION);
 }
 
@@ -528,17 +580,16 @@ fn issue_182_empty_plan_with_dense_mode() {
 /// Both w=11 and dense sketches should handle this gracefully.
 #[test]
 fn issue_182_very_short_sequence_handled() {
-    let short_seq = Sequence::new(
-        b"AGATCG".to_vec(),
-        None,
-        "short".to_string(),
-        None,
-    );
+    let short_seq = Sequence::new(b"AGATCG".to_vec(), None, "short".to_string(), None);
 
     let sketch = sketch_sequence_default(&short_seq);
 
     // A very short sequence may have 0 minimizers, which is OK
-    assert_eq!(sketch.len() > 0 || sketch.len() == 0, true, "short sequence should have valid sketch");
+    assert_eq!(
+        sketch.len() > 0 || sketch.len() == 0,
+        true,
+        "short sequence should have valid sketch"
+    );
     assert_eq!(sketch.k, DEFAULT_K);
     assert_eq!(sketch.w, DEFAULT_W);
 }

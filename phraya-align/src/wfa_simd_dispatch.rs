@@ -30,12 +30,15 @@ mod tests {
         // one full 16-byte SIMD chunk and then locate the mismatch in the 4-byte tail.
         // wfa_extend (which uses count_matching_prefix internally) and wfa_extend_naive
         // must agree — both correctness and edit distance are verified.
-        let query  = b"ACGTACGTACGTACGTACGT"; // 20 bytes
+        let query = b"ACGTACGTACGTACGTACGT"; // 20 bytes
         let target = b"ACGTACGTACGTACGTXCGT"; // mismatch at byte 16
-        let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
+        let seed = SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
 
         let result = wfa_extend(query, target, seed.clone()).expect("wfa_extend failed");
-        let naive  = wfa_extend_naive(query, target, seed).expect("naive path failed");
+        let naive = wfa_extend_naive(query, target, seed).expect("naive path failed");
 
         assert_eq!(
             result.edit_distance, naive.edit_distance,
@@ -54,10 +57,13 @@ mod tests {
         // their outputs must be identical on any input.
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
-        let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
+        let seed = SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
 
         let result = wfa_extend(query, target, seed.clone()).unwrap();
-        let naive  = wfa_extend_naive(query, target, seed).unwrap();
+        let naive = wfa_extend_naive(query, target, seed).unwrap();
 
         assert_eq!(result.cigar, naive.cigar);
         assert_eq!(result.edit_distance, naive.edit_distance);
@@ -437,7 +443,10 @@ mod tests {
         // LAST_IMPL before any call would always see the default "naive" initialization.
         let query = b"ACGTACGTACGT";
         let target = b"ACGTACGTACGT";
-        let seed = SeedAnchor { query_pos: 0, target_pos: 0 };
+        let seed = SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        };
         let _ = wfa_extend(query, target, seed);
 
         let dispatch_target = crate::wfa_simd::get_active_dispatch_target();
@@ -447,5 +456,4 @@ mod tests {
             dispatch_target
         );
     }
-
 }

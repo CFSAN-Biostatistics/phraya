@@ -320,7 +320,9 @@ fn issue_181_cli_invalid_preset_shows_valid_presets() {
 
     // Error should mention both strict and tolerant
     assert!(
-        error_msg.contains("strict") || error_msg.contains("tolerant") || error_msg.contains("valid presets"),
+        error_msg.contains("strict")
+            || error_msg.contains("tolerant")
+            || error_msg.contains("valid presets"),
         "Error should mention 'strict' and 'tolerant' presets, got: {}",
         stderr
     );

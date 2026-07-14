@@ -1,3 +1,4 @@
+use phraya_core::types::ParseError;
 /// Issue #207: feat(io): parse SFF (Standard Flowgram Format) input
 ///
 /// This test file contains RED (failing) acceptance tests for issue #207.
@@ -10,9 +11,7 @@
 /// 3. Multi-read SFF iterates all reads
 /// 4. No non-Rust dependency (zero binary deps principle)
 /// 5. Test against a small sample SFF
-
 use phraya_io::SequenceParser;
-use phraya_core::types::ParseError;
 use std::io::Write;
 use std::path::Path;
 use tempfile::NamedTempFile;
@@ -30,19 +29,19 @@ fn write_minimal_sff(path: &Path, reads: Vec<(&str, &str, &str, u16, u16)>) -> s
     let mut file = std::fs::File::create(path)?;
 
     // SFF header (simplified: write magic, version, num_reads, basic structure)
-    file.write_all(b".sff")?;           // magic (4 bytes)
-    file.write_all(&1_u32.to_be_bytes())?;  // version (4 bytes)
-    file.write_all(&0_u64.to_be_bytes())?;  // index_offset (8 bytes, placeholder)
-    file.write_all(&0_u32.to_be_bytes())?;  // index_length (4 bytes)
-    file.write_all(&(reads.len() as u32).to_be_bytes())?;  // num_reads (4 bytes)
+    file.write_all(b".sff")?; // magic (4 bytes)
+    file.write_all(&1_u32.to_be_bytes())?; // version (4 bytes)
+    file.write_all(&0_u64.to_be_bytes())?; // index_offset (8 bytes, placeholder)
+    file.write_all(&0_u32.to_be_bytes())?; // index_length (4 bytes)
+    file.write_all(&(reads.len() as u32).to_be_bytes())?; // num_reads (4 bytes)
     file.write_all(&31_u16.to_be_bytes())?; // header_length (16 bytes after this field, standard SFF is 31+4)
-    file.write_all(&4_u16.to_be_bytes())?;  // key_length (4 bytes for "TCAG")
+    file.write_all(&4_u16.to_be_bytes())?; // key_length (4 bytes for "TCAG")
     file.write_all(&100_u16.to_be_bytes())?; // num_flows (100 flows typical for 454)
-    file.write_all(&1_u8.to_be_bytes())?;   // flowgram_format (1 = uint16)
-    file.write_all(b"TACG")?;           // flow_chars (TACG is standard for 454)
-    file.write_all(&[0_u8; 252])?;      // pad flow_chars to 256
-    file.write_all(b"TCAG")?;           // key_sequence (TCAG is standard)
-    file.write_all(&[0_u8; 252])?;      // pad key_sequence to 256
+    file.write_all(&1_u8.to_be_bytes())?; // flowgram_format (1 = uint16)
+    file.write_all(b"TACG")?; // flow_chars (TACG is standard for 454)
+    file.write_all(&[0_u8; 252])?; // pad flow_chars to 256
+    file.write_all(b"TCAG")?; // key_sequence (TCAG is standard)
+    file.write_all(&[0_u8; 252])?; // pad key_sequence to 256
 
     // SFF read records
     for (read_id, bases, qualities, clip_qual_right, clip_adapter_right) in reads {
@@ -53,10 +52,10 @@ fn write_minimal_sff(path: &Path, reads: Vec<(&str, &str, &str, u16, u16)>) -> s
 
         file.write_all(&16_u16.to_be_bytes())?; // read_header_length (fixed at 16 for simple case)
         file.write_all(&name_length.to_be_bytes())?; // name_length
-        file.write_all(&num_bases.to_be_bytes())?;   // num_bases
-        file.write_all(&0_u16.to_be_bytes())?;  // clip_qual_left (no clipping on left)
-        file.write_all(&clip_qual_right.to_be_bytes())?;  // clip_qual_right
-        file.write_all(&0_u16.to_be_bytes())?;  // clip_adapter_left
+        file.write_all(&num_bases.to_be_bytes())?; // num_bases
+        file.write_all(&0_u16.to_be_bytes())?; // clip_qual_left (no clipping on left)
+        file.write_all(&clip_qual_right.to_be_bytes())?; // clip_qual_right
+        file.write_all(&0_u16.to_be_bytes())?; // clip_adapter_left
         file.write_all(&clip_adapter_right.to_be_bytes())?; // clip_adapter_right
 
         // Pad read header to 8-byte boundary if needed
@@ -92,7 +91,12 @@ fn write_minimal_sff(path: &Path, reads: Vec<(&str, &str, &str, u16, u16)>) -> s
         file.write_all(qualities.as_bytes())?;
 
         // Pad entire read to 8-byte boundary
-        let read_size = 16 + name_length as usize + padding + (100 * 2) + num_bases as usize + num_bases as usize;
+        let read_size = 16
+            + name_length as usize
+            + padding
+            + (100 * 2)
+            + num_bases as usize
+            + num_bases as usize;
         let padding = (8 - (read_size % 8)) % 8;
         if padding > 0 {
             file.write_all(&vec![0_u8; padding])?;
@@ -105,53 +109,113 @@ fn write_minimal_sff(path: &Path, reads: Vec<(&str, &str, &str, u16, u16)>) -> s
 /// Create a minimal valid SFF file with a single read, no clipping
 fn create_minimal_sff_single_read() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
-    write_minimal_sff(tmp.path(), vec![
-        ("read_00001", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 38, 38),
-    ]).unwrap();
+    write_minimal_sff(
+        tmp.path(),
+        vec![(
+            "read_00001",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC",
+            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            38,
+            38,
+        )],
+    )
+    .unwrap();
     tmp
 }
 
 /// Create SFF file with multiple reads
 fn create_minimal_sff_multiple_reads() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
-    write_minimal_sff(tmp.path(), vec![
-        ("read_00001", "ACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIII", 20, 20),
-        ("read_00002", "TGCATGCATGCATGCATGCA", "HHHHHHHHHHHHHHHHHHHH", 20, 20),
-        ("read_00003", "AAATTTGGGGCCCCAAATTT", "JJJJJJJJJJJJJJJJJJJJ", 20, 20),
-    ]).unwrap();
+    write_minimal_sff(
+        tmp.path(),
+        vec![
+            (
+                "read_00001",
+                "ACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIII",
+                20,
+                20,
+            ),
+            (
+                "read_00002",
+                "TGCATGCATGCATGCATGCA",
+                "HHHHHHHHHHHHHHHHHHHH",
+                20,
+                20,
+            ),
+            (
+                "read_00003",
+                "AAATTTGGGGCCCCAAATTT",
+                "JJJJJJJJJJJJJJJJJJJJ",
+                20,
+                20,
+            ),
+        ],
+    )
+    .unwrap();
     tmp
 }
 
 /// Create SFF file with quality clipping applied (clip_qual_right < num_bases)
 fn create_minimal_sff_with_quality_clipping() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
-    write_minimal_sff(tmp.path(), vec![
-        // Full sequence: "ACGTACGTACGTACGTACGTACGTACGTACGTACGT" (38bp)
-        // After qual clip right=30: "ACGTACGTACGTACGTACGTACGTACGTAC" (30bp)
-        ("read_clipped", "ACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 30, 38),
-    ]).unwrap();
+    write_minimal_sff(
+        tmp.path(),
+        vec![
+            // Full sequence: "ACGTACGTACGTACGTACGTACGTACGTACGTACGT" (38bp)
+            // After qual clip right=30: "ACGTACGTACGTACGTACGTACGTACGTAC" (30bp)
+            (
+                "read_clipped",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                30,
+                38,
+            ),
+        ],
+    )
+    .unwrap();
     tmp
 }
 
 /// Create SFF file with adapter clipping applied
 fn create_minimal_sff_with_adapter_clipping() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
-    write_minimal_sff(tmp.path(), vec![
-        // Full sequence: "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC" (38bp)
-        // After adapter clip right=35: "ACGTACGTACGTACGTACGTACGTACGTACGTAC" (35bp)
-        ("read_adapter", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 38, 35),
-    ]).unwrap();
+    write_minimal_sff(
+        tmp.path(),
+        vec![
+            // Full sequence: "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC" (38bp)
+            // After adapter clip right=35: "ACGTACGTACGTACGTACGTACGTACGTACGTAC" (35bp)
+            (
+                "read_adapter",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTAC",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                38,
+                35,
+            ),
+        ],
+    )
+    .unwrap();
     tmp
 }
 
 /// Create SFF file with combined clipping (qual_right and adapter_right both constrain)
 fn create_minimal_sff_with_combined_clipping() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
-    write_minimal_sff(tmp.path(), vec![
-        // Full sequence: "ACGTACGTACGTACGTACGTACGTACGTACGTACGT" (38bp)
-        // clip_qual_right=35, clip_adapter_right=32 -> final clip = min(35, 32) = 32bp
-        ("read_both", "ACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 35, 32),
-    ]).unwrap();
+    write_minimal_sff(
+        tmp.path(),
+        vec![
+            // Full sequence: "ACGTACGTACGTACGTACGTACGTACGTACGTACGT" (38bp)
+            // clip_qual_right=35, clip_adapter_right=32 -> final clip = min(35, 32) = 32bp
+            (
+                "read_both",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+                "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+                35,
+                32,
+            ),
+        ],
+    )
+    .unwrap();
     tmp
 }
 
@@ -159,7 +223,7 @@ fn create_minimal_sff_with_combined_clipping() -> NamedTempFile {
 fn create_invalid_sff_bad_magic() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
     let mut file = std::fs::File::create(tmp.path()).unwrap();
-    file.write_all(b"XXXX").unwrap();  // Invalid magic
+    file.write_all(b"XXXX").unwrap(); // Invalid magic
     file.write_all(&[0_u8; 100]).unwrap();
     tmp
 }
@@ -168,8 +232,8 @@ fn create_invalid_sff_bad_magic() -> NamedTempFile {
 fn create_invalid_sff_truncated_header() -> NamedTempFile {
     let tmp = NamedTempFile::new().unwrap();
     let mut file = std::fs::File::create(tmp.path()).unwrap();
-    file.write_all(b".sff").unwrap();  // Valid magic
-    file.write_all(&[0_u8; 10]).unwrap();  // Only 10 bytes instead of full header
+    file.write_all(b".sff").unwrap(); // Valid magic
+    file.write_all(&[0_u8; 10]).unwrap(); // Only 10 bytes instead of full header
     tmp
 }
 
@@ -325,7 +389,11 @@ fn sff_preserves_quality_scores() {
     assert_eq!(quality.len(), 38);
     // All quality scores should be printable ASCII (Phred+33 encoding)
     for &q in quality.iter() {
-        assert!(q >= 33 && q <= 126, "quality score {} is out of Phred+33 range", q);
+        assert!(
+            q >= 33 && q <= 126,
+            "quality score {} is out of Phred+33 range",
+            q
+        );
     }
 }
 
@@ -375,10 +443,10 @@ fn sff_empty_file_returns_empty_iterator() {
     let mut file = std::fs::File::create(tmp.path()).unwrap();
     // Write only magic + minimal header, no reads
     file.write_all(b".sff").unwrap();
-    file.write_all(&0_u32.to_be_bytes()).unwrap();  // version
-    file.write_all(&0_u64.to_be_bytes()).unwrap();  // index_offset
-    file.write_all(&0_u32.to_be_bytes()).unwrap();  // index_length
-    file.write_all(&0_u32.to_be_bytes()).unwrap();  // num_reads = 0
+    file.write_all(&0_u32.to_be_bytes()).unwrap(); // version
+    file.write_all(&0_u64.to_be_bytes()).unwrap(); // index_offset
+    file.write_all(&0_u32.to_be_bytes()).unwrap(); // index_length
+    file.write_all(&0_u32.to_be_bytes()).unwrap(); // num_reads = 0
     drop(file);
 
     let mut parser = SequenceParser::from_path(tmp.path()).unwrap();
@@ -389,9 +457,17 @@ fn sff_empty_file_returns_empty_iterator() {
 fn sff_zero_clip_returns_zero_length_sequence() {
     // Test: Clipping to zero returns valid but empty Sequence
     let tmp = NamedTempFile::new().unwrap();
-    write_minimal_sff(tmp.path(), vec![
-        ("read_empty", "ACGTACGTACGTACGTACGTACGTACGTACGTACGT", "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII", 0, 0),
-    ]).unwrap();
+    write_minimal_sff(
+        tmp.path(),
+        vec![(
+            "read_empty",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+            0,
+            0,
+        )],
+    )
+    .unwrap();
 
     let mut parser = SequenceParser::from_path(tmp.path()).unwrap();
     let seq = parser.next().unwrap().unwrap();
@@ -409,8 +485,12 @@ fn sff_dna_bases_validation() {
     let seq = parser.next().unwrap().unwrap();
 
     for &base in seq.bases() {
-        assert!(matches!(base, b'A' | b'C' | b'G' | b'T' | b'N'),
-                "Invalid base character: {} ({})", base as char, base);
+        assert!(
+            matches!(base, b'A' | b'C' | b'G' | b'T' | b'N'),
+            "Invalid base character: {} ({})",
+            base as char,
+            base
+        );
     }
 }
 

@@ -9,7 +9,6 @@
 /// - Verification that detected variant count is within ±10% of N
 /// - Validation that mean confidence > 0.5 on synthetic data
 /// - Completion in <2 minutes
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -24,7 +23,9 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
     (0..len)
         .map(|_| {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             b"ACGT"[((x >> 33) & 3) as usize]
         })
         .collect()
@@ -88,8 +89,8 @@ fn issue_15_variant_count_within_tolerance() {
     let fasta_path = write_assembly_fasta(dir.path(), "assembly.fa", &seq1, &seq2);
 
     // Parse sequences using the library API
-    let mut parser = phraya_io::SequenceParser::from_path(&fasta_path)
-        .expect("failed to open FASTA");
+    let mut parser =
+        phraya_io::SequenceParser::from_path(&fasta_path).expect("failed to open FASTA");
 
     let seq1_obj = parser
         .next()
@@ -168,8 +169,8 @@ fn issue_15_mean_confidence_exceeds_threshold() {
     let fasta_path = write_assembly_fasta(dir.path(), "assembly.fa", &seq1, &seq2);
 
     // Parse sequences
-    let mut parser = phraya_io::SequenceParser::from_path(&fasta_path)
-        .expect("failed to open FASTA");
+    let mut parser =
+        phraya_io::SequenceParser::from_path(&fasta_path).expect("failed to open FASTA");
 
     let seq1_obj = parser
         .next()
@@ -241,8 +242,8 @@ fn issue_15_full_pipeline_with_plan_file() {
     let fasta_path = write_assembly_fasta(dir.path(), "assembly.fa", &seq1, &seq2);
 
     // Parse sequences
-    let mut parser = phraya_io::SequenceParser::from_path(&fasta_path)
-        .expect("failed to open FASTA");
+    let mut parser =
+        phraya_io::SequenceParser::from_path(&fasta_path).expect("failed to open FASTA");
 
     let seq1_obj = parser
         .next()
@@ -293,7 +294,10 @@ fn issue_15_full_pipeline_with_plan_file() {
     assert!(
         detected_count >= lower_bound && detected_count <= upper_bound,
         "SNP count {} is outside tolerance [{}–{}]. Expected ~{} SNPs",
-        detected_count, lower_bound, upper_bound, num_snps
+        detected_count,
+        lower_bound,
+        upper_bound,
+        num_snps
     );
 
     // Verify that detected variants are near the expected SNP positions
@@ -337,8 +341,8 @@ fn issue_15_perfect_match_no_variants() {
     let fasta_path = write_assembly_fasta(dir.path(), "identical.fa", &seq, &seq);
 
     // Parse sequences
-    let mut parser = phraya_io::SequenceParser::from_path(&fasta_path)
-        .expect("failed to open FASTA");
+    let mut parser =
+        phraya_io::SequenceParser::from_path(&fasta_path).expect("failed to open FASTA");
 
     let seq1_obj = parser
         .next()
@@ -400,8 +404,8 @@ fn issue_15_coverage_track_valid() {
     let fasta_path = write_assembly_fasta(dir.path(), "assembly.fa", &seq1, &seq2);
 
     // Parse sequences
-    let mut parser = phraya_io::SequenceParser::from_path(&fasta_path)
-        .expect("failed to open FASTA");
+    let mut parser =
+        phraya_io::SequenceParser::from_path(&fasta_path).expect("failed to open FASTA");
 
     let seq1_obj = parser
         .next()
@@ -453,7 +457,8 @@ fn issue_15_coverage_track_valid() {
     // A perfect match or low-divergence alignment may result in quantized coverage of 0
     // if only one read covers each position (0 rounds to 0 when quantized).
     // The real validation is through the variants and query_positions, which must be non-empty.
-    assert!(!result.variants.is_empty() || result.query_positions.is_empty() == false,
+    assert!(
+        !result.variants.is_empty() || result.query_positions.is_empty() == false,
         "Alignment should produce either variants or query positions"
     );
 }

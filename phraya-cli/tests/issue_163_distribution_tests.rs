@@ -5,11 +5,13 @@
 /// - README explains the portable vs native SIMD performance difference
 /// - phraya-cli/Cargo.toml has a [[bin]] entry naming the binary "phraya"
 /// - Workspace Cargo.toml has the metadata fields required for crates.io publication
-
 use std::path::Path;
 
 fn workspace_root() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn cli_manifest_dir() -> std::path::PathBuf {
@@ -65,7 +67,8 @@ fn issue_163_readme_documents_simd_optimized_install() {
 fn issue_163_readme_explains_performance_difference() {
     let readme = read_readme();
     let has_pct = readme.contains("40") && readme.contains("60");
-    let has_speed = readme.contains("speed") || readme.contains("slower") || readme.contains("faster");
+    let has_speed =
+        readme.contains("speed") || readme.contains("slower") || readme.contains("faster");
     assert!(
         has_pct && has_speed,
         "README must explain portable vs native SIMD performance difference (40-60% speed)"
@@ -144,8 +147,14 @@ fn issue_163_readme_installation_before_philosophy() {
     let readme = read_readme();
     let install_pos = readme.find("## Installation");
     let philosophy_pos = readme.find("## Philosophy");
-    assert!(install_pos.is_some(), "README must have ## Installation section");
-    assert!(philosophy_pos.is_some(), "README must have ## Philosophy section");
+    assert!(
+        install_pos.is_some(),
+        "README must have ## Installation section"
+    );
+    assert!(
+        philosophy_pos.is_some(),
+        "README must have ## Philosophy section"
+    );
     assert!(
         install_pos.unwrap() < philosophy_pos.unwrap(),
         "## Installation must appear before ## Philosophy in README"

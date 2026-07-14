@@ -43,8 +43,14 @@ fn issue_78_align_creates_phraya_file() {
         p,
         "seqs.fa",
         &[
-            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
+            (
+                "ref",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
         ],
     );
 
@@ -92,8 +98,14 @@ fn issue_78_align_writes_queries_sidecar() {
         p,
         "seqs.fa",
         &[
-            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
+            (
+                "ref",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
         ],
     );
 
@@ -139,8 +151,14 @@ fn issue_176_align_accepts_coverage_window_override() {
         p,
         "seqs.fa",
         &[
-            ("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
-            ("read1", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"),
+            (
+                "ref",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
+            (
+                "read1",
+                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+            ),
         ],
     );
 
@@ -187,7 +205,10 @@ fn issue_78_align_unknown_query_id_fails() {
     let fasta = create_fasta(
         p,
         "seqs.fa",
-        &[("ref", "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")],
+        &[(
+            "ref",
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
+        )],
     );
 
     let plan_path = p.join("test.phrayaplan");
@@ -218,7 +239,9 @@ fn issue_78_align_unknown_query_id_fails() {
 
     let stderr = String::from_utf8_lossy(&status.stderr);
     assert!(
-        stderr.contains("nonexistent_read") || stderr.contains("not found") || stderr.contains("unknown"),
+        stderr.contains("nonexistent_read")
+            || stderr.contains("not found")
+            || stderr.contains("unknown"),
         "error message should mention the bad ID: {stderr}"
     );
 }
