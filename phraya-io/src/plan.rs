@@ -183,7 +183,7 @@ pub struct PhrayaPlan {
     /// Content-addressed reference space (ADR-0011): optional reference with
     /// content hash, name, and sketches. Used in plan v6+.
     #[serde(default)]
-    pub reference_space: Option<ReferenceSpace>,
+    pub reference_space: Vec<ReferenceSpace>,
     /// Input file paths
     pub input_files: Vec<String>,
     /// Timestamp (ISO8601)
@@ -287,7 +287,7 @@ impl PhrayaPlan {
             w11_membership: HashMap::new(),
             read_sketches: HashMap::new(),
             sparse_mode: false,
-            reference_space: None,
+            reference_space: Vec::new(),
         }
     }
 
@@ -316,14 +316,22 @@ impl PhrayaPlan {
         self.w11_membership.get(sequence_id)
     }
 
-    /// Check if this plan was created with --sparse (dense sketches not stored).
-    pub fn is_sparse(&self) -> bool {
-        self.sparse_mode
+    /// Look up a reference space by its content hash.
+    /// Returns None if no space with that hash exists in the palette.
+    pub fn get_reference_space(&self, hash: &str) -> Option<&ReferenceSpace> {
+        self.reference_space
+            .iter()
+            .find(|space| space.content_hash == hash)
     }
 
     /// Look up a stored read sketch by content hash
     pub fn get_read_sketch(&self, hash: u64) -> Option<&MinimizerSketch> {
         self.read_sketches.get(&hash)
+    }
+
+    /// Check if this plan was created with --sparse (dense sketches not stored).
+    pub fn is_sparse(&self) -> bool {
+        self.sparse_mode
     }
 
     /// Compute and store dense sketches for all sequences in the kmer_index.
@@ -754,16 +762,16 @@ mod tests {
         );
 
         let plan = PhrayaPlan {
-            reference_space: Some(ReferenceSpace {
+            reference_space: vec![ReferenceSpace {
                 content_hash: "deadbeef".to_string(),
                 name: None,
                 sketches: HashMap::new(),
-            }),
+            }],
             ..base_plan
         };
 
-        assert!(plan.reference_space.is_some());
-        assert_eq!(plan.reference_space.unwrap().content_hash, "deadbeef");
+        assert!(!plan.reference_space.is_empty());
+        assert_eq!(plan.reference_space[0].content_hash, "deadbeef");
     }
 
     /// A `ReferenceSpace` attached to a plan must survive a full write/read round-trip
@@ -785,11 +793,11 @@ mod tests {
         );
 
         let plan = PhrayaPlan {
-            reference_space: Some(ReferenceSpace {
+            reference_space: vec![ReferenceSpace {
                 content_hash: "cafef00d".to_string(),
                 name: Some("chr1-assembly".to_string()),
                 sketches: sketches.clone(),
-            }),
+            }],
             ..base_plan
         };
 
@@ -797,16 +805,14 @@ mod tests {
         write_plan(temp.path(), &plan).unwrap();
         let read_plan = read_plan(temp.path()).unwrap();
 
-        let read_space = read_plan
-            .reference_space
-            .expect("reference_space must survive round-trip");
+        let read_space = &read_plan.reference_space[0];
         assert_eq!(read_space.content_hash, "cafef00d");
         assert_eq!(read_space.name, Some("chr1-assembly".to_string()));
         assert_eq!(read_space.sketches.len(), 1);
         assert_eq!(read_space.sketches.get("ref").unwrap(), &sketch);
     }
 
-    /// A plan with no reference space attached (`reference_space: None`) must also
+    /// A plan with an empty reference palette must also
     /// round-trip cleanly — the field is optional, not mandatory.
     #[test]
     fn issue_196_plan_without_reference_space_round_trips() {
@@ -820,7 +826,7 @@ mod tests {
         );
 
         let plan = PhrayaPlan {
-            reference_space: None,
+            reference_space: Vec::new(),
             ..base_plan
         };
 
@@ -828,7 +834,7 @@ mod tests {
         write_plan(temp.path(), &plan).unwrap();
         let read_plan = read_plan(temp.path()).unwrap();
 
-        assert_eq!(read_plan.reference_space, None);
+        assert!(read_plan.reference_space.is_empty());
     }
 
     /// Hashing identical byte content twice must produce identical hashes — the
@@ -908,6 +914,244 @@ mod tests {
         );
     }
 
+    // ============================================================================
+    // RED acceptance tests for issue #197 (plan-side slice): reference palette —
+    // PhrayaPlan grows a single ReferenceSpace (#196) into a Vec<ReferenceSpace>
+    // (ADR-0011). Deliberately scoped to plan.rs storage only; the align-side
+    // `--reference` CLI/composability wiring is tracked as a follow-up (the
+    // existing --reference flag/align modes need real design work to compose
+    // with --worker/--ensure/traditional query-target modes, which is out of
+    // scope for a test-immutable RED contract written without that design pass).
+    // ============================================================================
+
+    /// `PhrayaPlan.reference_space` must become a `Vec<ReferenceSpace>` (a palette),
+    /// not `Option<ReferenceSpace>` (a single slot). Constructing a plan with two
+    /// distinct reference spaces and reading both back must compile and succeed —
+    /// it does not today, since the field is `Option`, which can hold at most one.
+    #[test]
+    fn issue_197_reference_space_is_a_vec_not_an_option() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["a.fa".to_string(), "b.fa".to_string()],
+            "2026-07-13T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let space_a = ReferenceSpace {
+            content_hash: "hash_a".to_string(),
+            name: Some("space-a".to_string()),
+            sketches: HashMap::new(),
+        };
+        let space_b = ReferenceSpace {
+            content_hash: "hash_b".to_string(),
+            name: Some("space-b".to_string()),
+            sketches: HashMap::new(),
+        };
+
+        let plan = PhrayaPlan {
+            reference_space: vec![space_a.clone(), space_b.clone()],
+            ..base_plan
+        };
+
+        assert_eq!(plan.reference_space.len(), 2);
+        assert_eq!(plan.reference_space[0].content_hash, "hash_a");
+        assert_eq!(plan.reference_space[1].content_hash, "hash_b");
+    }
+
+    /// An empty palette (no reference spaces at all) must be representable and
+    /// round-trip cleanly — the empty-Vec default replaces `None` as the "no
+    /// reference" case now that the field is a Vec.
+    #[test]
+    fn issue_197_empty_palette_round_trips() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ReadsOnly,
+            vec![],
+            "2026-07-13T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let plan = PhrayaPlan {
+            reference_space: vec![],
+            ..base_plan
+        };
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+        let read_plan = read_plan(temp.path()).unwrap();
+
+        assert!(read_plan.reference_space.is_empty());
+    }
+
+    /// A palette of N (N > 1) reference spaces must survive a full write/read
+    /// round-trip through `.phrayaplan`'s MessagePack + zstd encoding — every
+    /// space's hash, name, and sketches preserved, in order.
+    #[test]
+    fn issue_197_multi_space_palette_round_trips() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ContigsWithReads,
+            vec!["a.fa".to_string(), "b.fa".to_string(), "c.fa".to_string()],
+            "2026-07-13T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let mut sketches_a = HashMap::new();
+        sketches_a.insert(
+            "seq_a".to_string(),
+            phraya_core::types::sketch(b"ACGTACGTACGTACGTACGTACGTACGTACGT", 21, 11),
+        );
+
+        let spaces = vec![
+            ReferenceSpace {
+                content_hash: "hash_a".to_string(),
+                name: Some("space-a".to_string()),
+                sketches: sketches_a.clone(),
+            },
+            ReferenceSpace {
+                content_hash: "hash_b".to_string(),
+                name: None,
+                sketches: HashMap::new(),
+            },
+            ReferenceSpace {
+                content_hash: "hash_c".to_string(),
+                name: Some("space-c".to_string()),
+                sketches: HashMap::new(),
+            },
+        ];
+
+        let plan = PhrayaPlan {
+            reference_space: spaces.clone(),
+            ..base_plan
+        };
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+        let read_plan = read_plan(temp.path()).unwrap();
+
+        assert_eq!(read_plan.reference_space.len(), 3);
+        assert_eq!(read_plan.reference_space, spaces);
+    }
+
+    /// `PhrayaPlan` must expose a lookup helper resolving a reference space by its
+    /// content hash — the mechanism #197's align-side hit/miss resolution (a
+    /// follow-up) will build on. Mirrors the existing `get_sketch`/`get_dense_sketch`
+    /// accessor pattern.
+    #[test]
+    fn issue_197_get_reference_space_by_hash_looks_up_in_palette() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ContigsWithReads,
+            vec!["a.fa".to_string(), "b.fa".to_string()],
+            "2026-07-13T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let space_a = ReferenceSpace {
+            content_hash: "hash_a".to_string(),
+            name: Some("space-a".to_string()),
+            sketches: HashMap::new(),
+        };
+        let space_b = ReferenceSpace {
+            content_hash: "hash_b".to_string(),
+            name: Some("space-b".to_string()),
+            sketches: HashMap::new(),
+        };
+
+        let plan = PhrayaPlan {
+            reference_space: vec![space_a.clone(), space_b.clone()],
+            ..base_plan
+        };
+
+        assert_eq!(
+            plan.get_reference_space("hash_b"),
+            Some(&space_b),
+            "get_reference_space should find a space by its content hash"
+        );
+        assert_eq!(
+            plan.get_reference_space("hash_nonexistent"),
+            None,
+            "get_reference_space should return None for an unknown hash"
+        );
+    }
+
+    /// `phraya plan --reference X` (repeatable) must produce a palette with one
+    /// `ReferenceSpace` per presented `--reference`, each with a real content hash
+    /// computed from that file's actual bytes. This is the plan-side CLI wiring
+    /// half of #197 — deliberately excludes the align-side --reference flag,
+    /// which does not exist yet and needs its own design pass (see module doc).
+    #[test]
+    fn issue_197_plan_cli_accepts_repeatable_reference_and_stores_palette() {
+        use std::process::Command;
+        use tempfile::TempDir;
+
+        fn manifest() -> std::path::PathBuf {
+            // phraya-io's own manifest can't run the phraya binary; shell out via
+            // the workspace's phraya-cli crate instead.
+            let d = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+            std::path::Path::new(&d)
+                .parent()
+                .unwrap()
+                .join("phraya-cli")
+                .join("Cargo.toml")
+        }
+
+        let dir = TempDir::new().unwrap();
+        let ref_a = dir.path().join("a.fa");
+        let ref_b = dir.path().join("b.fa");
+        let reads = dir.path().join("reads.fa");
+        std::fs::write(&ref_a, ">a\nACGTACGTACGTACGTACGTACGTACGTACGT\n").unwrap();
+        std::fs::write(&ref_b, ">b\nTGCATGCATGCATGCATGCATGCATGCATGCA\n").unwrap();
+        std::fs::write(&reads, ">read0\nACGTACGTACGTACGTACGT\n").unwrap();
+        let plan_path = dir.path().join("plan.phrayaplan");
+
+        let out = Command::new("cargo")
+            .arg("run")
+            .arg("--manifest-path")
+            .arg(manifest().to_str().unwrap())
+            .arg("--")
+            .arg("plan")
+            .arg("--inputs")
+            .arg(reads.to_str().unwrap())
+            .arg("--reference")
+            .arg(ref_a.to_str().unwrap())
+            .arg("--reference")
+            .arg(ref_b.to_str().unwrap())
+            .arg("--output")
+            .arg(plan_path.to_str().unwrap())
+            .output()
+            .expect("cargo run failed");
+
+        assert!(
+            out.status.success(),
+            "phraya plan --reference A --reference B failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let plan = read_plan(&plan_path).unwrap();
+        assert_eq!(
+            plan.reference_space.len(),
+            2,
+            "plan --reference A --reference B should store a palette of 2 spaces, got {}",
+            plan.reference_space.len()
+        );
+
+        let expected_hash_a = content_hash_for_bytes(b"ACGTACGTACGTACGTACGTACGTACGTACGT");
+        let expected_hash_b = content_hash_for_bytes(b"TGCATGCATGCATGCATGCATGCATGCATGCA");
+        assert!(
+            plan.get_reference_space(&expected_hash_a).is_some(),
+            "reference A's content hash should resolve to a stored space"
+        );
+        assert!(
+            plan.get_reference_space(&expected_hash_b).is_some(),
+            "reference B's content hash should resolve to a stored space"
+        );
+    }
     // ============================================================================
     // RED acceptance tests for issue #200: fat plan — read content hashing +
     // stored read sketches (ADR-0011)
