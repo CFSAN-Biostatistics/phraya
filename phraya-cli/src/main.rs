@@ -46,9 +46,9 @@ enum Commands {
         #[arg(long, value_name = "FILE", required = true)]
         inputs: Vec<PathBuf>,
 
-        /// Reference file (optional, auto-detects use case)
+        /// Reference files (optional, repeatable, auto-detects use case)
         #[arg(long, value_name = "FILE")]
-        reference: Option<PathBuf>,
+        reference: Vec<PathBuf>,
 
         /// Output plan file
         #[arg(long, value_name = "FILE", required = true)]
@@ -205,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if (batch_to.is_some() || batch_by.is_some()) && batch_output_pattern.is_none() {
                 return Err("--batch-output-pattern required when --batch-to or --batch-by specified".into());
             }
-            run_plan(&inputs, reference.as_deref(), &output, batch_to, batch_by, batch_output_pattern.as_deref())?;
+            run_plan(&inputs, &reference, &output, batch_to, batch_by, batch_output_pattern.as_deref())?;
         }
         Commands::PlanTasks { plan_file } => {
             plan_tasks(&plan_file)?;
@@ -736,7 +736,7 @@ fn parse_sequences_from_file(
 
 fn run_plan(
     input_paths: &[PathBuf],
-    reference_path: Option<&std::path::Path>,
+    reference_paths: &[PathBuf],
     output_path: &PathBuf,
     batch_to: Option<usize>,
     batch_by: Option<usize>,
@@ -749,8 +749,34 @@ fn run_plan(
     let mut ref_seq_index: Option<usize> = None;
     let mut all_mate_info: HashMap<String, phraya_core::types::MateInfo> = HashMap::new();
 
-    // First, read reference if provided
-    if let Some(ref_path) = reference_path {
+    // First, read all references if provided
+    let mut reference_spaces: Vec<phraya_io::plan::ReferenceSpace> = Vec::new();
+    for ref_path in reference_paths {
+        let (sequences, _mate_info) = parse_sequences_from_file(ref_path)?;
+        
+        if let Some(seq) = sequences.into_iter().next() {
+            // Compute content hash from the sequence bytes
+            let content_hash = phraya_io::plan::content_hash_for_sequence(&seq);
+            let seq_id = seq.id().to_string();
+            
+            // Create sketches for this reference space
+            let mut space_sketches = std::collections::HashMap::new();
+            let sketch = phraya_core::types::sketch_sequence_default(&seq);
+            space_sketches.insert(seq_id, sketch);
+            
+            // Create and store the reference space
+            reference_spaces.push(phraya_io::plan::ReferenceSpace {
+                content_hash,
+                name: None,
+                sketches: space_sketches,
+            });
+        }
+    }
+    
+    // For now, use the first reference (if any) for task generation (backward compatible)
+    let first_reference_path = reference_paths.first().map(|p| p.as_path());
+    
+    if let Some(ref_path) = first_reference_path {
         let ref_path_str = ref_path.to_string_lossy().to_string();
         input_file_list.push(ref_path_str.clone());
 
@@ -790,7 +816,7 @@ fn run_plan(
 
     // Detect use case
     let use_case = detect_use_case(
-        reference_path.is_some(),
+        first_reference_path.is_some(),
         input_paths.len(),
         &sketches,
         &all_sequences,
@@ -812,7 +838,7 @@ fn run_plan(
     let task_list = generate_task_list(
         &use_case,
         input_paths.len(),
-        reference_path.is_some(),
+        first_reference_path.is_some(),
         &sketches,
         &sequence_to_file_index,
         ref_seq_index,
@@ -827,7 +853,7 @@ fn run_plan(
 
     // Build byte offset index and read counts for batch mode
     let (read_byte_offsets, reads_per_file, total_read_count) =
-        build_byte_offset_index(reference_path, input_paths)?;
+        build_byte_offset_index(first_reference_path, input_paths)?;
 
     // Infer insert size distribution from BAM files if present
     let insert_size_distribution = infer_insert_size_from_inputs(input_paths)?;
@@ -852,6 +878,7 @@ fn run_plan(
     plan.kmer_params = phraya_io::plan::KmerParams { k: 21, w: 11 };
     plan.insert_size_distribution = insert_size_distribution;
     plan.mate_info = all_mate_info;
+    plan.reference_space = reference_spaces;
 
     // Handle batch mode configuration
     if let Some(batch_pattern) = batch_output_pattern {

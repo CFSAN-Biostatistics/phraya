@@ -164,7 +164,7 @@ pub struct PhrayaPlan {
     /// Content-addressed reference space (ADR-0011): optional reference with
     /// content hash, name, and sketches. Used in plan v6+.
     #[serde(default)]
-    pub reference_space: Option<ReferenceSpace>,
+    pub reference_space: Vec<ReferenceSpace>,
     /// Input file paths
     pub input_files: Vec<String>,
     /// Timestamp (ISO8601)
@@ -262,7 +262,7 @@ impl PhrayaPlan {
             dense_kmer_index: HashMap::new(),
             w11_membership: HashMap::new(),
             sparse_mode: false,
-            reference_space: None,
+            reference_space: Vec::new(),
         }
     }
 
@@ -289,6 +289,12 @@ impl PhrayaPlan {
         // Return the cached membership tags if available
         // (this is the fast path for most uses)
         self.w11_membership.get(sequence_id)
+    }
+
+    /// Look up a reference space by its content hash.
+    /// Returns None if no space with that hash exists in the palette.
+    pub fn get_reference_space(&self, hash: &str) -> Option<&ReferenceSpace> {
+        self.reference_space.iter().find(|space| space.content_hash == hash)
     }
 
     /// Check if this plan was created with --sparse (dense sketches not stored).
@@ -723,17 +729,17 @@ mod tests {
             vec![],
         );
 
-        let plan = PhrayaPlan {
-            reference_space: Some(ReferenceSpace {
+                let plan = PhrayaPlan {
+            reference_space: vec![ReferenceSpace {
                 content_hash: "deadbeef".to_string(),
                 name: None,
                 sketches: HashMap::new(),
-            }),
+            }],
             ..base_plan
         };
 
-        assert!(plan.reference_space.is_some());
-        assert_eq!(plan.reference_space.unwrap().content_hash, "deadbeef");
+        assert!(!plan.reference_space.is_empty());
+        assert_eq!(plan.reference_space[0].content_hash, "deadbeef");
     }
 
     /// A `ReferenceSpace` attached to a plan must survive a full write/read round-trip
@@ -754,12 +760,12 @@ mod tests {
             vec![],
         );
 
-        let plan = PhrayaPlan {
-            reference_space: Some(ReferenceSpace {
+                let plan = PhrayaPlan {
+            reference_space: vec![ReferenceSpace {
                 content_hash: "cafef00d".to_string(),
                 name: Some("chr1-assembly".to_string()),
                 sketches: sketches.clone(),
-            }),
+            }],
             ..base_plan
         };
 
@@ -767,16 +773,14 @@ mod tests {
         write_plan(temp.path(), &plan).unwrap();
         let read_plan = read_plan(temp.path()).unwrap();
 
-        let read_space = read_plan
-            .reference_space
-            .expect("reference_space must survive round-trip");
+        let read_space = &read_plan.reference_space[0];
         assert_eq!(read_space.content_hash, "cafef00d");
         assert_eq!(read_space.name, Some("chr1-assembly".to_string()));
         assert_eq!(read_space.sketches.len(), 1);
         assert_eq!(read_space.sketches.get("ref").unwrap(), &sketch);
     }
 
-    /// A plan with no reference space attached (`reference_space: None`) must also
+    /// A plan with an empty reference palette must also
     /// round-trip cleanly — the field is optional, not mandatory.
     #[test]
     fn issue_196_plan_without_reference_space_round_trips() {
@@ -790,7 +794,7 @@ mod tests {
         );
 
         let plan = PhrayaPlan {
-            reference_space: None,
+            reference_space: Vec::new(),
             ..base_plan
         };
 
@@ -798,7 +802,7 @@ mod tests {
         write_plan(temp.path(), &plan).unwrap();
         let read_plan = read_plan(temp.path()).unwrap();
 
-        assert_eq!(read_plan.reference_space, None);
+        assert!(read_plan.reference_space.is_empty());
     }
 
     /// Hashing identical byte content twice must produce identical hashes — the
