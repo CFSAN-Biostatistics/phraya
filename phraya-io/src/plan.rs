@@ -26,6 +26,21 @@ where
     sorted.serialize(serializer)
 }
 
+/// Fast 64-bit non-cryptographic hash for read content (ADR-0011).
+/// Uses FNV-1a for speed and determinism. Fast hash is suitable for caching
+/// by content within a single pipeline run; it is NOT a cryptographic identity.
+pub fn read_content_hash(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 /// PhrayaPlan format version for forward compatibility
 pub const PHRAYAPLAN_VERSION: u32 = 6;
 
@@ -80,6 +95,10 @@ fn default_w11_membership() -> HashMap<String, Vec<bool>> {
 
 fn default_sparse_mode() -> bool {
     false
+}
+
+fn default_read_sketches() -> HashMap<u64, MinimizerSketch> {
+    HashMap::new()
 }
 
 fn is_false(v: &bool) -> bool {
@@ -177,6 +196,11 @@ pub struct PhrayaPlan {
     pub kmer_uniqueness: HashMap<u32, f64>,
     /// Task list: (query_id, target_id) pairs
     pub task_list: Vec<(u32, u32)>,
+    /// Read sketches keyed by content hash, for reuse across pipeline stages
+    /// (ADR-0011). Distinct from kmer_index, which is keyed by sequence ID
+    /// and holds reference sketches. Empty by default.
+    #[serde(default = "default_read_sketches")]
+    pub read_sketches: HashMap<u64, MinimizerSketch>,
     /// Variation hotspot intervals detected at plan time: (start, end) pairs
     #[serde(default)]
     pub hotspot_intervals: Vec<(u32, u32)>,
@@ -261,6 +285,7 @@ impl PhrayaPlan {
             mate_info: HashMap::new(),
             dense_kmer_index: HashMap::new(),
             w11_membership: HashMap::new(),
+            read_sketches: HashMap::new(),
             sparse_mode: false,
             reference_space: Vec::new(),
         }
@@ -297,6 +322,11 @@ impl PhrayaPlan {
         self.reference_space
             .iter()
             .find(|space| space.content_hash == hash)
+    }
+
+    /// Look up a stored read sketch by content hash
+    pub fn get_read_sketch(&self, hash: u64) -> Option<&MinimizerSketch> {
+        self.read_sketches.get(&hash)
     }
 
     /// Check if this plan was created with --sparse (dense sketches not stored).
@@ -1121,5 +1151,171 @@ mod tests {
             plan.get_reference_space(&expected_hash_b).is_some(),
             "reference B's content hash should resolve to a stored space"
         );
+    }
+    // ============================================================================
+    // RED acceptance tests for issue #200: fat plan — read content hashing +
+    // stored read sketches (ADR-0011)
+    //
+    // `read_content_hash`, `PhrayaPlan::read_sketches`, and
+    // `PhrayaPlan::get_read_sketch` do not exist on this branch yet. Every test
+    // below fails to compile or fails at runtime against unmodified main.
+    // ============================================================================
+
+    /// A fast, non-cryptographic 64-bit hash function for read content must exist,
+    /// distinct from the strong (256-bit) reference content hash — the issue
+    /// explicitly calls for a fast 64-bit hash (e.g. xxh3) for reads, not the
+    /// cryptographic hash used for reference identity.
+    #[test]
+    fn issue_200_read_content_hash_is_64_bit() {
+        let hash: u64 = read_content_hash(b"ACGTACGTACGTACGTACGTACGTACGTACGT");
+        // A u64 return type is itself the strongest assertion here — this line
+        // fails to compile if read_content_hash returns anything else (e.g. a
+        // 256-bit hex String like the reference hash), and that's intentional:
+        // the fast/strong hash distinction is the point of this test.
+        let _: u64 = hash;
+    }
+
+    /// Hashing identical read bytes twice must produce identical hashes.
+    #[test]
+    fn issue_200_read_content_hash_is_deterministic() {
+        let bases = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        assert_eq!(
+            read_content_hash(bases),
+            read_content_hash(bases),
+            "identical read content must hash identically"
+        );
+    }
+
+    /// A single differing byte must change the read hash — the function must be
+    /// content-sensitive, not a constant or a length-only checksum.
+    #[test]
+    fn issue_200_read_content_hash_is_sensitive_to_content() {
+        let a = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let b = b"ACGTACGTACGTACGTACGTACGTACGTACGA";
+        assert_ne!(
+            read_content_hash(a),
+            read_content_hash(b),
+            "a single differing byte must change the read content hash"
+        );
+    }
+
+    /// `PhrayaPlan` must carry a `read_sketches: HashMap<u64, MinimizerSketch>`
+    /// field, keyed by read content hash (distinct from `kmer_index`, which is
+    /// keyed by sequence ID string and holds reference/target sketches).
+    #[test]
+    fn issue_200_phraya_plan_has_read_sketches_field() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec![],
+            "2026-07-13T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let read_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let hash = read_content_hash(read_bases);
+        let sketch = phraya_core::types::sketch(read_bases, 21, 11);
+
+        let mut read_sketches = HashMap::new();
+        read_sketches.insert(hash, sketch.clone());
+
+        let plan = PhrayaPlan {
+            read_sketches,
+            ..base_plan
+        };
+
+        assert_eq!(plan.read_sketches.len(), 1);
+        assert_eq!(plan.read_sketches.get(&hash), Some(&sketch));
+    }
+
+    /// `PhrayaPlan::get_read_sketch(hash)` looks up a stored read sketch by content
+    /// hash, mirroring the existing `get_sketch(sequence_id)` accessor for
+    /// reference sketches — returns `None` for an unstored hash.
+    #[test]
+    fn issue_200_get_read_sketch_looks_up_by_hash() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec![],
+            "2026-07-13T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let read_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let hash = read_content_hash(read_bases);
+        let sketch = phraya_core::types::sketch(read_bases, 21, 11);
+
+        let mut read_sketches = HashMap::new();
+        read_sketches.insert(hash, sketch.clone());
+
+        let plan = PhrayaPlan {
+            read_sketches,
+            ..base_plan
+        };
+
+        assert_eq!(plan.get_read_sketch(hash), Some(&sketch));
+        assert_eq!(plan.get_read_sketch(hash.wrapping_add(1)), None);
+    }
+
+    /// A plan with stored read sketches must round-trip through `.phrayaplan`'s
+    /// write/read (MessagePack + zstd) unchanged — hash keys and sketch values
+    /// both preserved exactly.
+    #[test]
+    fn issue_200_read_sketches_round_trip_through_phrayaplan() {
+        let base_plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec![],
+            "2026-07-13T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let read_a = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let read_b = b"TGCATGCATGCATGCATGCATGCATGCATGCA";
+        let hash_a = read_content_hash(read_a);
+        let hash_b = read_content_hash(read_b);
+        let sketch_a = phraya_core::types::sketch(read_a, 21, 11);
+        let sketch_b = phraya_core::types::sketch(read_b, 21, 11);
+
+        let mut read_sketches = HashMap::new();
+        read_sketches.insert(hash_a, sketch_a.clone());
+        read_sketches.insert(hash_b, sketch_b.clone());
+
+        let plan = PhrayaPlan {
+            read_sketches,
+            ..base_plan
+        };
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+        let read_plan = read_plan(temp.path()).unwrap();
+
+        assert_eq!(read_plan.read_sketches.len(), 2);
+        assert_eq!(read_plan.get_read_sketch(hash_a), Some(&sketch_a));
+        assert_eq!(read_plan.get_read_sketch(hash_b), Some(&sketch_b));
+    }
+
+    /// A plan with no stored read sketches (the common case for plans that
+    /// predate this feature, or reference-only plans) must still round-trip —
+    /// the field is additive with a sensible empty default, not mandatory.
+    #[test]
+    fn issue_200_plan_without_read_sketches_round_trips() {
+        let plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec![],
+            "2026-07-13T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+        let read_plan = read_plan(temp.path()).unwrap();
+
+        assert!(read_plan.read_sketches.is_empty());
     }
 }

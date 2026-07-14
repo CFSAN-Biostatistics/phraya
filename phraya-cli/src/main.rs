@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use log::info;
-use phraya_align::executor::{align_read, align_task_with_config, AlignConfig, Strategy, TargetContext};
+use phraya_align::executor::{
+    align_read, align_task_with_config, AlignConfig, Strategy, TargetContext,
+};
 use phraya_core::types::{
     compute_kmer_uniqueness, detect_hotspot_intervals, select_centroid, sketch_sequence_default,
     CoverageTrack, MinimizerSketch, Sequence,
@@ -9,9 +11,8 @@ use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
     bam_cram::BamCramParser,
     phraya,
-    plan::{self, write_plan, InsertSizeDistribution, PhrayaPlan, UseCase},
-    queries,
-    SequenceParser,
+    plan::{self, read_content_hash, write_plan, InsertSizeDistribution, PhrayaPlan, UseCase},
+    queries, SequenceParser,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -203,9 +204,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             // Validate batch flags
             if (batch_to.is_some() || batch_by.is_some()) && batch_output_pattern.is_none() {
-                return Err("--batch-output-pattern required when --batch-to or --batch-by specified".into());
+                return Err(
+                    "--batch-output-pattern required when --batch-to or --batch-by specified"
+                        .into(),
+                );
             }
-            run_plan(&inputs, &reference, &output, batch_to, batch_by, batch_output_pattern.as_deref())?;
+            run_plan(
+                &inputs,
+                &reference,
+                &output,
+                batch_to,
+                batch_by,
+                batch_output_pattern.as_deref(),
+            )?;
         }
         Commands::PlanTasks { plan_file } => {
             plan_tasks(&plan_file)?;
@@ -225,7 +236,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "fast" => Strategy::Fast,
                 "balanced" => Strategy::Balanced,
                 "sensitive" => Strategy::Sensitive,
-                other => return Err(format!("unknown strategy: {other}; expected fast, balanced, or sensitive").into()),
+                other => {
+                    return Err(format!(
+                        "unknown strategy: {other}; expected fast, balanced, or sensitive"
+                    )
+                    .into())
+                }
             };
 
             // Strategy sets the default coverage-window radius; --coverage-window overrides it.
@@ -373,15 +389,22 @@ fn run_align_worker_with_plan(
     plan: &PhrayaPlan,
     config: AlignConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     // Validate worker ID
-    let num_chunks = plan.batch_num_chunks.ok_or("Plan has no batch configuration")?;
+    let num_chunks = plan
+        .batch_num_chunks
+        .ok_or("Plan has no batch configuration")?;
     if worker_id >= num_chunks {
-        return Err(format!("Worker {} out of range for {} chunks", worker_id, num_chunks).into());
+        return Err(format!(
+            "Worker {} out of range for {} chunks",
+            worker_id, num_chunks
+        )
+        .into());
     }
 
     // Get output path from plan
-    let output_path = plan.batch_output_paths.get(worker_id)
+    let output_path = plan
+        .batch_output_paths
+        .get(worker_id)
         .ok_or(format!("No output path for worker {}", worker_id))?;
 
     // Calculate chunk boundaries (exclude reference from read pool if present)
@@ -401,7 +424,10 @@ fn run_align_worker_with_plan(
     let start_idx = worker_id * chunk_size;
     let end_idx = std::cmp::min(start_idx + chunk_size, query_read_count);
 
-    eprintln!("Worker {} processing reads [{}, {})", worker_id, start_idx, end_idx);
+    eprintln!(
+        "Worker {} processing reads [{}, {})",
+        worker_id, start_idx, end_idx
+    );
 
     // Read target sequence (reference or centroid)
     // For now, assume target is first sequence in first file
@@ -482,7 +508,13 @@ fn run_align_worker_with_plan(
                 })
                 .collect();
             for (query_id, result) in batch_results {
-                merge_result(&mut all_variants, &mut all_query_positions, &mut coverage_track, query_id, result);
+                merge_result(
+                    &mut all_variants,
+                    &mut all_query_positions,
+                    &mut coverage_track,
+                    query_id,
+                    result,
+                );
             }
         }
     } else {
@@ -502,7 +534,13 @@ fn run_align_worker_with_plan(
                 })
                 .collect();
             for (query_id, result) in batch_results {
-                merge_result(&mut all_variants, &mut all_query_positions, &mut coverage_track, query_id, result);
+                merge_result(
+                    &mut all_variants,
+                    &mut all_query_positions,
+                    &mut coverage_track,
+                    query_id,
+                    result,
+                );
             }
         }
     }
@@ -526,13 +564,21 @@ fn run_align_worker_with_plan(
     let queries_path = format!("{}.queries", output_path);
     queries::write_queries(std::path::Path::new(&queries_path), &index)?;
 
-    eprintln!("Worker {} complete: {} observations written to {}", worker_id, phraya_file.observations.len(), output_path);
+    eprintln!(
+        "Worker {} complete: {} observations written to {}",
+        worker_id,
+        phraya_file.observations.len(),
+        output_path
+    );
     eprintln!("Worker {} read outcomes: {}", worker_id, stats.summary());
     Ok(())
 }
 
 /// Map global read index to (file_idx, local_idx), skipping reference (file 0)
-fn map_global_to_local(plan: &PhrayaPlan, global_idx: usize) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+fn map_global_to_local(
+    plan: &PhrayaPlan,
+    global_idx: usize,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
     let mut cumulative = 0;
     // Start from file 1 (skip reference at file 0)
     for (file_idx, &count) in plan.reads_per_file.iter().enumerate().skip(1) {
@@ -564,7 +610,9 @@ fn run_align_ensure(
     // Load plan once, share via Arc
     let plan = Arc::new(plan::read_plan(plan_path)?);
 
-    let _num_chunks = plan.batch_num_chunks.ok_or("Plan has no batch configuration")?;
+    let _num_chunks = plan
+        .batch_num_chunks
+        .ok_or("Plan has no batch configuration")?;
     let mut missing_chunks = Vec::new();
 
     // Find missing outputs
@@ -579,8 +627,11 @@ fn run_align_ensure(
         return Ok(());
     }
 
-    eprintln!("Processing {} missing chunks in parallel (threads: {})",
-        missing_chunks.len(), rayon::current_num_threads());
+    eprintln!(
+        "Processing {} missing chunks in parallel (threads: {})",
+        missing_chunks.len(),
+        rayon::current_num_threads()
+    );
 
     // Parallel execution with error collection
     let results: Vec<_> = missing_chunks
@@ -592,7 +643,8 @@ fn run_align_ensure(
         .collect();
 
     // Report failures
-    let failures: Vec<_> = results.iter()
+    let failures: Vec<_> = results
+        .iter()
         .filter_map(|(id, r)| r.as_ref().err().map(|e| (*id, e.clone())))
         .collect();
 
@@ -600,8 +652,12 @@ fn run_align_ensure(
         for (id, err) in &failures {
             eprintln!("Worker {} failed: {}", id, err);
         }
-        return Err(format!("{} of {} workers failed",
-            failures.len(), missing_chunks.len()).into());
+        return Err(format!(
+            "{} of {} workers failed",
+            failures.len(),
+            missing_chunks.len()
+        )
+        .into());
     }
 
     eprintln!("Ensure mode complete");
@@ -654,7 +710,12 @@ fn extract_sequence_at_offset(
         let mut quality_line = String::new();
         reader.read_line(&mut quality_line)?;
         let quality = quality_line.trim().as_bytes().to_vec();
-        Ok(Sequence::new(sequence.into_bytes(), Some(quality), id, None))
+        Ok(Sequence::new(
+            sequence.into_bytes(),
+            Some(quality),
+            id,
+            None,
+        ))
     } else {
         Err(format!("Unknown format at offset {} in {}", offset, file_path).into())
     }
@@ -665,7 +726,8 @@ fn infer_insert_size_from_inputs(
     input_paths: &[PathBuf],
 ) -> Result<Option<InsertSizeDistribution>, Box<dyn std::error::Error>> {
     // Find first BAM file
-    let bam_path = input_paths.iter()
+    let bam_path = input_paths
+        .iter()
         .find(|p| p.to_string_lossy().ends_with(".bam"));
 
     if let Some(bam_path) = bam_path {
@@ -677,7 +739,7 @@ fn infer_insert_size_from_inputs(
 
 /// Infer insert size distribution from BAM proper pairs
 fn infer_insert_size_from_bam(
-    bam_path: &std::path::Path
+    bam_path: &std::path::Path,
 ) -> Result<Option<InsertSizeDistribution>, Box<dyn std::error::Error>> {
     use noodles_bam::io::Reader;
     use std::fs::File;
@@ -714,7 +776,10 @@ fn infer_insert_size_from_bam(
 /// Helper to parse sequences from any format (FASTA/FASTQ/BAM/CRAM)
 fn parse_sequences_from_file(
     path: &std::path::Path,
-) -> Result<(Vec<Sequence>, HashMap<String, phraya_core::types::MateInfo>), Box<dyn std::error::Error>> {
+) -> Result<
+    (Vec<Sequence>, HashMap<String, phraya_core::types::MateInfo>),
+    Box<dyn std::error::Error>,
+> {
     let path_str = path.to_string_lossy();
 
     if path_str.ends_with(".bam") {
@@ -753,17 +818,17 @@ fn run_plan(
     let mut reference_spaces: Vec<phraya_io::plan::ReferenceSpace> = Vec::new();
     for ref_path in reference_paths {
         let (sequences, _mate_info) = parse_sequences_from_file(ref_path)?;
-        
+
         if let Some(seq) = sequences.into_iter().next() {
             // Compute content hash from the sequence bytes
             let content_hash = phraya_io::plan::content_hash_for_sequence(&seq);
             let seq_id = seq.id().to_string();
-            
+
             // Create sketches for this reference space
             let mut space_sketches = std::collections::HashMap::new();
             let sketch = phraya_core::types::sketch_sequence_default(&seq);
             space_sketches.insert(seq_id, sketch);
-            
+
             // Create and store the reference space
             reference_spaces.push(phraya_io::plan::ReferenceSpace {
                 content_hash,
@@ -772,10 +837,10 @@ fn run_plan(
             });
         }
     }
-    
+
     // For now, use the first reference (if any) for task generation (backward compatible)
     let first_reference_path = reference_paths.first().map(|p| p.as_path());
-    
+
     if let Some(ref_path) = first_reference_path {
         let ref_path_str = ref_path.to_string_lossy().to_string();
         input_file_list.push(ref_path_str.clone());
@@ -798,7 +863,11 @@ fn run_plan(
         for seq in sequences {
             all_sequences.push((seq, input_path_str.clone()));
             // File indices: 1+ for input files (offset by 1 if there's a reference)
-            let file_index = if ref_seq_index.is_some() { file_idx + 1 } else { file_idx };
+            let file_index = if ref_seq_index.is_some() {
+                file_idx + 1
+            } else {
+                file_idx
+            };
             sequence_to_file_index.push(file_index);
         }
         all_mate_info.extend(mate_info);
@@ -858,8 +927,10 @@ fn run_plan(
     // Infer insert size distribution from BAM files if present
     let insert_size_distribution = infer_insert_size_from_inputs(input_paths)?;
     if let Some(ref dist) = insert_size_distribution {
-        eprintln!("Inferred insert size: mean={}, std_dev={}, n={}",
-            dist.mean, dist.std_dev, dist.sample_size);
+        eprintln!(
+            "Inferred insert size: mean={}, std_dev={}, n={}",
+            dist.mean, dist.std_dev, dist.sample_size
+        );
     }
 
     // Create and write plan
@@ -879,6 +950,15 @@ fn run_plan(
     plan.insert_size_distribution = insert_size_distribution;
     plan.mate_info = all_mate_info;
     plan.reference_space = reference_spaces;
+
+    // Populate read_sketches keyed by content hash (ADR-0011)
+    // Skip the reference if present; read_sketches are for reads only
+    for (idx, ((seq, _), sketch)) in all_sequences.iter().zip(sketches.iter()).enumerate() {
+        if Some(idx) != ref_seq_index {
+            let content_hash = read_content_hash(seq.bases());
+            plan.read_sketches.insert(content_hash, sketch.clone());
+        }
+    }
 
     // Handle batch mode configuration
     if let Some(batch_pattern) = batch_output_pattern {
@@ -975,7 +1055,9 @@ fn configure_batch_mode(
 }
 
 /// Index byte offsets for a single file
-fn index_file_offsets(path: &std::path::Path) -> Result<(Vec<u64>, usize), Box<dyn std::error::Error>> {
+fn index_file_offsets(
+    path: &std::path::Path,
+) -> Result<(Vec<u64>, usize), Box<dyn std::error::Error>> {
     use std::fs::File;
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
@@ -1151,8 +1233,7 @@ fn generate_task_list(
                 .iter()
                 .map(|&i| sketches[i].clone())
                 .collect();
-            let centroid_offset = select_centroid(&contig_sketches)
-                .unwrap_or(0);
+            let centroid_offset = select_centroid(&contig_sketches).unwrap_or(0);
             let centroid_idx = contig_indices[centroid_offset];
 
             eprintln!("Case 3: Selected centroid contig at index {}", centroid_idx);
@@ -1209,7 +1290,9 @@ fn run_merge(
     }
 
     // Auto-detect plan file
-    if input_paths.len() == 1 && input_paths[0].extension().and_then(|s| s.to_str()) == Some("phrayaplan") {
+    if input_paths.len() == 1
+        && input_paths[0].extension().and_then(|s| s.to_str()) == Some("phrayaplan")
+    {
         eprintln!("Detected plan file, merging batch outputs...");
         let plan = plan::read_plan(&input_paths[0])?;
 
@@ -1224,12 +1307,15 @@ fn run_merge(
                 return Err(format!(
                     "Missing batch output {} (worker {}). Run with --ensure to complete.",
                     output_path_str, idx
-                ).into());
+                )
+                .into());
             }
         }
 
         eprintln!("Merging {} batch outputs...", plan.batch_output_paths.len());
-        let paths: Vec<&std::path::Path> = plan.batch_output_paths.iter()
+        let paths: Vec<&std::path::Path> = plan
+            .batch_output_paths
+            .iter()
             .map(|s| std::path::Path::new(s.as_str()))
             .collect();
         let merged = phraya::merge_phraya_files(&paths)?;
@@ -1320,7 +1406,8 @@ fn run_filter(
             return Err(format!(
                 "--require-proper-pairs value {} is out of range (must be 0–1 or 0–100)",
                 raw
-            ).into());
+            )
+            .into());
         }
         filter_builder = filter_builder.require_proper_pairs(fraction);
     }
