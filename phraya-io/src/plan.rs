@@ -294,7 +294,9 @@ impl PhrayaPlan {
     /// Look up a reference space by its content hash.
     /// Returns None if no space with that hash exists in the palette.
     pub fn get_reference_space(&self, hash: &str) -> Option<&ReferenceSpace> {
-        self.reference_space.iter().find(|space| space.content_hash == hash)
+        self.reference_space
+            .iter()
+            .find(|space| space.content_hash == hash)
     }
 
     /// Check if this plan was created with --sparse (dense sketches not stored).
@@ -729,7 +731,7 @@ mod tests {
             vec![],
         );
 
-                let plan = PhrayaPlan {
+        let plan = PhrayaPlan {
             reference_space: vec![ReferenceSpace {
                 content_hash: "deadbeef".to_string(),
                 name: None,
@@ -760,7 +762,7 @@ mod tests {
             vec![],
         );
 
-                let plan = PhrayaPlan {
+        let plan = PhrayaPlan {
             reference_space: vec![ReferenceSpace {
                 content_hash: "cafef00d".to_string(),
                 name: Some("chr1-assembly".to_string()),
