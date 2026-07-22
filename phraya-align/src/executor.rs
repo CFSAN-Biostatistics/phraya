@@ -396,6 +396,30 @@ impl<'a> TargetContext<'a> {
         }
     }
 
+    /// Build the shared context for `target` from an explicitly supplied sketch, bypassing
+    /// the plan's sequence-ID lookup. Used by reference-palette alignment (ADR-0011, issue
+    /// #226): on a content-hash **hit** the caller passes the planned reference space's
+    /// sketch (proving sketch reuse — no recompute), and on a **miss** the caller passes a
+    /// freshly computed sketch. Repeat-region detection and the occurrence cap are derived
+    /// the same way as [`build`].
+    pub fn build_with_sketch(
+        target: &'a Sequence,
+        sketch: &MinimizerSketch,
+        strategy: Strategy,
+    ) -> Self {
+        let minimizer_index = build_minimizer_index(sketch);
+        let seed_max_occ = seed_occurrence_cap(&minimizer_index, SEED_OCC_CAP_FLOOR);
+        let target_str = String::from_utf8_lossy(target.bases());
+        let repeat_regions = detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
+        TargetContext {
+            target,
+            minimizer_index,
+            repeat_regions,
+            seed_max_occ,
+            strategy,
+        }
+    }
+
     /// The target sequence this context was built for.
     pub fn target(&self) -> &Sequence {
         self.target

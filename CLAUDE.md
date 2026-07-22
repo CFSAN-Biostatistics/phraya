@@ -90,6 +90,18 @@ Each preset selects an algorithm **and** a default coverage-window radius; `--co
 - A query key appears **iff** it has ≥1 placement at score ≥ 0.95; `write_queries` drops reads whose filtered list is empty (so key count == placed-read count — do not count keys of reads with only sub-threshold hits as "aligned")
 - Enables multi-mapping analysis: "exclude variants where >50% supporting reads multi-map"
 - Separate file to keep merge fast (not needed for typical variant calling)
+- Stored score is **absolute normalized identity** `(1 - edit/len)` for every placement (primary and alternates alike; `executor.rs` computes both this way) — not a primary-relative ratio. Absolute identity is invocation-independent, so it is directly comparable across reads and across reference spaces.
+
+### `cross_space.phraya.queries` (cross-space sidecar, ADR-0011 / reference-palette mode)
+- Written only by `phraya align --reference` mode. Type `CrossSpaceQueryIndex = query -> [(space, pos, identity)]` (`phraya-io/src/queries.rs`), spanning the whole presented reference palette rather than one coordinate space.
+- Each placement carries absolute normalized identity `(1 - edit/len)`, so a cross-space margin (e.g. host 0.96 vs target 0.98) is recoverable straight off the sidecar. A read placed in N spaces appears once per space with directly comparable identities.
+- Enacts **no** decision: no `--best`, no margin cutoff, no per-read classification — that is deferred to filter. Same 0.95 identity threshold and deterministic (BTreeMap + sorted) serialization as `.phraya.queries`.
+
+### Reference-palette alignment mode (`phraya align --reference`, ADR-0011)
+- New mode, mutually exclusive with traditional (`QUERY_ID`/`TARGET_ID`), `--worker`, and `--ensure`. `--output` is a **directory**.
+- Aligns the plan's read pool against each repeatable `--reference` space independently → one `<output>/<label>.phraya` per space (label = palette name or content-hash prefix) plus one `cross_space.phraya.queries`.
+- Each reference resolves by content hash against the plan's palette: **hit** reuses the planned sketch (`TargetContext::build_with_sketch`, no recompute); **miss** warns + sketches on the fly (tolerant default) or hard-errors under `--sealed` ("sealed" = fail-fast on unplanned reference; distinct from filter "strict").
+- Read pool excludes every sequence whose hash is in the plan's palette (not just the presented subset), which makes the pool invocation-independent → composable: `align({A,B}) = align({A}) ∪ align({B})` (per-space `.phraya` byte-identical alone vs combined).
 
 ## K-mer Sketching
 

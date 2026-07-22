@@ -122,6 +122,22 @@ enum Commands {
         /// Number of parallel threads for --ensure mode (default: auto-detect)
         #[arg(long, value_name = "N")]
         threads: Option<usize>,
+
+        /// Reference palette mode (ADR-0011, repeatable): align the plan's reads against
+        /// each presented reference space. Each reference is resolved by content hash
+        /// against the plan's palette — a hit reuses the planned sketch, a miss warns and
+        /// sketches on the fly (see --sealed). Produces one `<output>/<space>.phraya` per
+        /// space plus a cross-space `<output>/cross_space.phraya.queries` sidecar. In this
+        /// mode --output is a directory. Mutually exclusive with QUERY_ID/--worker/--ensure.
+        #[arg(long, value_name = "FILE")]
+        reference: Vec<PathBuf>,
+
+        /// Sealed mode (ADR-0011): turn a reference content-hash miss into a hard error
+        /// instead of the tolerant default (warn + sketch on the fly). For production
+        /// pipelines that want an unplanned reference to fail loudly once rather than warn
+        /// quietly across many workers. Only meaningful with --reference.
+        #[arg(long)]
+        sealed: bool,
     },
     /// Filter .phraya file by thresholds and output in specified format
     Filter {
@@ -231,6 +247,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             worker,
             ensure,
             threads,
+            reference,
+            sealed,
         } => {
             let strat = match strategy.as_str() {
                 "fast" => Strategy::Fast,
@@ -250,7 +268,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config = config.with_coverage_window_radius(radius);
             }
 
-            if ensure {
+            if !reference.is_empty() {
+                // Reference palette mode (ADR-0011): mutually exclusive with the other modes.
+                if ensure || worker.is_some() || query_id.is_some() || target_id.is_some() {
+                    return Err("--reference cannot be combined with QUERY_ID/TARGET_ID, --worker, or --ensure".into());
+                }
+                let out_dir = output.ok_or("--output (a directory) required in --reference mode")?;
+                run_align_reference(&plan_file, &reference, &out_dir, sealed, config)?;
+            } else if sealed {
+                return Err("--sealed is only meaningful with --reference".into());
+            } else if ensure {
                 run_align_ensure(&plan_file, config, threads)?;
             } else if let Some(worker_id) = worker {
                 if output.is_some() {
@@ -571,6 +598,191 @@ fn run_align_worker_with_plan(
         output_path
     );
     eprintln!("Worker {} read outcomes: {}", worker_id, stats.summary());
+    Ok(())
+}
+
+/// Derive a filesystem-safe per-space label: the space's name if present, else a prefix of
+/// its content hash. Deterministic so that `align({A})` and `align({A,B})` write byte-for-byte
+/// the same `A.phraya` (composability).
+fn reference_space_label(name: &Option<String>, content_hash: &str) -> String {
+    match name {
+        Some(n) if !n.is_empty() => n
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+            .collect(),
+        _ => content_hash.chars().take(16).collect(),
+    }
+}
+
+/// Reference-palette alignment (ADR-0011, issues #226/#198/#199).
+///
+/// Aligns the plan's read pool against each presented `--reference` space independently,
+/// writing one `<out_dir>/<label>.phraya` per space and one cross-space sidecar
+/// `<out_dir>/cross_space.phraya.queries` spanning the whole palette. Each reference is
+/// resolved by content hash against the plan's palette:
+///   * **hit**  → reuse the planned sketch (no recompute);
+///   * **miss** → tolerant default: warn + sketch on the fly; with `sealed`, a hard error.
+///
+/// Per-space retention is unchanged (score_ratio >= 0.95 within each space), so multi-
+/// reference alignment is composable: `align({A,B}) = align({A}) ∪ align({B})`.
+fn run_align_reference(
+    plan_path: &std::path::Path,
+    reference_paths: &[PathBuf],
+    out_dir: &std::path::Path,
+    sealed: bool,
+    config: AlignConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use phraya_align::executor::align_read;
+    use phraya_io::plan::content_hash_for_sequence;
+
+    let plan = plan::read_plan(plan_path)?;
+    std::fs::create_dir_all(out_dir)?;
+
+    // Presented references, resolved to (label, sequence, hash). Needed up front so reads
+    // that are themselves a presented reference are excluded from the read pool.
+    struct PresentedRef {
+        seq: Sequence,
+        hash: String,
+        label: String,
+        path: String,
+    }
+    let mut refs: Vec<PresentedRef> = Vec::new();
+    for ref_path in reference_paths {
+        let (sequences, _) = parse_sequences_from_file(ref_path)?;
+        let seq = sequences
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("reference file has no sequences: {}", ref_path.display()))?;
+        let hash = content_hash_for_sequence(&seq);
+        // Prefer the palette's name for the label (hit); fall back to the hash prefix (miss).
+        let name = plan.get_reference_space(&hash).and_then(|s| s.name.clone());
+        let label = reference_space_label(&name, &hash);
+        refs.push(PresentedRef {
+            seq,
+            hash,
+            label,
+            path: ref_path.display().to_string(),
+        });
+    }
+
+    // Read pool: every sequence in the plan's inputs that is not a reference — neither one
+    // presented this invocation nor any space already in the plan's palette. Excluding the
+    // whole palette (not just the presented subset) is what makes the read pool
+    // invocation-independent, hence composability: `phraya plan` folds its first reference
+    // into `input_files` for backward-compatible task generation, so a palette reference can
+    // reappear in the inputs; without this exclusion it would be aligned *as a read* whenever
+    // it is not the one being presented, and align({A,B}) != align({A}) ∪ align({B}).
+    let mut excluded_hashes: std::collections::HashSet<String> =
+        refs.iter().map(|r| r.hash.clone()).collect();
+    for space in &plan.reference_space {
+        excluded_hashes.insert(space.content_hash.clone());
+    }
+    let mut reads: Vec<Sequence> = Vec::new();
+    for file_path in &plan.input_files {
+        let (sequences, _) = parse_sequences_from_file(std::path::Path::new(file_path))?;
+        for seq in sequences {
+            if !excluded_hashes.contains(&content_hash_for_sequence(&seq)) {
+                reads.push(seq);
+            }
+        }
+    }
+    eprintln!(
+        "Reference-palette mode: {} reference space(s), {} reads",
+        refs.len(),
+        reads.len()
+    );
+
+    // Cross-space sidecar (issue #198): query -> [(space, pos, identity)] across the palette.
+    let mut cross_space: queries::CrossSpaceQueryIndex = HashMap::new();
+
+    for r in &refs {
+        // Resolve by content hash: hit reuses the planned sketch, miss warns/errors.
+        let ctx = match plan.get_reference_space(&r.hash) {
+            Some(space) => {
+                let sketch = space.sketches.get(r.seq.id()).cloned().or_else(|| {
+                    // Space is in the palette but keyed under a different sequence id;
+                    // take whatever single sketch it holds.
+                    space.sketches.values().next().cloned()
+                });
+                match sketch {
+                    Some(sketch) => {
+                        eprintln!("Reference '{}' (hash {}): palette hit — reusing planned sketch", r.label, &r.hash[..16.min(r.hash.len())]);
+                        TargetContext::build_with_sketch(&r.seq, &sketch, config.strategy)
+                    }
+                    None => TargetContext::build(&r.seq, &plan, config.strategy),
+                }
+            }
+            None => {
+                if sealed {
+                    return Err(format!(
+                        "sealed: reference '{}' (content hash {}) is not in the plan's palette; \
+                         it was not planned",
+                        r.path, r.hash
+                    )
+                    .into());
+                }
+                eprintln!(
+                    "warning: reference '{}' (content hash {}) is not in the plan's palette; \
+                     sketching on the fly (tolerant default; pass --sealed to fail instead)",
+                    r.label, r.hash
+                );
+                TargetContext::build_with_sketch(
+                    &r.seq,
+                    &sketch_sequence_default(&r.seq),
+                    config.strategy,
+                )
+            }
+        };
+
+        // Align every read against this space, building a full-length coverage track and
+        // collecting per-read placements. Identity stored in the sidecar is absolute
+        // (1 - edit/len), already what query_positions carries.
+        let mut full_coverage = vec![0u32; r.seq.len()];
+        let mut variants = Vec::new();
+        for read in &reads {
+            let result = match align_read(&ctx, read, &plan, &config, None) {
+                Some(res) => res,
+                None => continue,
+            };
+            for w in &result.coverage {
+                for (j, &c) in w.counts.iter().enumerate() {
+                    let pos = w.start + j;
+                    if pos < full_coverage.len() {
+                        full_coverage[pos] += c;
+                    }
+                }
+            }
+            for &(pos, identity) in &result.query_positions {
+                cross_space
+                    .entry(read.id().to_string())
+                    .or_default()
+                    .push(queries::CrossSpacePlacement {
+                        space: r.label.clone(),
+                        pos,
+                        identity,
+                    });
+            }
+            variants.extend(result.variants);
+        }
+
+        let coverage = CoverageTrack::new(full_coverage.iter().map(|&v| v as usize).collect());
+        let phraya_file = phraya::PhrayaFile::new(
+            r.seq.len() as u32,
+            r.seq.id().to_string(),
+            output_timestamp(),
+            variants,
+            coverage,
+        );
+        let out_path = out_dir.join(format!("{}.phraya", r.label));
+        phraya::write_phraya(&out_path, &phraya_file)?;
+        eprintln!("Wrote {}", out_path.display());
+    }
+
+    // One cross-space sidecar for the whole invocation.
+    let sidecar = out_dir.join("cross_space.phraya.queries");
+    queries::write_cross_space_queries(&sidecar, &cross_space)?;
+    eprintln!("Wrote {}", sidecar.display());
+
     Ok(())
 }
 

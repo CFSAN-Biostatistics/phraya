@@ -5,6 +5,36 @@ use thiserror::Error;
 /// Query index for multi-mapping analysis
 pub type QueryIndex = HashMap<String, Vec<(u32, f64)>>;
 
+/// A single cross-space placement (ADR-0011, issue #198): a read placed in one reference
+/// space at one position, carrying **absolute normalized identity** `(1 - edit/len)`.
+///
+/// Absolute identity is invocation-independent — a fact about `(read, space)` — so it
+/// survives per-space anchoring, letting a downstream filter read a cross-space margin
+/// (e.g. host 0.96 vs target 0.98) straight off the sidecar. This is strictly more
+/// informative than the single-space `(pos, score_ratio)`, which cannot distinguish a
+/// primary of 0.99 from 0.75.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrossSpacePlacement {
+    /// Reference space label (space name, or a content-hash prefix) this placement is in.
+    pub space: String,
+    /// Target position within that space's coordinate system.
+    pub pos: u32,
+    /// Absolute normalized identity `(1 - edit/len)` of this placement.
+    pub identity: f64,
+}
+
+/// Cross-space query index (ADR-0011, issue #198): `query -> [(space, pos, identity)]`.
+///
+/// Unlike [`QueryIndex`], which is scoped to a single coordinate space and stores the
+/// primary-relative score ratio, this spans the whole presented reference palette so a
+/// filter can reason about a read's competitive **superposition** across spaces. A read
+/// placed in multiple spaces appears once per space, with directly comparable identities.
+///
+/// This sidecar enacts **no decision**: no winner selection, no margin cutoff, no per-read
+/// classification. All cross-space coupling lives here; each per-space `.phraya` stays a
+/// clean single-coordinate artifact.
+pub type CrossSpaceQueryIndex = HashMap<String, Vec<CrossSpacePlacement>>;
+
 /// Queries file format errors
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum QueriesError {
@@ -88,6 +118,64 @@ pub fn read_queries(path: &std::path::Path) -> Result<QueryIndex, QueriesError> 
     let index: QueryIndex = rmp_serde::from_slice(&decompressed)
         .map_err(|e| QueriesError::SerializationError(e.to_string()))?;
 
+    Ok(index)
+}
+
+/// Write a cross-space query index (ADR-0011, issue #198) to compressed binary format.
+///
+/// Mirrors [`write_queries`]: placements are filtered to identity `>= 0.95` (the hard-coded
+/// multi-mapping opinion), reads left with no surviving placement are dropped, and output is
+/// serialized through a `BTreeMap` with placements sorted by `(space, pos)` so the bytes are
+/// deterministic run-to-run regardless of `HashMap` iteration order.
+pub fn write_cross_space_queries(
+    path: &std::path::Path,
+    index: &CrossSpaceQueryIndex,
+) -> Result<(), QueriesError> {
+    const IDENTITY_THRESHOLD: f64 = 0.95;
+
+    let filtered: std::collections::BTreeMap<String, Vec<CrossSpacePlacement>> = index
+        .iter()
+        .filter_map(|(query_id, placements)| {
+            let mut kept: Vec<CrossSpacePlacement> = placements
+                .iter()
+                .filter(|p| p.identity >= IDENTITY_THRESHOLD)
+                .cloned()
+                .collect();
+            if kept.is_empty() {
+                None
+            } else {
+                kept.sort_by(|a, b| {
+                    a.space
+                        .cmp(&b.space)
+                        .then(a.pos.cmp(&b.pos))
+                        .then(
+                            b.identity
+                                .partial_cmp(&a.identity)
+                                .unwrap_or(std::cmp::Ordering::Equal),
+                        )
+                });
+                Some((query_id.clone(), kept))
+            }
+        })
+        .collect();
+
+    let serialized = rmp_serde::to_vec(&filtered)
+        .map_err(|e| QueriesError::SerializationError(e.to_string()))?;
+    let compressed = zstd::encode_all(&serialized[..], 3)
+        .map_err(|e| QueriesError::CompressionError(e.to_string()))?;
+    std::fs::write(path, compressed).map_err(|e| QueriesError::IoError(e.to_string()))?;
+    Ok(())
+}
+
+/// Read a cross-space query index (ADR-0011, issue #198) from compressed binary format.
+pub fn read_cross_space_queries(
+    path: &std::path::Path,
+) -> Result<CrossSpaceQueryIndex, QueriesError> {
+    let compressed = std::fs::read(path).map_err(|e| QueriesError::IoError(e.to_string()))?;
+    let decompressed = zstd::decode_all(&compressed[..])
+        .map_err(|e| QueriesError::DecompressionError(e.to_string()))?;
+    let index: CrossSpaceQueryIndex = rmp_serde::from_slice(&decompressed)
+        .map_err(|e| QueriesError::SerializationError(e.to_string()))?;
     Ok(index)
 }
 
@@ -259,6 +347,110 @@ mod tests {
 
         assert_eq!(read_index.len(), 1);
         assert_eq!(read_index["mixed"], vec![(100u32, 0.98f64)]);
+    }
+
+    // ── Cross-space sidecar (ADR-0011, issue #198) ─────────────────────────────
+
+    #[test]
+    fn cross_space_round_trip_empty() {
+        let index: CrossSpaceQueryIndex = HashMap::new();
+        let temp = NamedTempFile::new().unwrap();
+        write_cross_space_queries(temp.path(), &index).unwrap();
+        let read = read_cross_space_queries(temp.path()).unwrap();
+        assert_eq!(read.len(), 0);
+    }
+
+    /// A read placed in two spaces appears once per space, and the cross-space margin
+    /// (host 0.96 vs target 0.98) is recoverable directly from the sidecar.
+    #[test]
+    fn cross_space_margin_is_recoverable() {
+        let mut index: CrossSpaceQueryIndex = HashMap::new();
+        index.insert(
+            "read1".to_string(),
+            vec![
+                CrossSpacePlacement { space: "host".to_string(), pos: 100, identity: 0.96 },
+                CrossSpacePlacement { space: "target".to_string(), pos: 250, identity: 0.98 },
+            ],
+        );
+
+        let temp = NamedTempFile::new().unwrap();
+        write_cross_space_queries(temp.path(), &index).unwrap();
+        let read = read_cross_space_queries(temp.path()).unwrap();
+
+        let placements = &read["read1"];
+        assert_eq!(placements.len(), 2, "read placed in two spaces appears once per space");
+        // Sorted by space: host before target.
+        let host = placements.iter().find(|p| p.space == "host").unwrap();
+        let target = placements.iter().find(|p| p.space == "target").unwrap();
+        assert!((host.identity - 0.96).abs() < 1e-9);
+        assert!((target.identity - 0.98).abs() < 1e-9);
+        // The margin a downstream filter would read straight off the sidecar.
+        assert!((target.identity - host.identity - 0.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cross_space_subthreshold_placements_dropped() {
+        let mut index: CrossSpaceQueryIndex = HashMap::new();
+        // A read whose only placement is below 0.95 is dropped entirely.
+        index.insert(
+            "weak".to_string(),
+            vec![CrossSpacePlacement { space: "s1".to_string(), pos: 1, identity: 0.40 }],
+        );
+        // A read with one strong + one weak placement keeps only the strong one.
+        index.insert(
+            "mixed".to_string(),
+            vec![
+                CrossSpacePlacement { space: "s1".to_string(), pos: 10, identity: 0.99 },
+                CrossSpacePlacement { space: "s2".to_string(), pos: 20, identity: 0.50 },
+            ],
+        );
+
+        let temp = NamedTempFile::new().unwrap();
+        write_cross_space_queries(temp.path(), &index).unwrap();
+        let read = read_cross_space_queries(temp.path()).unwrap();
+
+        assert_eq!(read.len(), 1, "all-sub-threshold read dropped");
+        assert_eq!(read["mixed"].len(), 1);
+        assert_eq!(read["mixed"][0].space, "s1");
+    }
+
+    /// Bytes must not depend on HashMap iteration order (content hash usable as a gate).
+    #[test]
+    fn cross_space_write_is_order_independent() {
+        let keys: Vec<String> = (0..64).map(|i| format!("read_{i}")).collect();
+        let spaces = ["alpha", "beta"];
+
+        let mut forward: CrossSpaceQueryIndex = HashMap::new();
+        for (i, k) in keys.iter().enumerate() {
+            forward.insert(
+                k.clone(),
+                vec![
+                    CrossSpacePlacement { space: spaces[0].to_string(), pos: i as u32 * 7, identity: 0.99 },
+                    CrossSpacePlacement { space: spaces[1].to_string(), pos: i as u32 * 7 + 3, identity: 0.96 },
+                ],
+            );
+        }
+        let mut reverse: CrossSpaceQueryIndex = HashMap::new();
+        for (i, k) in keys.iter().enumerate().rev() {
+            // Same content, inserted in the opposite order, placements in opposite order.
+            reverse.insert(
+                k.clone(),
+                vec![
+                    CrossSpacePlacement { space: spaces[1].to_string(), pos: i as u32 * 7 + 3, identity: 0.96 },
+                    CrossSpacePlacement { space: spaces[0].to_string(), pos: i as u32 * 7, identity: 0.99 },
+                ],
+            );
+        }
+
+        let ta = NamedTempFile::new().unwrap();
+        let tb = NamedTempFile::new().unwrap();
+        write_cross_space_queries(ta.path(), &forward).unwrap();
+        write_cross_space_queries(tb.path(), &reverse).unwrap();
+        assert_eq!(
+            std::fs::read(ta.path()).unwrap(),
+            std::fs::read(tb.path()).unwrap(),
+            "identical content in different orders must serialize identically"
+        );
     }
 
     #[test]
