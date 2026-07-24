@@ -68,11 +68,11 @@ fn get_effective_sketch(
 /// Alignment strategy affecting coverage window size and anchor selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
-    /// Fast strategy: K=1 anchor cap (best-voted seed target-start only), wide ±150bp coverage window
+    /// Fast strategy: K=1 chain cap, wide ±150bp coverage window
     Fast,
-    /// Balanced strategy: K=5 anchor cap (top 5 seed targets by vote count), moderate ±50bp coverage window (default)
+    /// Balanced strategy: K=2 chain cap, moderate ±50bp coverage window (default)
     Balanced,
-    /// Sensitive strategy: K=∞ anchor cap (all distinct seed target-starts), narrow ±25bp coverage window for precision
+    /// Sensitive strategy: K=50 chain cap, narrow ±25bp coverage window for precision
     Sensitive,
 }
 
@@ -332,8 +332,8 @@ fn anchors_from_chains(chains: &[crate::chaining::Chain], k: usize) -> Vec<SeedA
 /// - `Balanced` / `Fast`: Myers fitting for short reads (identical results to WFA, but
 ///   faster), falling back to WFA for reads longer than [`MYERS_MAX_QUERY_LEN`].
 ///
-/// Fast and Balanced differ from Sensitive in *which* anchors they extend (K=1 and K=5
-/// subsampling vs K=∞) and Fast adds a post-hoc divergence cutoff, handled by the caller
+/// Fast and Balanced differ from Sensitive in *which* anchors they extend (K=1 and K=2
+/// vs K=50) and Fast adds a post-hoc divergence cutoff, handled by the caller
 /// — not the extension engine.
 fn extend_anchor(
     strategy: Strategy,

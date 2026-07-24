@@ -19,8 +19,7 @@ use phraya_io::plan::{PhrayaPlan, UseCase};
 /// chaining exactly as it held under raw voting.
 ///
 /// Expected API after implementation:
-/// - Strategy enum: fast (K=1), balanced (K=5), sensitive (K=50, see ADR-0012 — no longer
-///   literally infinite; a large finite cap replaces the old K=∞ raw-vote enumeration)
+/// - Strategy enum: fast (K=1), balanced (K=2), sensitive (K=50)
 /// - AlignConfig struct: new AlignConfig::sensitive() method
 /// - --strategy exact is rejected with updated error message
 /// - Balanced strategy reports at most 5 chains (multi-mapping preserved)
@@ -161,10 +160,10 @@ fn issue_184_fast_strategy_reports_single_anchor_on_tandem() {
     );
 }
 
-/// Test that balanced strategy (K=5 chains) reports multiple placements at ambiguous loci.
+/// Test that balanced strategy (K=2 chains) reports multiple placements at ambiguous loci.
 /// Acceptance criterion: A read at a genuinely ambiguous locus reports >1 placement (multi-mapping preserved).
 /// The tandem duplication fixture has two equally-good matches, each collapsing to its own
-/// chain; balanced with K=5 chains should report both.
+/// chain; balanced with K=2 chains should report both.
 #[test]
 fn issue_184_balanced_strategy_preserves_multimapping_at_k5() {
     let unit = random_dna(0x0FAC_E001, 80);
@@ -187,14 +186,14 @@ fn issue_184_balanced_strategy_preserves_multimapping_at_k5() {
 
     assert!(
         result.query_positions.len() >= 2,
-        "Balanced (K=5) must preserve multi-mapping signal on tandem duplication, got {} placements",
+        "Balanced (K=2) must preserve multi-mapping signal on tandem duplication, got {} placements",
         result.query_positions.len()
     );
 }
 
-/// Test that balanced strategy (K=5 chains) does not report excessive placements.
-/// Acceptance criterion: Balanced reports ≤5 primary chains (bounded by K=5).
-/// On a very repetitive target with many possible alignments, balanced caps at 5 chains.
+/// Test that balanced strategy (K=2 chains) does not report excessive placements.
+/// Acceptance criterion: Balanced reports ≤2 primary chains (bounded by K=2).
+/// On a very repetitive target with many possible alignments, balanced caps at 2 chains.
 #[test]
 fn issue_184_balanced_strategy_caps_at_k5() {
     // Create a highly repetitive read: 50bp of a single k-mer unit.
@@ -222,8 +221,8 @@ fn issue_184_balanced_strategy_caps_at_k5() {
     .expect("balanced alignment on repetitive target should succeed");
 
     assert!(
-        result.query_positions.len() <= 6, // Up to 5 chains + 1 fallback
-        "Balanced (K=5) must cap reported placements at ~6 (5 chains + fallback), got {}",
+        result.query_positions.len() <= 2,
+        "Balanced (K=2) must cap reported placements at 2, got {}",
         result.query_positions.len()
     );
 }
@@ -301,7 +300,7 @@ fn issue_184_sensitive_reproduces_old_exact_anchor_set() {
 // BACKWARD COMPATIBILITY TESTS: Verify unchanged semantics for all strategies
 // ============================================================================
 
-/// Test that balanced strategy (K=5) is still the default.
+/// Test that balanced strategy (K=2) is still the default.
 /// Acceptance criterion: AlignConfig::default() uses Strategy::Balanced.
 #[test]
 fn issue_184_balanced_remains_default_strategy() {
@@ -342,7 +341,7 @@ fn issue_184_divergence_cutoff_applies_only_to_fast() {
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);
     let plan = make_plan();
 
-    // Balanced (K=5) should still handle the divergent read (no cutoff).
+    // Balanced (K=2) should still handle the divergent read (no cutoff).
     let balanced = align_task_with_config(
         &query,
         &target,
@@ -351,7 +350,7 @@ fn issue_184_divergence_cutoff_applies_only_to_fast() {
     );
     assert!(
         balanced.is_some(),
-        "Balanced (K=5) must not apply divergence cutoff — should align the divergent read"
+        "Balanced (K=2) must not apply divergence cutoff — should align the divergent read"
     );
 
     // Fast should still drop it (divergence cutoff unchanged).
@@ -396,7 +395,7 @@ fn issue_184_multimapping_threshold_unchanged() {
     // Both should report both placements (they pass the 0.95 threshold).
     assert_eq!(
         balanced.query_positions.len(), sensitive.query_positions.len(),
-        "Balanced (K=5) and Sensitive (K=∞) should report the same count of placements on tandem (same threshold)"
+        "Balanced (K=2) and Sensitive (K=50) should report the same count of placements on tandem (same threshold)"
     );
     assert!(
         balanced.query_positions.len() >= 2,
@@ -428,14 +427,14 @@ fn issue_184_align_config_factory_methods_correct() {
 
 /// Test the complete strategy ladder on a single fixture:
 /// - Fast (K=1): single best chain
-/// - Balanced (K=5): multiple chains, capped at ~5
+/// - Balanced (K=2): multiple chains, capped at 2
 /// - Sensitive (K=50): all genuine chains (this fixture has 7, far below the cap)
 ///
 /// This integration test ensures the ladder behaves as specified across all three rungs.
 #[test]
 fn issue_184_strategy_ladder_on_recall_axis() {
     let unit = random_dna(0xCAFE_BABE, 70);
-    // Create 5+ tandem repeats to exceed K=5.
+    // Create 5+ tandem repeats to exceed K=2.
     let mut target_bases = Vec::new();
     for _ in 0..7 {
         target_bases.extend_from_slice(&unit);
@@ -467,12 +466,11 @@ fn issue_184_strategy_ladder_on_recall_axis() {
     let balanced_count = balanced.query_positions.len();
     let sensitive_count = sensitive.query_positions.len();
 
-    // Verify the hierarchy:
-    // fast (K=1) <= balanced (K=5) <= sensitive (K=50, far above this fixture's 7 chains)
+    // Verify the hierarchy: fast (K=1) <= balanced (K=2) <= sensitive (K=50)
     assert_eq!(fast_count, 1, "Fast must report exactly 1 placement (K=1)");
     assert!(
-        balanced_count <= 6, // Up to 5 chains + 1 fallback
-        "Balanced must report ≤6 placements (K=5 + fallback), got {}",
+        balanced_count <= 2,
+        "Balanced must report ≤2 placements (K=2), got {}",
         balanced_count
     );
     assert_eq!(
@@ -482,6 +480,6 @@ fn issue_184_strategy_ladder_on_recall_axis() {
     );
     assert!(
         sensitive_count >= balanced_count,
-        "Sensitive (K=∞) must report ≥ Balanced (K=5)"
+        "Sensitive (K=50) must report ≥ Balanced (K=2)"
     );
 }

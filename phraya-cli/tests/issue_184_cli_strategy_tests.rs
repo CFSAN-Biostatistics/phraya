@@ -321,9 +321,9 @@ fn issue_184_cli_fast_strategy_k1_single_placement() {
     );
 }
 
-/// issue #184: balanced strategy (K=5) preserves multi-mapping on ambiguous loci
+/// issue #184: balanced strategy (K=2) preserves multi-mapping on ambiguous loci
 #[test]
-fn issue_184_cli_balanced_strategy_k5_preserves_multimapping() {
+fn issue_184_cli_balanced_strategy_k2_preserves_multimapping() {
     let dir = TempDir::new().unwrap();
     let tmp = dir.path().join("plan.phrayaplan");
     let plan = make_plan_with_fasta(tmp.to_str().unwrap());
@@ -348,14 +348,14 @@ fn issue_184_cli_balanced_strategy_k5_preserves_multimapping() {
 
     assert!(
         result.query_positions.len() >= 2,
-        "Balanced (K=5) must preserve multi-mapping, got {} placements",
+        "Balanced (K=2) must preserve multi-mapping, got {} placements",
         result.query_positions.len()
     );
 }
 
-/// issue #184: sensitive strategy (K=∞) reports all seed-derived anchors
+/// issue #184: sensitive strategy (K=50) reports all seed-derived anchors
 #[test]
-fn issue_184_cli_sensitive_strategy_kinf_all_anchors() {
+fn issue_184_cli_sensitive_strategy_k50_all_anchors() {
     let dir = TempDir::new().unwrap();
     let tmp = dir.path().join("plan.phrayaplan");
     let plan = make_plan_with_fasta(tmp.to_str().unwrap());
@@ -365,7 +365,7 @@ fn issue_184_cli_sensitive_strategy_kinf_all_anchors() {
     let unit = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTAC";
     let query = Sequence::new(unit.to_vec(), None, "read1".to_string(), None);
 
-    // Multiple tandem repeats to ensure K=∞ reports all
+    // Multiple tandem repeats to ensure K=50 reports all
     let mut target_bases = Vec::new();
     for _ in 0..4 {
         target_bases.extend_from_slice(unit);
@@ -382,7 +382,7 @@ fn issue_184_cli_sensitive_strategy_kinf_all_anchors() {
 
     assert!(
         result.query_positions.len() >= 3,
-        "Sensitive (K=∞) must report all seed-derived anchors (≥3 for 4× tandem), got {}",
+        "Sensitive (K=50) must report all seed-derived anchors (≥3 for 4× tandem), got {}",
         result.query_positions.len()
     );
 }

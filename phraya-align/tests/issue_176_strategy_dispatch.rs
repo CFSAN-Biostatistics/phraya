@@ -1,12 +1,10 @@
 //! Issue #176: alignment strategy ladder (Sensitive / Balanced / Fast).
 //!
-//! New semantics:
-//!   - Sensitive: seeded WFA, all genuine chains up to a K=50 cap — the canonical
-//!     reference path (was raw-vote K=∞ before the chaining redesign, ADR-0012; a clean
-//!     uniquely-mapping read chains to one dominant candidate either way).
-//!   - Balanced: Myers fitting (≤500bp) with WFA fallback, top 5 chains (K=5) — exact
+//! Semantics:
+//!   - Sensitive: seeded WFA, top 50 chains (K=50) — the canonical reference path.
+//!   - Balanced: Myers fitting (≤500bp) with WFA fallback, top 2 chains (K=2) — exact
 //!     results, faster engine.
-//!   - Fast:     low-sensitivity (seed subsampling + divergence cutoff, K=1 chain).
+//!   - Fast: K=1 chain + divergence cutoff.
 //!
 //! Because Myers and WFA compute identical edit distances, Sensitive and Balanced must agree
 //! on the variants they call for a uniquely-mapping read. This file pins that invariant.

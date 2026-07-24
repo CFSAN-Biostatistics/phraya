@@ -101,9 +101,9 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         output: Option<PathBuf>,
 
-        /// Alignment strategy preset (selects algorithm + default coverage window + anchor subsampling):
-        /// sensitive (K=∞, seeded WFA, ±25bp), balanced (K=5, Myers fitting + WFA fallback, ±50bp,
-        /// default), fast (K=1, seed subsampling + divergence cutoff, ±150bp, low sensitivity)
+        /// Alignment strategy preset (selects algorithm + default coverage window + chain cap):
+        /// sensitive (K=50, seeded WFA, ±25bp), balanced (K=2, Myers fitting + WFA fallback, ±50bp,
+        /// default), fast (K=1, divergence cutoff, ±150bp, low sensitivity)
         #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
         strategy: String,
 
