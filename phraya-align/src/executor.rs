@@ -499,7 +499,7 @@ fn extend_chains(
     // accommodates indels while keeping the aligned window tractable.
     let mut alignments = Vec::with_capacity(anchors.len());
     for anchor in anchors {
-        let margin = query_len + query_len / 3;
+        let margin = query_len * 2;
         let window_end = (anchor.target_pos + margin).min(target.bases().len());
         let target_window = &target.bases()[..window_end];
         match extend_anchor(strategy, query_bytes, target_window, anchor) {
