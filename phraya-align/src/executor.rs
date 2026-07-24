@@ -295,7 +295,7 @@ impl AlignStats {
 fn chain_cap(strategy: Strategy) -> usize {
     match strategy {
         Strategy::Fast => 1,
-        Strategy::Balanced => 5,
+        Strategy::Balanced => 2,
         Strategy::Sensitive => 50,
     }
 }
@@ -303,25 +303,27 @@ fn chain_cap(strategy: Strategy) -> usize {
 /// Build the list of WFA/Myers anchors from chained seeds, one anchor per surviving
 /// chain (up to `k`), each anchor's `target_pos` taken from [`crate::chaining::Chain::target_start`].
 ///
-/// Always includes a `(0,0)` anchor, matching the legacy path's unconditional fallback
-/// (issue #146's `multiple_hotspot_intervals` fixture — a near-homopolymer target with
-/// only a handful of distinct minimizer values — showed this is load-bearing, not dead
-/// weight: on a low-complexity/repetitive background, chaining's top-K by score can miss
-/// the true locus entirely even when it finds plenty of *chains*, because seed density is
-/// too uniform to distinguish the right position from noise. The `(0,0)` anchor is a
-/// cheap, unconditional safety net for exactly that case).
+/// When chains are present, uses only chain-derived anchors (no fallback). When no
+/// chains survive, falls back to `(0,0)` — the safety net for low-complexity/repetitive
+/// backgrounds where chaining can't distinguish signal from noise (issue #146). The
+/// unconditional `(0,0)` was removed because on large genomes it extends from position 0
+/// against a multi-hundred-Mb target window, producing a guaranteed-losing alignment at
+/// high cost.
 fn anchors_from_chains(chains: &[crate::chaining::Chain], k: usize) -> Vec<SeedAnchor> {
-    let mut result = vec![SeedAnchor {
-        query_pos: 0,
-        target_pos: 0,
-    }];
-    for c in chains.iter().take(k) {
-        result.push(SeedAnchor {
+    if chains.is_empty() {
+        return vec![SeedAnchor {
+            query_pos: 0,
+            target_pos: 0,
+        }];
+    }
+    chains
+        .iter()
+        .take(k)
+        .map(|c| SeedAnchor {
             query_pos: 0,
             target_pos: c.target_start(),
-        });
-    }
-    result
+        })
+        .collect()
 }
 
 /// Extend a single anchor with the engine selected by `strategy`.
@@ -1146,34 +1148,22 @@ mod tests {
                 score: 20,
             },
         ];
-        // K=1 (Fast) keeps only the first (highest-scoring, by construction of the input
-        // order) chain's target_start, plus the unconditional (0,0) safety net.
+        // K=1 (Fast) keeps only the first (highest-scoring) chain's target_start.
+        // No (0,0) fallback when chains exist.
         let anchors = anchors_from_chains(&chains, chain_cap(Strategy::Fast));
         assert_eq!(
             anchors,
-            vec![
-                SeedAnchor {
-                    query_pos: 0,
-                    target_pos: 0
-                },
-                SeedAnchor {
-                    query_pos: 0,
-                    target_pos: 100
-                },
-            ]
+            vec![SeedAnchor {
+                query_pos: 0,
+                target_pos: 100
+            },]
         );
 
-        // K=5 (Balanced) keeps all three since there are fewer than 5 chains, plus the
-        // unconditional (0,0) safety net (matches the legacy path's behavior — see
-        // issue #146's near-homopolymer fixture for why this must stay unconditional).
+        // K=2 (Balanced) keeps the top 2 chains. No (0,0) fallback when chains exist.
         let anchors = anchors_from_chains(&chains, chain_cap(Strategy::Balanced));
         assert_eq!(
             anchors,
             vec![
-                SeedAnchor {
-                    query_pos: 0,
-                    target_pos: 0
-                },
                 SeedAnchor {
                     query_pos: 0,
                     target_pos: 100
@@ -1181,10 +1171,6 @@ mod tests {
                 SeedAnchor {
                     query_pos: 0,
                     target_pos: 5000
-                },
-                SeedAnchor {
-                    query_pos: 0,
-                    target_pos: 9000
                 },
             ]
         );
