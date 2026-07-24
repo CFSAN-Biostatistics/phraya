@@ -2673,8 +2673,7 @@ fn reconstruct_into(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize, col: 
     }
 }
 
-/// Fill `buf` (length `m + 1`) with edit-distance DP column `j` for the backtrace.
-/// Column 0 is the identity `0..=m`; column `j > 0` is reconstructed from `columns[j-1]`.
+#[allow(dead_code)]
 fn fill_dp_column(
     columns: &[(Vec<u64>, Vec<u64>, usize)],
     m: usize,
@@ -2691,10 +2690,128 @@ fn fill_dp_column(
     }
 }
 
+/// Flat-buffer Myers forward pass: stores VP/VN bitvectors in a single pre-allocated
+/// Vec<u64> indexed as `[col * num_blocks * 2 + block]` (VP) and
+/// `[col * num_blocks * 2 + num_blocks + block]` (VN), plus a separate scores Vec<usize>.
+/// Eliminates ~2×n heap allocations (one Vec clone per column) from the hot path.
+struct MyersColumns {
+    data: Vec<u64>,
+    scores: Vec<usize>,
+    num_blocks: usize,
+    num_cols: usize,
+}
+
+impl MyersColumns {
+    fn vp(&self, col: usize, block: usize) -> u64 {
+        self.data[col * self.num_blocks * 2 + block]
+    }
+    fn vn(&self, col: usize, block: usize) -> u64 {
+        self.data[col * self.num_blocks * 2 + self.num_blocks + block]
+    }
+    fn score(&self, col: usize) -> usize {
+        self.scores[col]
+    }
+    fn vp_slice(&self, col: usize) -> &[u64] {
+        let base = col * self.num_blocks * 2;
+        &self.data[base..base + self.num_blocks]
+    }
+    fn vn_slice(&self, col: usize) -> &[u64] {
+        let base = col * self.num_blocks * 2 + self.num_blocks;
+        &self.data[base..base + self.num_blocks]
+    }
+}
+
+fn myers_forward_flat(query: &[u8], target: &[u8]) -> MyersColumns {
+    const W: usize = 64;
+    let m = query.len();
+    let n = target.len();
+
+    let num_blocks = (m + W - 1) / W;
+    let last_block = num_blocks - 1;
+    let last_bits = if m % W == 0 { W } else { m % W };
+    let last_mask: u64 = if last_bits == W { u64::MAX } else { (1u64 << last_bits) - 1 };
+    let score_bit = (m - 1) % W;
+
+    let mut pm = vec![[0u64; 256]; num_blocks];
+    for (i, &b) in query.iter().enumerate() {
+        pm[i / W][b as usize] |= 1u64 << (i % W);
+    }
+
+    let mut vp = vec![u64::MAX; num_blocks];
+    vp[last_block] = last_mask;
+    let mut vn = vec![0u64; num_blocks];
+    let mut score = m;
+
+    let stride = num_blocks * 2;
+    let mut data = vec![0u64; n * stride];
+    let mut scores = Vec::with_capacity(n);
+
+    let mut new_vp = vec![0u64; num_blocks];
+    let mut new_vn = vec![0u64; num_blocks];
+
+    for (col_idx, &tb) in target.iter().enumerate() {
+        let mut add_carry: u64 = 0;
+        let mut hp_carry: u64 = 1;
+        let mut hn_carry: u64 = 0;
+
+        let mut last_hp = 0u64;
+        let mut last_hn = 0u64;
+
+        for k in 0..num_blocks {
+            let eq = pm[k][tb as usize];
+            let xh = eq | vn[k];
+            let xhvp = xh & vp[k];
+            let (s1, c1) = vp[k].overflowing_add(xhvp);
+            let (s2, c2) = s1.overflowing_add(add_carry);
+            add_carry = (c1 as u64) | (c2 as u64);
+            let d0_raw = (s2 ^ vp[k]) | xh;
+            let hn_raw = vp[k] & d0_raw;
+            let hp_raw = vn[k] | !(vp[k] | d0_raw);
+
+            let (d0, hn, hp) = if k == last_block && last_bits < W {
+                (d0_raw & last_mask, hn_raw & last_mask, hp_raw & last_mask)
+            } else {
+                (d0_raw, hn_raw, hp_raw)
+            };
+
+            if k == last_block {
+                last_hp = hp;
+                last_hn = hn;
+            }
+
+            let next_hp_carry = hp >> (W - 1);
+            let x = (hp << 1) | hp_carry;
+            hp_carry = next_hp_carry;
+
+            let next_hn_carry = hn >> (W - 1);
+            let hn_shifted = (hn << 1) | hn_carry;
+            hn_carry = next_hn_carry;
+
+            new_vn[k] = x & d0;
+            let vp_raw2 = hn_shifted | !(d0 | x);
+            new_vp[k] = if k == last_block && last_bits < W { vp_raw2 & last_mask } else { vp_raw2 };
+        }
+
+        if (last_hp >> score_bit) & 1 != 0 { score += 1; }
+        if (last_hn >> score_bit) & 1 != 0 { score = score.saturating_sub(1); }
+
+        std::mem::swap(&mut vp, &mut new_vp);
+        std::mem::swap(&mut vn, &mut new_vn);
+
+        let base = col_idx * stride;
+        data[base..base + num_blocks].copy_from_slice(&vp);
+        data[base + num_blocks..base + stride].copy_from_slice(&vn);
+        scores.push(score);
+    }
+
+    MyersColumns { data, scores, num_blocks, num_cols: n }
+}
+
 /// Myers bit-parallel forward pass. Returns one `(vp, vn, bottom_score)` tuple per
 /// target column, where `bottom_score` for column `j` is `dp[m][j+1]` — the edit
 /// distance of the full query against `target[..=j]`. Caller must ensure `m > 0`
 /// (the column DP is meaningless for an empty query). An empty target yields no columns.
+#[allow(dead_code)]
 fn myers_forward(query: &[u8], target: &[u8]) -> Vec<(Vec<u64>, Vec<u64>, usize)> {
     const W: usize = 64;
     let m = query.len();
@@ -2785,9 +2902,7 @@ fn myers_forward(query: &[u8], target: &[u8]) -> Vec<(Vec<u64>, Vec<u64>, usize)
 }
 
 /// Reconstruct a CIGAR from Myers forward-pass `columns`, tracing the optimal edit
-/// path from cell `(query.len(), end_ti)` back to `(0, 0)`. `end_ti` is the number of
-/// target columns consumed: pass `target.len()` for a global alignment, or a chosen
-/// fitting endpoint to free the target tail. Requires `query` non-empty.
+#[allow(dead_code)]
 fn myers_backtrace(
     query: &[u8],
     target: &[u8],
@@ -2895,10 +3010,9 @@ pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) 
         return (m, format!("{m}D"));
     }
 
-    let columns = myers_forward(query, target);
-    // bottom_score of the final column is dp[m][n] — the global edit distance.
-    let edit_distance = columns.last().map(|c| c.2).unwrap_or(m);
-    let cigar = myers_backtrace(query, target, &columns, n);
+    let cols = myers_forward_flat(query, target);
+    let edit_distance = if cols.num_cols > 0 { cols.score(cols.num_cols - 1) } else { m };
+    let cigar = myers_backtrace_flat(query, target, &cols, n);
     (edit_distance, cigar)
 }
 
@@ -2913,41 +3027,132 @@ pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) 
 /// When the target is not substantially longer than the query (`n <= m + m/2 + 10`),
 /// delegates to the global path — exactly the threshold [`fill_wfa_fitting`] uses — so
 /// that terminal indels are not silently hidden by a free end gap.
+/// Reconstruct DP column `j` from flat MyersColumns into `buf[0..=m]`.
+fn fill_dp_column_flat(cols: &MyersColumns, m: usize, j: usize, buf: &mut [usize]) {
+    const W: usize = 64;
+    if j == 0 {
+        for (i, slot) in buf.iter_mut().enumerate().take(m + 1) {
+            *slot = i;
+        }
+    } else {
+        let vp = cols.vp_slice(j - 1);
+        let vn = cols.vn_slice(j - 1);
+        let bs = cols.score(j - 1);
+        reconstruct_into(vp, vn, m, bs, buf);
+    }
+}
+
+/// Backtrace from flat MyersColumns (mirrors `myers_backtrace` logic).
+fn myers_backtrace_flat(
+    query: &[u8],
+    target: &[u8],
+    cols: &MyersColumns,
+    end_ti: usize,
+) -> String {
+    let m = query.len();
+    let mut ops: Vec<u8> = Vec::with_capacity(m + end_ti);
+    let mut qi = m;
+    let mut ti = end_ti;
+
+    let mut cur_col = vec![0usize; m + 1];
+    let mut prev_col = vec![0usize; m + 1];
+    if ti > 0 {
+        fill_dp_column_flat(cols, m, ti, &mut cur_col);
+        fill_dp_column_flat(cols, m, ti - 1, &mut prev_col);
+    }
+
+    while qi > 0 || ti > 0 {
+        if qi == 0 {
+            ops.push(b'I');
+            ti -= 1;
+            continue;
+        }
+        if ti == 0 {
+            ops.push(b'D');
+            qi -= 1;
+            continue;
+        }
+
+        let cur = cur_col[qi];
+        let diag_cost = if query[qi - 1] == target[ti - 1] { 0 } else { 1 };
+        let from_diag = prev_col[qi - 1] + diag_cost;
+        let from_above = cur_col[qi - 1] + 1;
+        let from_left = prev_col[qi] + 1;
+
+        if cur == from_above {
+            ops.push(b'D');
+            qi -= 1;
+        } else if cur == from_left {
+            ops.push(b'I');
+            ti -= 1;
+            std::mem::swap(&mut cur_col, &mut prev_col);
+            if ti > 0 {
+                fill_dp_column_flat(cols, m, ti - 1, &mut prev_col);
+            }
+        } else {
+            debug_assert_eq!(cur, from_diag);
+            ops.push(if diag_cost == 0 { b'M' } else { b'X' });
+            qi -= 1;
+            ti -= 1;
+            std::mem::swap(&mut cur_col, &mut prev_col);
+            if ti > 0 {
+                fill_dp_column_flat(cols, m, ti - 1, &mut prev_col);
+            }
+        }
+    }
+
+    ops.reverse();
+
+    let mut cigar = String::new();
+    if !ops.is_empty() {
+        let mut count = 1usize;
+        let mut cur_op = ops[0];
+        for &op in &ops[1..] {
+            if op == cur_op {
+                count += 1;
+            } else {
+                cigar.push_str(&count.to_string());
+                cigar.push(cur_op as char);
+                cur_op = op;
+                count = 1;
+            }
+        }
+        cigar.push_str(&count.to_string());
+        cigar.push(cur_op as char);
+    }
+
+    cigar
+}
+
 pub fn myers_fitting_impl(query: &[u8], target: &[u8]) -> (usize, String, usize) {
     let m = query.len();
     let n = target.len();
 
     if m == 0 {
-        // Empty query, target end free: consume nothing.
         return (0, String::new(), 0);
     }
     if n == 0 {
         return (m, format!("{m}D"), 0);
     }
 
-    // For similar-length sequences, global == fitting and global avoids spurious early
-    // termination that would under-count terminal edits.
     if n <= m + m / 2 + 10 {
         let (edit, cigar) = myers_edit_distance_impl(query, target);
         return (edit, cigar, n);
     }
 
-    let columns = myers_forward(query, target);
+    let cols = myers_forward_flat(query, target);
 
-    // Fitting endpoint: minimise dp[m][c] over target prefixes of length c in 0..=n.
-    // c == 0 means consuming no target (all query deleted: dp[m][0] = m). For c >= 1 the
-    // score is columns[c-1].2. Break ties toward the smallest c (earliest endpoint), which
-    // drops trailing target-only ops rather than emitting spurious terminal deletions.
     let mut best_consumed = 0usize;
     let mut best_score = m;
-    for (c_minus_1, col) in columns.iter().enumerate() {
-        if col.2 < best_score {
-            best_score = col.2;
-            best_consumed = c_minus_1 + 1;
+    for c in 0..cols.num_cols {
+        let s = cols.score(c);
+        if s < best_score {
+            best_score = s;
+            best_consumed = c + 1;
         }
     }
 
-    let cigar = myers_backtrace(query, target, &columns, best_consumed);
+    let cigar = myers_backtrace_flat(query, target, &cols, best_consumed);
     (best_score, cigar, best_consumed)
 }
 
