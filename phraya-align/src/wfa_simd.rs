@@ -2721,7 +2721,10 @@ impl MyersColumns {
     }
 }
 
-fn myers_forward_flat(query: &[u8], target: &[u8]) -> MyersColumns {
+/// Early-termination threshold for fitting mode: once the running score exceeds
+/// `best_seen + margin`, stop — the fitting endpoint was already found and
+/// further columns can only get worse. `None` disables early termination (global mode).
+fn myers_forward_flat_with_cutoff(query: &[u8], target: &[u8], abandon_margin: Option<usize>) -> MyersColumns {
     const W: usize = 64;
     let m = query.len();
     let n = target.len();
@@ -2741,6 +2744,7 @@ fn myers_forward_flat(query: &[u8], target: &[u8]) -> MyersColumns {
     vp[last_block] = last_mask;
     let mut vn = vec![0u64; num_blocks];
     let mut score = m;
+    let mut best_score_seen = m;
 
     let stride = num_blocks * 2;
     let mut data = vec![0u64; n * stride];
@@ -2802,9 +2806,24 @@ fn myers_forward_flat(query: &[u8], target: &[u8]) -> MyersColumns {
         data[base..base + num_blocks].copy_from_slice(&vp);
         data[base + num_blocks..base + stride].copy_from_slice(&vn);
         scores.push(score);
+        if score < best_score_seen {
+            best_score_seen = score;
+        }
+
+        if let Some(margin) = abandon_margin {
+            if score > best_score_seen + margin {
+                let actual_cols = col_idx + 1;
+                data.truncate(actual_cols * stride);
+                return MyersColumns { data, scores, num_blocks, num_cols: actual_cols };
+            }
+        }
     }
 
     MyersColumns { data, scores, num_blocks, num_cols: n }
+}
+
+fn myers_forward_flat(query: &[u8], target: &[u8]) -> MyersColumns {
+    myers_forward_flat_with_cutoff(query, target, None)
 }
 
 /// Myers bit-parallel forward pass. Returns one `(vp, vn, bottom_score)` tuple per
@@ -3140,7 +3159,8 @@ pub fn myers_fitting_impl(query: &[u8], target: &[u8]) -> (usize, String, usize)
         return (edit, cigar, n);
     }
 
-    let cols = myers_forward_flat(query, target);
+    let abandon_margin = m / 10 + 1;
+    let cols = myers_forward_flat_with_cutoff(query, target, Some(abandon_margin));
 
     let mut best_consumed = 0usize;
     let mut best_score = m;
