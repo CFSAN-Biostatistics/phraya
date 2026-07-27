@@ -42,7 +42,84 @@ pub fn read_content_hash(bytes: &[u8]) -> u64 {
 }
 
 /// PhrayaPlan format version for forward compatibility
-pub const PHRAYAPLAN_VERSION: u32 = 6;
+pub const PHRAYAPLAN_VERSION: u32 = 7;
+
+/// Magic bytes at the start of a v7 plan file to distinguish from older single-frame format.
+/// ASCII "PHR7" — chosen to be invalid zstd frame magic (0xFD2FB528) so old readers fail fast.
+const V7_MAGIC: [u8; 4] = [b'P', b'H', b'R', b'7'];
+
+/// Table of contents for a v7 chunk-addressable plan file.
+/// Stored as the first frame after the 4-byte magic + 8-byte TOC-length prefix.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanToc {
+    /// Format version (must be 7)
+    pub version: u32,
+    /// Reserved for future extension (set to 0)
+    pub flags: u64,
+    /// Number of read-sketch chunk frames
+    pub num_chunks: u32,
+    /// Byte offset (from file start) to the compressed shared frame
+    pub shared_frame_offset: u64,
+    /// Compressed byte length of the shared frame
+    pub shared_frame_len: u64,
+    /// (offset, compressed_len) for each chunk frame, in chunk order
+    pub chunk_frame_offsets: Vec<(u64, u64)>,
+}
+
+/// The shared frame: metadata + reference palette. Loaded by every worker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedFrame {
+    pub version: u32,
+    pub use_case: UseCase,
+    pub reference_space: Vec<ReferenceSpace>,
+    pub input_files: Vec<String>,
+    pub timestamp: String,
+    #[serde(serialize_with = "serialize_map_sorted")]
+    pub kmer_index: HashMap<String, MinimizerSketch>,
+    #[serde(serialize_with = "serialize_map_sorted")]
+    pub kmer_uniqueness: HashMap<u32, f64>,
+    pub task_list: Vec<(u32, u32)>,
+    pub hotspot_intervals: Vec<(u32, u32)>,
+    pub reads_per_file: Vec<usize>,
+    pub total_read_count: usize,
+    pub kmer_params: KmerParams,
+    pub batch_num_chunks: Option<usize>,
+    pub batch_reads_per_chunk: Option<usize>,
+    pub batch_output_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_size_distribution: Option<InsertSizeDistribution>,
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "serialize_map_sorted"
+    )]
+    pub dense_kmer_index: HashMap<String, MinimizerSketch>,
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "serialize_map_sorted"
+    )]
+    pub w11_membership: HashMap<String, Vec<bool>>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sparse_mode: bool,
+}
+
+/// A single chunk frame: read sketches + byte offsets + mate info for one positional slice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChunkFrame {
+    /// Read sketches for this chunk, keyed by content hash
+    #[serde(serialize_with = "serialize_map_sorted")]
+    pub read_sketches: HashMap<u64, MinimizerSketch>,
+    /// Byte offsets for this chunk's reads, per input file
+    pub read_byte_offsets: Vec<Vec<u64>>,
+    /// Mate info for this chunk's reads
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        serialize_with = "serialize_map_sorted"
+    )]
+    pub mate_info: HashMap<String, phraya_core::types::MateInfo>,
+}
 
 /// Plan file format errors
 #[derive(Debug, Error, Serialize, Deserialize)]
@@ -253,6 +330,11 @@ pub struct PhrayaPlan {
     /// If false, both w=11 and dense sketches are stored (default)
     #[serde(default = "default_sparse_mode", skip_serializing_if = "is_false")]
     pub sparse_mode: bool,
+    /// Ordered list of read content hashes, in file-encounter (positional) order.
+    /// Used by the v7 writer to partition read_sketches into chunks. Not serialized
+    /// in the monolithic format — reconstructed on read from chunk frame ordering.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_hash_order: Vec<u64>,
 }
 
 impl PhrayaPlan {
@@ -288,6 +370,7 @@ impl PhrayaPlan {
             read_sketches: HashMap::new(),
             sparse_mode: false,
             reference_space: Vec::new(),
+            read_hash_order: Vec::new(),
         }
     }
 
@@ -384,44 +467,399 @@ impl PhrayaPlan {
     }
 }
 
-/// Write PhrayaPlan to compressed binary file
-pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
-    // Serialize using MessagePack
-    let serialized =
-        rmp_serde::to_vec(plan).map_err(|e| PlanError::SerializationError(e.to_string()))?;
+/// Partition read_sketches into N chunk frames by positional order.
+/// Uses `read_hash_order` to determine which hashes belong to which chunk.
+/// If `read_hash_order` is empty, all sketches go into chunk 0.
+fn partition_read_data(plan: &PhrayaPlan, num_chunks: usize) -> Vec<ChunkFrame> {
+    if num_chunks == 0 {
+        return vec![];
+    }
 
-    // Compress using zstd
-    let compressed = zstd::encode_all(&serialized[..], 3)
+    let total_reads = if plan.read_hash_order.is_empty() {
+        plan.read_sketches.len()
+    } else {
+        plan.read_hash_order.len()
+    };
+    let chunk_size = if total_reads == 0 {
+        0
+    } else {
+        (total_reads + num_chunks - 1) / num_chunks
+    };
+
+    let mut chunks: Vec<ChunkFrame> = (0..num_chunks)
+        .map(|_| ChunkFrame {
+            read_sketches: HashMap::new(),
+            read_byte_offsets: Vec::new(),
+            mate_info: HashMap::new(),
+        })
+        .collect();
+
+    if plan.read_hash_order.is_empty() {
+        // Fallback: no ordering info, dump all into chunk 0
+        chunks[0].read_sketches = plan.read_sketches.clone();
+        chunks[0].read_byte_offsets = plan.read_byte_offsets.clone();
+        chunks[0].mate_info = plan.mate_info.clone();
+    } else {
+        // Partition by positional index
+        for (pos, hash) in plan.read_hash_order.iter().enumerate() {
+            let chunk_idx = if chunk_size == 0 {
+                0
+            } else {
+                (pos / chunk_size).min(num_chunks - 1)
+            };
+            if let Some(sketch) = plan.read_sketches.get(hash) {
+                chunks[chunk_idx].read_sketches.insert(*hash, sketch.clone());
+            }
+        }
+
+        // Partition read_byte_offsets by positional range
+        if !plan.read_byte_offsets.is_empty() {
+            // read_byte_offsets[file_idx][read_idx] — partition inner vecs by chunk
+            for chunk_idx in 0..num_chunks {
+                let start = chunk_idx * chunk_size;
+                let end = ((chunk_idx + 1) * chunk_size).min(total_reads);
+                let mut chunk_offsets = Vec::new();
+                for file_offsets in &plan.read_byte_offsets {
+                    let slice_start = start.min(file_offsets.len());
+                    let slice_end = end.min(file_offsets.len());
+                    chunk_offsets.push(file_offsets[slice_start..slice_end].to_vec());
+                }
+                chunks[chunk_idx].read_byte_offsets = chunk_offsets;
+            }
+        }
+
+        // Partition mate_info: we need to know which read names belong to which chunk.
+        // mate_info is keyed by read name — we don't have a position→name map easily.
+        // For now, put all mate_info in chunk 0 (conservative; a worker that doesn't own
+        // a read's mate_info can still function — it just won't use insert-size info).
+        // TODO: If mate_info partitioning becomes important, add a name→position map.
+        if !plan.mate_info.is_empty() {
+            chunks[0].mate_info = plan.mate_info.clone();
+        }
+    }
+
+    chunks
+}
+
+/// Write PhrayaPlan to a v7 chunk-addressable file with seekable zstd frames.
+///
+/// File layout:
+///   [4B magic "PHR7"] [8B LE toc_offset] [shared_zstd] [chunk_0_zstd] ... [chunk_N-1_zstd] [toc_msgpack]
+///
+/// TOC is at the end (after all data frames), so offsets are known before serializing it.
+/// TOC is uncompressed msgpack. Shared and chunk frames are zstd-compressed.
+/// All byte offsets in the TOC are absolute from file start.
+pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
+    use std::io::Write;
+
+    let num_chunks = plan.batch_num_chunks.unwrap_or(1).max(1);
+
+    // Build shared frame
+    let shared = SharedFrame {
+        version: PHRAYAPLAN_VERSION,
+        use_case: plan.use_case,
+        reference_space: plan.reference_space.clone(),
+        input_files: plan.input_files.clone(),
+        timestamp: plan.timestamp.clone(),
+        kmer_index: plan.kmer_index.clone(),
+        kmer_uniqueness: plan.kmer_uniqueness.clone(),
+        task_list: plan.task_list.clone(),
+        hotspot_intervals: plan.hotspot_intervals.clone(),
+        reads_per_file: plan.reads_per_file.clone(),
+        total_read_count: plan.total_read_count,
+        kmer_params: plan.kmer_params.clone(),
+        batch_num_chunks: plan.batch_num_chunks,
+        batch_reads_per_chunk: plan.batch_reads_per_chunk,
+        batch_output_paths: plan.batch_output_paths.clone(),
+        insert_size_distribution: plan.insert_size_distribution.clone(),
+        dense_kmer_index: plan.dense_kmer_index.clone(),
+        w11_membership: plan.w11_membership.clone(),
+        sparse_mode: plan.sparse_mode,
+    };
+
+    let shared_bytes = rmp_serde::to_vec(&shared)
+        .map_err(|e| PlanError::SerializationError(e.to_string()))?;
+    let shared_compressed = zstd::encode_all(&shared_bytes[..], 3)
         .map_err(|e| PlanError::CompressionError(e.to_string()))?;
 
-    // Write to file
-    std::fs::write(path, compressed).map_err(|e| PlanError::IoError(e.to_string()))?;
+    // Build and compress chunk frames
+    let chunk_frames = partition_read_data(plan, num_chunks);
+    let mut chunk_compressed: Vec<Vec<u8>> = Vec::with_capacity(num_chunks);
+    for frame in &chunk_frames {
+        let bytes = rmp_serde::to_vec(frame)
+            .map_err(|e| PlanError::SerializationError(e.to_string()))?;
+        let compressed = zstd::encode_all(&bytes[..], 3)
+            .map_err(|e| PlanError::CompressionError(e.to_string()))?;
+        chunk_compressed.push(compressed);
+    }
+
+    // Compute layout: TOC goes at the end, so all data offsets are known first.
+    // Header: [4B magic][8B toc_offset] = 12 bytes
+    let header_len: u64 = 12;
+    let shared_offset = header_len;
+    let mut chunk_offsets: Vec<(u64, u64)> = Vec::with_capacity(num_chunks);
+    let mut cursor = shared_offset + shared_compressed.len() as u64;
+    for cc in &chunk_compressed {
+        chunk_offsets.push((cursor, cc.len() as u64));
+        cursor += cc.len() as u64;
+    }
+    let toc_offset = cursor;
+
+    // Build TOC with final offsets (no fixpoint problem — TOC is written after all data)
+    let toc = PlanToc {
+        version: PHRAYAPLAN_VERSION,
+        flags: 0,
+        num_chunks: num_chunks as u32,
+        shared_frame_offset: shared_offset,
+        shared_frame_len: shared_compressed.len() as u64,
+        chunk_frame_offsets: chunk_offsets,
+    };
+    let toc_bytes = rmp_serde::to_vec(&toc)
+        .map_err(|e| PlanError::SerializationError(e.to_string()))?;
+
+    // Write the file
+    let file =
+        std::fs::File::create(path).map_err(|e| PlanError::IoError(e.to_string()))?;
+    let mut writer = std::io::BufWriter::new(file);
+
+    writer
+        .write_all(&V7_MAGIC)
+        .map_err(|e| PlanError::IoError(e.to_string()))?;
+    writer
+        .write_all(&toc_offset.to_le_bytes())
+        .map_err(|e| PlanError::IoError(e.to_string()))?;
+    writer
+        .write_all(&shared_compressed)
+        .map_err(|e| PlanError::IoError(e.to_string()))?;
+    for cc in &chunk_compressed {
+        writer
+            .write_all(cc)
+            .map_err(|e| PlanError::IoError(e.to_string()))?;
+    }
+    // TOC at end — offsets are now finalized
+    writer
+        .write_all(&toc_bytes)
+        .map_err(|e| PlanError::IoError(e.to_string()))?;
+    writer
+        .flush()
+        .map_err(|e| PlanError::IoError(e.to_string()))?;
 
     Ok(())
 }
 
-/// Read PhrayaPlan from compressed binary file
-pub fn read_plan(path: &Path) -> Result<PhrayaPlan, PlanError> {
-    // Read file
-    let compressed = std::fs::read(path).map_err(|e| PlanError::IoError(e.to_string()))?;
-
-    // Decompress using zstd
-    let decompressed = zstd::decode_all(&compressed[..])
-        .map_err(|e| PlanError::DecompressionError(e.to_string()))?;
-
-    // Deserialize using MessagePack
-    let plan: PhrayaPlan = rmp_serde::from_slice(&decompressed)
+/// Read the TOC from a v7 plan file.
+/// Layout: [4B magic][8B toc_offset][data frames...][toc_msgpack at toc_offset]
+fn read_toc(data: &[u8]) -> Result<PlanToc, PlanError> {
+    if data.len() < 12 {
+        return Err(PlanError::DecompressionError(
+            "file too small for v7 header".to_string(),
+        ));
+    }
+    if &data[0..4] != V7_MAGIC {
+        return Err(PlanError::DecompressionError(
+            "not a v7 plan file (bad magic)".to_string(),
+        ));
+    }
+    let toc_offset = u64::from_le_bytes(data[4..12].try_into().unwrap()) as usize;
+    if toc_offset > data.len() {
+        return Err(PlanError::DecompressionError(
+            "file truncated: TOC offset past EOF".to_string(),
+        ));
+    }
+    let toc_raw = &data[toc_offset..];
+    let toc: PlanToc = rmp_serde::from_slice(toc_raw)
         .map_err(|e| PlanError::SerializationError(e.to_string()))?;
 
-    // Check version
-    if plan.version != PHRAYAPLAN_VERSION {
+    if toc.version != PHRAYAPLAN_VERSION {
         return Err(PlanError::VersionMismatch {
             expected: PHRAYAPLAN_VERSION,
-            got: plan.version,
+            got: toc.version,
         });
     }
 
-    Ok(plan)
+    Ok(toc)
+}
+
+/// Decompress and deserialize a frame at the given byte range.
+fn read_frame<T: serde::de::DeserializeOwned>(data: &[u8], offset: u64, len: u64) -> Result<T, PlanError> {
+    let start = offset as usize;
+    let end = start + len as usize;
+    if data.len() < end {
+        return Err(PlanError::DecompressionError(
+            "file truncated: frame extends past EOF".to_string(),
+        ));
+    }
+    let decompressed = zstd::decode_all(&data[start..end])
+        .map_err(|e| PlanError::DecompressionError(e.to_string()))?;
+    rmp_serde::from_slice(&decompressed)
+        .map_err(|e| PlanError::SerializationError(e.to_string()))
+}
+
+/// Reassemble a PhrayaPlan from a shared frame and chunk frames.
+fn assemble_plan(shared: SharedFrame, chunks: Vec<ChunkFrame>) -> PhrayaPlan {
+    let mut read_sketches = HashMap::new();
+    let mut read_byte_offsets: Vec<Vec<u64>> = Vec::new();
+    let mut mate_info = HashMap::new();
+    let mut read_hash_order = Vec::new();
+
+    for chunk in chunks {
+        // Collect hashes in sorted order within each chunk for determinism
+        let mut chunk_hashes: Vec<u64> = chunk.read_sketches.keys().copied().collect();
+        chunk_hashes.sort();
+        read_hash_order.extend_from_slice(&chunk_hashes);
+
+        for (hash, sketch) in chunk.read_sketches {
+            read_sketches.insert(hash, sketch);
+        }
+        // Merge byte offsets: extend each file's offset list
+        if !chunk.read_byte_offsets.is_empty() {
+            if read_byte_offsets.is_empty() {
+                read_byte_offsets = chunk.read_byte_offsets;
+            } else {
+                for (i, offsets) in chunk.read_byte_offsets.into_iter().enumerate() {
+                    if i < read_byte_offsets.len() {
+                        read_byte_offsets[i].extend(offsets);
+                    }
+                }
+            }
+        }
+        for (k, v) in chunk.mate_info {
+            mate_info.insert(k, v);
+        }
+    }
+
+    PhrayaPlan {
+        version: shared.version,
+        use_case: shared.use_case,
+        reference_space: shared.reference_space,
+        input_files: shared.input_files,
+        timestamp: shared.timestamp,
+        kmer_index: shared.kmer_index,
+        kmer_uniqueness: shared.kmer_uniqueness,
+        task_list: shared.task_list,
+        read_sketches,
+        hotspot_intervals: shared.hotspot_intervals,
+        reads_per_file: shared.reads_per_file,
+        total_read_count: shared.total_read_count,
+        kmer_params: shared.kmer_params,
+        batch_num_chunks: shared.batch_num_chunks,
+        batch_reads_per_chunk: shared.batch_reads_per_chunk,
+        read_byte_offsets,
+        batch_output_paths: shared.batch_output_paths,
+        insert_size_distribution: shared.insert_size_distribution,
+        mate_info,
+        dense_kmer_index: shared.dense_kmer_index,
+        w11_membership: shared.w11_membership,
+        sparse_mode: shared.sparse_mode,
+        read_hash_order,
+    }
+}
+
+/// Read PhrayaPlan from a v7 chunk-addressable file, loading all chunks.
+/// This is the standard non-batch read path.
+pub fn read_plan(path: &Path) -> Result<PhrayaPlan, PlanError> {
+    let data = std::fs::read(path).map_err(|e| PlanError::IoError(e.to_string()))?;
+
+    // Detect format: v7 starts with "PHR7" magic
+    if data.len() >= 4 && &data[0..4] == V7_MAGIC {
+        let toc = read_toc(&data)?;
+        let shared: SharedFrame =
+            read_frame(&data, toc.shared_frame_offset, toc.shared_frame_len)?;
+        let mut chunks = Vec::with_capacity(toc.num_chunks as usize);
+        for &(offset, len) in &toc.chunk_frame_offsets {
+            let chunk: ChunkFrame = read_frame(&data, offset, len)?;
+            chunks.push(chunk);
+        }
+        Ok(assemble_plan(shared, chunks))
+    } else {
+        // Not a v7 file — reject with version mismatch
+        Err(PlanError::VersionMismatch {
+            expected: PHRAYAPLAN_VERSION,
+            got: 6,
+        })
+    }
+}
+
+/// Read PhrayaPlan from a v7 file, loading only the specified worker's chunk.
+/// For batch mode: loads shared frame + one chunk frame, minimizing memory.
+/// If the plan has only 1 chunk but worker_count > 1, loads the single chunk
+/// and filters in-memory by positional range.
+pub fn read_plan_worker(
+    path: &Path,
+    worker_id: usize,
+    worker_count: usize,
+) -> Result<PhrayaPlan, PlanError> {
+    let data = std::fs::read(path).map_err(|e| PlanError::IoError(e.to_string()))?;
+
+    if data.len() < 4 || &data[0..4] != V7_MAGIC {
+        return Err(PlanError::VersionMismatch {
+            expected: PHRAYAPLAN_VERSION,
+            got: 6,
+        });
+    }
+
+    let toc = read_toc(&data)?;
+    let shared: SharedFrame =
+        read_frame(&data, toc.shared_frame_offset, toc.shared_frame_len)?;
+
+    let plan_chunks = toc.num_chunks as usize;
+
+    if plan_chunks == worker_count && worker_id < plan_chunks {
+        // Pre-split: load exactly our chunk
+        let (offset, len) = toc.chunk_frame_offsets[worker_id];
+        let chunk: ChunkFrame = read_frame(&data, offset, len)?;
+        Ok(assemble_plan(shared, vec![chunk]))
+    } else if plan_chunks == 1 && worker_count > 1 {
+        // Fallback: load the single chunk, filter by positional range
+        let (offset, len) = toc.chunk_frame_offsets[0];
+        let mut chunk: ChunkFrame = read_frame(&data, offset, len)?;
+
+        let total = chunk.read_sketches.len();
+        let chunk_size = (total + worker_count - 1) / worker_count;
+        let start = worker_id * chunk_size;
+        let end = ((worker_id + 1) * chunk_size).min(total);
+
+        // Sort keys for deterministic positional assignment
+        let mut all_hashes: Vec<u64> = chunk.read_sketches.keys().copied().collect();
+        all_hashes.sort();
+
+        let my_hashes: std::collections::HashSet<u64> =
+            all_hashes[start..end].iter().copied().collect();
+        chunk.read_sketches.retain(|k, _| my_hashes.contains(k));
+
+        // Filter byte offsets by range
+        if !chunk.read_byte_offsets.is_empty() {
+            for file_offsets in &mut chunk.read_byte_offsets {
+                let slice_start = start.min(file_offsets.len());
+                let slice_end = end.min(file_offsets.len());
+                *file_offsets = file_offsets[slice_start..slice_end].to_vec();
+            }
+        }
+
+        Ok(assemble_plan(shared, vec![chunk]))
+    } else if worker_id < plan_chunks {
+        // Mismatched chunk count — load our chunk by index
+        let (offset, len) = toc.chunk_frame_offsets[worker_id];
+        let chunk: ChunkFrame = read_frame(&data, offset, len)?;
+        Ok(assemble_plan(shared, vec![chunk]))
+    } else {
+        Err(PlanError::IoError(format!(
+            "worker_id {} exceeds plan chunk count {}",
+            worker_id, plan_chunks
+        )))
+    }
+}
+
+/// Read just the TOC from a plan file (for inspection / plan-tasks without full load).
+pub fn read_plan_toc(path: &Path) -> Result<PlanToc, PlanError> {
+    let data = std::fs::read(path).map_err(|e| PlanError::IoError(e.to_string()))?;
+    if data.len() < 4 || &data[0..4] != V7_MAGIC {
+        return Err(PlanError::VersionMismatch {
+            expected: PHRAYAPLAN_VERSION,
+            got: 6,
+        });
+    }
+    read_toc(&data)
 }
 
 /// Compute a strong cryptographic hash (SHA-256, 256-bit) of raw bytes.
@@ -444,6 +882,19 @@ mod tests {
     use super::*;
     use phraya_core::types::Sequence;
     use tempfile::NamedTempFile;
+
+    /// Generate a deterministic DNA sequence of given length, unique per seed.
+    /// Uses a simple LCG to produce only ACGT characters.
+    fn test_dna_sequence(seed: u64, len: usize) -> Vec<u8> {
+        let bases = [b'A', b'C', b'G', b'T'];
+        let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                bases[((state >> 33) % 4) as usize]
+            })
+            .collect()
+    }
 
     #[test]
     fn populate_dense_sketches_skips_sequences_absent_from_kmer_index() {
@@ -577,20 +1028,28 @@ mod tests {
 
     #[test]
     fn version_mismatch_handling() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-05-31T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
-
-        // Manually set wrong version
-        plan.version = 999;
+        // Simulate a future-version v7 file: TOC at end with version=999
+        let future_toc = PlanToc {
+            version: 999,
+            flags: 0,
+            num_chunks: 1,
+            shared_frame_offset: 12,
+            shared_frame_len: 50,
+            chunk_frame_offsets: vec![(62, 50)],
+        };
+        let toc_bytes = rmp_serde::to_vec(&future_toc).unwrap();
 
         let temp = NamedTempFile::new().unwrap();
-        write_plan(temp.path(), &plan).unwrap();
+        let mut file_bytes = Vec::new();
+        file_bytes.extend_from_slice(&V7_MAGIC);
+        // TOC offset = header (12) + padding (200) = 212
+        let toc_offset: u64 = 12 + 200;
+        file_bytes.extend_from_slice(&toc_offset.to_le_bytes());
+        // Pad with dummy data frames (won't be read — version check fails first)
+        file_bytes.extend(vec![0u8; 200]);
+        // TOC at the end
+        file_bytes.extend_from_slice(&toc_bytes);
+        std::fs::write(temp.path(), &file_bytes).unwrap();
 
         // Reading should fail with version mismatch
         let result = read_plan(temp.path());
@@ -1317,5 +1776,350 @@ mod tests {
         let read_plan = read_plan(temp.path()).unwrap();
 
         assert!(read_plan.read_sketches.is_empty());
+    }
+
+    // ============================================================================
+    // Issue #201: chunk-addressable plan v7 format tests
+    // ============================================================================
+
+    /// v7 round-trip: an empty plan (no reads, no chunks) writes and reads as v7.
+    #[test]
+    fn issue_201_v7_round_trip_empty_plan() {
+        let plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["ref.fa".to_string()],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![(1, 0)],
+        );
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+
+        // Verify magic bytes
+        let raw = std::fs::read(temp.path()).unwrap();
+        assert_eq!(&raw[0..4], b"PHR7", "v7 file must start with PHR7 magic");
+
+        let loaded = read_plan(temp.path()).unwrap();
+        assert_eq!(loaded.version, PHRAYAPLAN_VERSION);
+        assert_eq!(loaded.use_case, UseCase::ReadsWithRef);
+        assert_eq!(loaded.task_list, vec![(1, 0)]);
+    }
+
+    /// v7 round-trip with read sketches (single chunk, N=1 default).
+    #[test]
+    fn issue_201_v7_round_trip_with_read_sketches() {
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["ref.fa".to_string(), "reads.fq".to_string()],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let read_a = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
+        let read_b = b"TGCATGCATGCATGCATGCATGCATGCATGCA";
+        let hash_a = read_content_hash(read_a);
+        let hash_b = read_content_hash(read_b);
+        let sketch_a = phraya_core::types::sketch(read_a, 21, 11);
+        let sketch_b = phraya_core::types::sketch(read_b, 21, 11);
+
+        plan.read_sketches.insert(hash_a, sketch_a.clone());
+        plan.read_sketches.insert(hash_b, sketch_b.clone());
+        plan.read_hash_order = vec![hash_a, hash_b];
+        plan.total_read_count = 2;
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+        let loaded = read_plan(temp.path()).unwrap();
+
+        assert_eq!(loaded.read_sketches.len(), 2);
+        assert_eq!(loaded.get_read_sketch(hash_a), Some(&sketch_a));
+        assert_eq!(loaded.get_read_sketch(hash_b), Some(&sketch_b));
+    }
+
+    /// v7 with pre-split chunks (N=4): each chunk gets its subset.
+    #[test]
+    fn issue_201_v7_pre_split_chunks() {
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["ref.fa".to_string()],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        // Insert 8 read sketches
+        let mut hashes = Vec::new();
+        for i in 0u8..8 {
+            let bases: Vec<u8> = test_dna_sequence(i as u64, 32);
+            let hash = read_content_hash(&bases);
+            let sketch = phraya_core::types::sketch(&bases, 21, 11);
+            plan.read_sketches.insert(hash, sketch);
+            hashes.push(hash);
+        }
+        plan.read_hash_order = hashes.clone();
+        plan.total_read_count = 8;
+        plan.batch_num_chunks = Some(4);
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+
+        // Verify TOC has 4 chunks
+        let toc = read_plan_toc(temp.path()).unwrap();
+        assert_eq!(toc.num_chunks, 4);
+        assert_eq!(toc.chunk_frame_offsets.len(), 4);
+
+        // Full read should get all 8 sketches
+        let loaded = read_plan(temp.path()).unwrap();
+        assert_eq!(loaded.read_sketches.len(), 8);
+    }
+
+    /// Worker load: worker 0 of 4 gets only its chunk's sketches.
+    #[test]
+    fn issue_201_v7_worker_loads_only_own_chunk() {
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["ref.fa".to_string()],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        // 8 reads, 4 chunks → 2 reads per chunk
+        let mut hashes = Vec::new();
+        for i in 0u64..8 {
+            let bases: Vec<u8> = test_dna_sequence(i, 36);
+            let hash = read_content_hash(&bases);
+            let sketch = phraya_core::types::sketch(&bases, 21, 11);
+            plan.read_sketches.insert(hash, sketch);
+            hashes.push(hash);
+        }
+        plan.read_hash_order = hashes.clone();
+        plan.total_read_count = 8;
+        plan.batch_num_chunks = Some(4);
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+
+        // Worker 0 should get chunk 0 (first 2 reads)
+        let worker_plan = read_plan_worker(temp.path(), 0, 4).unwrap();
+        assert_eq!(
+            worker_plan.read_sketches.len(),
+            2,
+            "Worker 0 of 4 should get 2 of 8 reads, got {}",
+            worker_plan.read_sketches.len()
+        );
+
+        // Worker 3 should also get 2 reads
+        let worker_plan = read_plan_worker(temp.path(), 3, 4).unwrap();
+        assert_eq!(
+            worker_plan.read_sketches.len(),
+            2,
+            "Worker 3 of 4 should get 2 of 8 reads, got {}",
+            worker_plan.read_sketches.len()
+        );
+
+        // Shared data (metadata) should be present in all workers
+        assert_eq!(worker_plan.version, PHRAYAPLAN_VERSION);
+        assert_eq!(worker_plan.use_case, UseCase::ReadsWithRef);
+    }
+
+    /// Worker isolation: no overlap between workers' sketch sets.
+    #[test]
+    fn issue_201_v7_worker_chunks_are_disjoint() {
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["ref.fa".to_string()],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let mut hashes = Vec::new();
+        for i in 0u64..12 {
+            let bases: Vec<u8> = test_dna_sequence(i + 100, 32);
+            let hash = read_content_hash(&bases);
+            let sketch = phraya_core::types::sketch(&bases, 21, 11);
+            plan.read_sketches.insert(hash, sketch);
+            hashes.push(hash);
+        }
+        plan.read_hash_order = hashes;
+        plan.total_read_count = 12;
+        plan.batch_num_chunks = Some(3);
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+
+        let w0 = read_plan_worker(temp.path(), 0, 3).unwrap();
+        let w1 = read_plan_worker(temp.path(), 1, 3).unwrap();
+        let w2 = read_plan_worker(temp.path(), 2, 3).unwrap();
+
+        // Each worker gets 4 reads
+        assert_eq!(w0.read_sketches.len(), 4);
+        assert_eq!(w1.read_sketches.len(), 4);
+        assert_eq!(w2.read_sketches.len(), 4);
+
+        // No overlap
+        let keys_0: std::collections::HashSet<u64> =
+            w0.read_sketches.keys().copied().collect();
+        let keys_1: std::collections::HashSet<u64> =
+            w1.read_sketches.keys().copied().collect();
+        let keys_2: std::collections::HashSet<u64> =
+            w2.read_sketches.keys().copied().collect();
+
+        assert!(
+            keys_0.is_disjoint(&keys_1),
+            "Worker 0 and 1 must have disjoint sketch sets"
+        );
+        assert!(
+            keys_1.is_disjoint(&keys_2),
+            "Worker 1 and 2 must have disjoint sketch sets"
+        );
+        assert!(
+            keys_0.is_disjoint(&keys_2),
+            "Worker 0 and 2 must have disjoint sketch sets"
+        );
+    }
+
+    /// Fallback: N=1 plan with worker_count > 1 filters in-memory.
+    #[test]
+    fn issue_201_v7_fallback_n1_with_multiple_workers() {
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["ref.fa".to_string()],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+
+        let mut hashes = Vec::new();
+        for i in 0u64..6 {
+            let bases: Vec<u8> = test_dna_sequence(i + 200, 32);
+            let hash = read_content_hash(&bases);
+            let sketch = phraya_core::types::sketch(&bases, 21, 11);
+            plan.read_sketches.insert(hash, sketch);
+            hashes.push(hash);
+        }
+        plan.read_hash_order = hashes;
+        plan.total_read_count = 6;
+        // N=1 (default, no --chunks)
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+
+        // Full load gets all 6
+        let full = read_plan(temp.path()).unwrap();
+        assert_eq!(full.read_sketches.len(), 6);
+
+        // Worker 0/3 gets ~2, worker 1/3 gets ~2, worker 2/3 gets ~2
+        let w0 = read_plan_worker(temp.path(), 0, 3).unwrap();
+        let w1 = read_plan_worker(temp.path(), 1, 3).unwrap();
+        let w2 = read_plan_worker(temp.path(), 2, 3).unwrap();
+
+        let total_loaded = w0.read_sketches.len() + w1.read_sketches.len() + w2.read_sketches.len();
+        assert_eq!(
+            total_loaded, 6,
+            "All 3 workers combined must cover all 6 reads, got {}",
+            total_loaded
+        );
+    }
+
+    /// v6 file rejection: a plan written with old format should be hard-rejected.
+    #[test]
+    fn issue_201_v7_rejects_non_v7_file() {
+        // Write a raw zstd-compressed msgpack blob (simulating a v6 file)
+        let fake_v6_plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec![],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+        let serialized = rmp_serde::to_vec(&fake_v6_plan).unwrap();
+        let compressed = zstd::encode_all(&serialized[..], 3).unwrap();
+
+        let temp = NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), &compressed).unwrap();
+
+        let result = read_plan(temp.path());
+        assert!(result.is_err(), "v6 format must be rejected");
+        match result.unwrap_err() {
+            PlanError::VersionMismatch { expected, got } => {
+                assert_eq!(expected, 7);
+                assert_eq!(got, 6);
+            }
+            other => panic!("Expected VersionMismatch, got {:?}", other),
+        }
+    }
+
+    /// TOC inspection: read_plan_toc returns correct metadata.
+    #[test]
+    fn issue_201_v7_toc_inspection() {
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["ref.fa".to_string()],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+        plan.batch_num_chunks = Some(5);
+        plan.total_read_count = 10;
+        for i in 0u64..10 {
+            let bases: Vec<u8> = test_dna_sequence(i + 300, 32);
+            let hash = read_content_hash(&bases);
+            plan.read_sketches
+                .insert(hash, phraya_core::types::sketch(&bases, 21, 11));
+            plan.read_hash_order.push(hash);
+        }
+
+        let temp = NamedTempFile::new().unwrap();
+        write_plan(temp.path(), &plan).unwrap();
+
+        let toc = read_plan_toc(temp.path()).unwrap();
+        assert_eq!(toc.version, 7);
+        assert_eq!(toc.flags, 0);
+        assert_eq!(toc.num_chunks, 5);
+        assert_eq!(toc.chunk_frame_offsets.len(), 5);
+        // Shared frame must come before chunk frames
+        assert!(toc.shared_frame_offset < toc.chunk_frame_offsets[0].0);
+    }
+
+    /// Byte determinism: writing the same plan twice produces identical bytes.
+    #[test]
+    fn issue_201_v7_byte_deterministic() {
+        let mut plan = PhrayaPlan::new(
+            UseCase::ReadsWithRef,
+            vec!["ref.fa".to_string()],
+            "2026-07-23T00:00:00Z".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+        );
+        for i in 0u64..4 {
+            let bases: Vec<u8> = test_dna_sequence(i + 200, 32);
+            let hash = read_content_hash(&bases);
+            plan.read_sketches
+                .insert(hash, phraya_core::types::sketch(&bases, 21, 11));
+            plan.read_hash_order.push(hash);
+        }
+        plan.batch_num_chunks = Some(2);
+
+        let temp1 = NamedTempFile::new().unwrap();
+        let temp2 = NamedTempFile::new().unwrap();
+        write_plan(temp1.path(), &plan).unwrap();
+        write_plan(temp2.path(), &plan).unwrap();
+
+        let bytes1 = std::fs::read(temp1.path()).unwrap();
+        let bytes2 = std::fs::read(temp2.path()).unwrap();
+        assert_eq!(bytes1, bytes2, "Two writes of the same plan must be byte-identical");
     }
 }

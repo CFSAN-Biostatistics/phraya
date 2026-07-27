@@ -66,6 +66,12 @@ enum Commands {
         /// Batch output pattern with {worker} placeholder (required if batch_to or batch_by specified)
         #[arg(long, value_name = "PATTERN")]
         batch_output_pattern: Option<String>,
+
+        /// Number of chunk frames to pre-split read sketches into (v7 format).
+        /// Workers can seek directly to their chunk frame, minimizing memory.
+        /// Default: 1 (all reads in one frame). Overridden by --batch-to if specified.
+        #[arg(long, value_name = "N")]
+        chunks: Option<usize>,
     },
     /// Extract task list from a .phrayaplan file and output as TSV
     PlanTasks {
@@ -217,6 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_to,
             batch_by,
             batch_output_pattern,
+            chunks,
         } => {
             // Validate batch flags
             if (batch_to.is_some() || batch_by.is_some()) && batch_output_pattern.is_none() {
@@ -232,6 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 batch_to,
                 batch_by,
                 batch_output_pattern.as_deref(),
+                chunks,
             )?;
         }
         Commands::PlanTasks { plan_file } => {
@@ -406,7 +414,11 @@ fn run_align_worker(
     worker_id: usize,
     config: AlignConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let plan = plan::read_plan(plan_path)?;
+    // Use chunk-aware reader: loads shared frame + only this worker's chunk.
+    // Worker count comes from the plan's TOC (num_chunks).
+    let toc = plan::read_plan_toc(plan_path)?;
+    let worker_count = (toc.num_chunks as usize).max(1);
+    let plan = plan::read_plan_worker(plan_path, worker_id, worker_count)?;
     run_align_worker_with_plan(worker_id, &plan, config)
 }
 
@@ -1018,6 +1030,7 @@ fn run_plan(
     batch_to: Option<usize>,
     batch_by: Option<usize>,
     batch_output_pattern: Option<&str>,
+    chunks: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Read all input sequences and track which file they came from
     let mut all_sequences: Vec<(Sequence, String)> = Vec::new();
@@ -1164,17 +1177,27 @@ fn run_plan(
     plan.reference_space = reference_spaces;
 
     // Populate read_sketches keyed by content hash (ADR-0011)
-    // Skip the reference if present; read_sketches are for reads only
+    // Skip the reference if present; read_sketches are for reads only.
+    // Also record insertion order for v7 chunk partitioning.
     for (idx, ((seq, _), sketch)) in all_sequences.iter().zip(sketches.iter()).enumerate() {
         if Some(idx) != ref_seq_index {
             let content_hash = read_content_hash(seq.bases());
             plan.read_sketches.insert(content_hash, sketch.clone());
+            plan.read_hash_order.push(content_hash);
         }
     }
 
     // Handle batch mode configuration
     if let Some(batch_pattern) = batch_output_pattern {
         configure_batch_mode(&mut plan, batch_to, batch_by, batch_pattern)?;
+    }
+
+    // --chunks: set physical chunk count for v7 frame pre-splitting.
+    // batch_num_chunks from configure_batch_mode takes precedence if set.
+    if let Some(n) = chunks {
+        if plan.batch_num_chunks.is_none() || plan.batch_num_chunks == Some(1) {
+            plan.batch_num_chunks = Some(n.max(1));
+        }
     }
 
     write_plan(output_path, &plan)?;

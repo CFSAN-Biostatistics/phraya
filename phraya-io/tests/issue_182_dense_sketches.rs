@@ -196,30 +196,22 @@ fn issue_182_plan_version_bumped() {
 /// Expected: read_plan() returns PlanError::VersionMismatch with helpful message
 /// once PHRAYAPLAN_VERSION is bumped to 5.
 ///
-/// This test MUST fail before implementation (when version is still 4, v4 plans are accepted).
-/// It will pass once the version is bumped (v4 plans will be rejected).
+/// Old-format plans (pre-v7, no "PHR7" magic) must be hard-rejected.
+/// v7 uses a magic-byte header that old single-frame zstd files won't have.
 #[test]
 fn issue_182_old_plan_v4_rejected_with_clear_message() {
-    // Simulate an old v4 plan by manually setting the version
-    let mut plan = minimal_plan();
-    plan.version = 4; // Old version
-
+    // Simulate an old plan by writing bytes that start with zstd magic (0xFD2FB528)
+    // instead of PHR7. Any file without the PHR7 header is rejected as legacy format.
     let temp = NamedTempFile::new().unwrap();
-    write_plan(temp.path(), &plan).unwrap();
+    // Zstd magic bytes followed by garbage — triggers the "not v7" detection path
+    std::fs::write(temp.path(), b"\xfd\x2f\xb5\x28\x00\x00\x00\x00garbage").unwrap();
 
-    // After implementation (version bumped to 5), attempting to read this v4 plan
-    // should fail with VersionMismatch
     match read_plan(temp.path()) {
         Err(PlanError::VersionMismatch { expected, got }) => {
-            assert_eq!(got, 4, "error should indicate v4 was read");
-            assert!(expected >= 5, "expected version should be 5+");
+            assert_eq!(expected, 7, "expected version should be 7 (current)");
+            assert_eq!(got, 6, "non-v7 files report as v6 (legacy format)");
         }
-        Ok(p) => {
-            // Before implementation: version is still 4, so v4 plans are accepted
-            // After implementation: this branch should not execute
-            assert!(p.version == 4, "before version bump, v4 plans are still accepted");
-            panic!("after version bump to 5+, old v4 plans should be rejected with VersionMismatch");
-        }
+        Ok(_) => panic!("old plan format should be rejected"),
         Err(e) => panic!("unexpected error type: {:?}", e),
     }
 }
