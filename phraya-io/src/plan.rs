@@ -544,8 +544,9 @@ fn partition_read_data(plan: &PhrayaPlan, num_chunks: usize) -> Vec<ChunkFrame> 
 /// Write PhrayaPlan to a v7 chunk-addressable file with seekable zstd frames.
 ///
 /// File layout:
-///   [4B magic "PHR7"] [8B LE toc_compressed_len] [toc_frame] [shared_frame] [chunk_0] ... [chunk_N-1]
+///   [4B magic "PHR7"] [8B LE toc_len] [toc_msgpack] [shared_zstd] [chunk_0_zstd] ... [chunk_N-1_zstd]
 ///
+/// TOC is uncompressed msgpack (tiny). Shared and chunk frames are zstd-compressed.
 /// All byte offsets in the TOC are absolute from file start.
 pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
     use std::io::Write;
@@ -592,29 +593,31 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
     }
 
     // Compute layout offsets
-    // File: [4B magic][8B toc_len][toc_compressed][shared_compressed][chunk_0]...[chunk_N-1]
-    // We don't know toc_compressed size yet, so compute offsets with a placeholder,
-    // then serialize TOC, check if size changed, and iterate (TOC size is stable after 1 pass
-    // because offsets are fixed-width u64).
+    // File: [4B magic][8B toc_len][toc_raw_msgpack][shared_compressed][chunk_0]...[chunk_N-1]
+    // TOC is stored as uncompressed msgpack (tiny, < 1KB) to avoid the fixpoint problem
+    // of compressed-size-dependent offsets. Two-pass: first serialize with dummy offsets
+    // to get the msgpack size (deterministic for same-shape data with same-width integers),
+    // then compute real offsets and serialize again.
 
-    // First pass: estimate TOC size with dummy offsets
     let header_prefix_len: u64 = 4 + 8; // magic + toc_len field
-    let dummy_toc = PlanToc {
+
+    // First pass: serialize with max-width placeholders to determine TOC msgpack size.
+    // Use u64::MAX to ensure msgpack encodes all offsets at full 8-byte width, making
+    // the TOC byte length independent of the actual offset values.
+    let sizing_toc = PlanToc {
         version: PHRAYAPLAN_VERSION,
         flags: 0,
         num_chunks: num_chunks as u32,
-        shared_frame_offset: 0,
-        shared_frame_len: shared_compressed.len() as u64,
-        chunk_frame_offsets: vec![(0u64, 0u64); num_chunks],
+        shared_frame_offset: u64::MAX,
+        shared_frame_len: u64::MAX,
+        chunk_frame_offsets: vec![(u64::MAX, u64::MAX); num_chunks],
     };
-    let dummy_toc_bytes = rmp_serde::to_vec(&dummy_toc)
+    let sizing_toc_bytes = rmp_serde::to_vec(&sizing_toc)
         .map_err(|e| PlanError::SerializationError(e.to_string()))?;
-    let dummy_toc_compressed = zstd::encode_all(&dummy_toc_bytes[..], 3)
-        .map_err(|e| PlanError::CompressionError(e.to_string()))?;
+    let toc_byte_len = sizing_toc_bytes.len() as u64;
 
-    // Use the dummy TOC compressed size to compute real offsets
-    let toc_compressed_len = dummy_toc_compressed.len() as u64;
-    let shared_offset = header_prefix_len + toc_compressed_len;
+    // Compute real offsets using the known TOC size
+    let shared_offset = header_prefix_len + toc_byte_len;
     let mut chunk_offsets: Vec<(u64, u64)> = Vec::with_capacity(num_chunks);
     let mut cursor = shared_offset + shared_compressed.len() as u64;
     for cc in &chunk_compressed {
@@ -622,45 +625,25 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
         cursor += cc.len() as u64;
     }
 
-    // Build real TOC
+    // Second pass: serialize with real offsets
     let real_toc = PlanToc {
         version: PHRAYAPLAN_VERSION,
         flags: 0,
         num_chunks: num_chunks as u32,
         shared_frame_offset: shared_offset,
         shared_frame_len: shared_compressed.len() as u64,
-        chunk_frame_offsets: chunk_offsets.clone(),
+        chunk_frame_offsets: chunk_offsets,
     };
-    let real_toc_bytes = rmp_serde::to_vec(&real_toc)
+    let toc_bytes = rmp_serde::to_vec(&real_toc)
         .map_err(|e| PlanError::SerializationError(e.to_string()))?;
-    let real_toc_compressed = zstd::encode_all(&real_toc_bytes[..], 3)
-        .map_err(|e| PlanError::CompressionError(e.to_string()))?;
 
-    // If the real TOC compressed size differs from the dummy, recompute offsets
-    let final_toc_compressed = if real_toc_compressed.len() as u64 != toc_compressed_len {
-        let new_toc_len = real_toc_compressed.len() as u64;
-        let new_shared_offset = header_prefix_len + new_toc_len;
-        let mut new_chunk_offsets: Vec<(u64, u64)> = Vec::with_capacity(num_chunks);
-        let mut new_cursor = new_shared_offset + shared_compressed.len() as u64;
-        for cc in &chunk_compressed {
-            new_chunk_offsets.push((new_cursor, cc.len() as u64));
-            new_cursor += cc.len() as u64;
-        }
-        let final_toc = PlanToc {
-            version: PHRAYAPLAN_VERSION,
-            flags: 0,
-            num_chunks: num_chunks as u32,
-            shared_frame_offset: new_shared_offset,
-            shared_frame_len: shared_compressed.len() as u64,
-            chunk_frame_offsets: new_chunk_offsets,
-        };
-        let final_bytes = rmp_serde::to_vec(&final_toc)
-            .map_err(|e| PlanError::SerializationError(e.to_string()))?;
-        zstd::encode_all(&final_bytes[..], 3)
-            .map_err(|e| PlanError::CompressionError(e.to_string()))?
-    } else {
-        real_toc_compressed
-    };
+    // Sanity check: the real TOC must be the same size as the sizing TOC.
+    // This holds because msgpack uses the same encoding width for u64::MAX
+    // as for any other large u64 (9 bytes: 1 type + 8 value).
+    debug_assert_eq!(
+        toc_bytes.len() as u64, toc_byte_len,
+        "TOC size must be stable between sizing and real pass"
+    );
 
     // Write the file
     let file =
@@ -671,10 +654,10 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
         .write_all(&V7_MAGIC)
         .map_err(|e| PlanError::IoError(e.to_string()))?;
     writer
-        .write_all(&(final_toc_compressed.len() as u64).to_le_bytes())
+        .write_all(&toc_byte_len.to_le_bytes())
         .map_err(|e| PlanError::IoError(e.to_string()))?;
     writer
-        .write_all(&final_toc_compressed)
+        .write_all(&toc_bytes)
         .map_err(|e| PlanError::IoError(e.to_string()))?;
     writer
         .write_all(&shared_compressed)
@@ -691,7 +674,7 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
     Ok(())
 }
 
-/// Read the TOC from a v7 plan file. Returns (TOC, file_bytes) for further frame access.
+/// Read the TOC from a v7 plan file (uncompressed msgpack after the 12-byte header).
 fn read_toc(data: &[u8]) -> Result<PlanToc, PlanError> {
     if data.len() < 12 {
         return Err(PlanError::DecompressionError(
@@ -706,13 +689,11 @@ fn read_toc(data: &[u8]) -> Result<PlanToc, PlanError> {
     let toc_len = u64::from_le_bytes(data[4..12].try_into().unwrap()) as usize;
     if data.len() < 12 + toc_len {
         return Err(PlanError::DecompressionError(
-            "file truncated: TOC frame extends past EOF".to_string(),
+            "file truncated: TOC extends past EOF".to_string(),
         ));
     }
-    let toc_compressed = &data[12..12 + toc_len];
-    let toc_bytes = zstd::decode_all(toc_compressed)
-        .map_err(|e| PlanError::DecompressionError(e.to_string()))?;
-    let toc: PlanToc = rmp_serde::from_slice(&toc_bytes)
+    let toc_raw = &data[12..12 + toc_len];
+    let toc: PlanToc = rmp_serde::from_slice(toc_raw)
         .map_err(|e| PlanError::SerializationError(e.to_string()))?;
 
     if toc.version != PHRAYAPLAN_VERSION {
@@ -928,6 +909,19 @@ mod tests {
     use phraya_core::types::Sequence;
     use tempfile::NamedTempFile;
 
+    /// Generate a deterministic DNA sequence of given length, unique per seed.
+    /// Uses a simple LCG to produce only ACGT characters.
+    fn test_dna_sequence(seed: u64, len: usize) -> Vec<u8> {
+        let bases = [b'A', b'C', b'G', b'T'];
+        let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                bases[((state >> 33) % 4) as usize]
+            })
+            .collect()
+    }
+
     #[test]
     fn populate_dense_sketches_skips_sequences_absent_from_kmer_index() {
         // Only "known" is in kmer_index; "unknown" is present in `sequences` but
@@ -1070,13 +1064,12 @@ mod tests {
             chunk_frame_offsets: vec![(150, 50)],
         };
         let toc_bytes = rmp_serde::to_vec(&future_toc).unwrap();
-        let toc_compressed = zstd::encode_all(&toc_bytes[..], 3).unwrap();
 
         let temp = NamedTempFile::new().unwrap();
         let mut file_bytes = Vec::new();
         file_bytes.extend_from_slice(&V7_MAGIC);
-        file_bytes.extend_from_slice(&(toc_compressed.len() as u64).to_le_bytes());
-        file_bytes.extend_from_slice(&toc_compressed);
+        file_bytes.extend_from_slice(&(toc_bytes.len() as u64).to_le_bytes());
+        file_bytes.extend_from_slice(&toc_bytes);
         // Pad to satisfy offset requirements (won't actually be read — version check fails first)
         file_bytes.extend(vec![0u8; 200]);
         std::fs::write(temp.path(), &file_bytes).unwrap();
@@ -1885,7 +1878,7 @@ mod tests {
         // Insert 8 read sketches
         let mut hashes = Vec::new();
         for i in 0u8..8 {
-            let bases: Vec<u8> = std::iter::repeat(b'A' + (i % 4)).take(32).collect();
+            let bases: Vec<u8> = test_dna_sequence(i as u64, 32);
             let hash = read_content_hash(&bases);
             let sketch = phraya_core::types::sketch(&bases, 21, 11);
             plan.read_sketches.insert(hash, sketch);
@@ -1923,7 +1916,7 @@ mod tests {
         // 8 reads, 4 chunks → 2 reads per chunk
         let mut hashes = Vec::new();
         for i in 0u64..8 {
-            let bases: Vec<u8> = format!("ACGTACGTACGTACGTACGT{:016x}", i).into_bytes();
+            let bases: Vec<u8> = test_dna_sequence(i, 36);
             let hash = read_content_hash(&bases);
             let sketch = phraya_core::types::sketch(&bases, 21, 11);
             plan.read_sketches.insert(hash, sketch);
@@ -1973,7 +1966,7 @@ mod tests {
 
         let mut hashes = Vec::new();
         for i in 0u64..12 {
-            let bases: Vec<u8> = format!("TGCATGCATGCATGCA{:016x}", i).into_bytes();
+            let bases: Vec<u8> = test_dna_sequence(i + 100, 32);
             let hash = read_content_hash(&bases);
             let sketch = phraya_core::types::sketch(&bases, 21, 11);
             plan.read_sketches.insert(hash, sketch);
@@ -2031,7 +2024,7 @@ mod tests {
 
         let mut hashes = Vec::new();
         for i in 0u64..6 {
-            let bases: Vec<u8> = format!("ACGTACGT{:024x}", i).into_bytes();
+            let bases: Vec<u8> = test_dna_sequence(i + 200, 32);
             let hash = read_content_hash(&bases);
             let sketch = phraya_core::types::sketch(&bases, 21, 11);
             plan.read_sketches.insert(hash, sketch);
@@ -2104,7 +2097,7 @@ mod tests {
         plan.batch_num_chunks = Some(5);
         plan.total_read_count = 10;
         for i in 0u64..10 {
-            let bases: Vec<u8> = format!("ACGT{:028x}", i).into_bytes();
+            let bases: Vec<u8> = test_dna_sequence(i + 300, 32);
             let hash = read_content_hash(&bases);
             plan.read_sketches
                 .insert(hash, phraya_core::types::sketch(&bases, 21, 11));
@@ -2135,7 +2128,7 @@ mod tests {
             vec![],
         );
         for i in 0u64..4 {
-            let bases: Vec<u8> = format!("ACGTACGT{:024x}", i).into_bytes();
+            let bases: Vec<u8> = test_dna_sequence(i + 200, 32);
             let hash = read_content_hash(&bases);
             plan.read_sketches
                 .insert(hash, phraya_core::types::sketch(&bases, 21, 11));
