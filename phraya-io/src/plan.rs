@@ -544,9 +544,10 @@ fn partition_read_data(plan: &PhrayaPlan, num_chunks: usize) -> Vec<ChunkFrame> 
 /// Write PhrayaPlan to a v7 chunk-addressable file with seekable zstd frames.
 ///
 /// File layout:
-///   [4B magic "PHR7"] [8B LE toc_len] [toc_msgpack] [shared_zstd] [chunk_0_zstd] ... [chunk_N-1_zstd]
+///   [4B magic "PHR7"] [8B LE toc_offset] [shared_zstd] [chunk_0_zstd] ... [chunk_N-1_zstd] [toc_msgpack]
 ///
-/// TOC is uncompressed msgpack (tiny). Shared and chunk frames are zstd-compressed.
+/// TOC is at the end (after all data frames), so offsets are known before serializing it.
+/// TOC is uncompressed msgpack. Shared and chunk frames are zstd-compressed.
 /// All byte offsets in the TOC are absolute from file start.
 pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
     use std::io::Write;
@@ -592,41 +593,20 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
         chunk_compressed.push(compressed);
     }
 
-    // Compute layout offsets
-    // File: [4B magic][8B toc_len][toc_raw_msgpack][shared_compressed][chunk_0]...[chunk_N-1]
-    // TOC is stored as uncompressed msgpack (tiny, < 1KB) to avoid the fixpoint problem
-    // of compressed-size-dependent offsets. Two-pass: first serialize with dummy offsets
-    // to get the msgpack size (deterministic for same-shape data with same-width integers),
-    // then compute real offsets and serialize again.
-
-    let header_prefix_len: u64 = 4 + 8; // magic + toc_len field
-
-    // First pass: serialize with max-width placeholders to determine TOC msgpack size.
-    // Use u64::MAX to ensure msgpack encodes all offsets at full 8-byte width, making
-    // the TOC byte length independent of the actual offset values.
-    let sizing_toc = PlanToc {
-        version: PHRAYAPLAN_VERSION,
-        flags: 0,
-        num_chunks: num_chunks as u32,
-        shared_frame_offset: u64::MAX,
-        shared_frame_len: u64::MAX,
-        chunk_frame_offsets: vec![(u64::MAX, u64::MAX); num_chunks],
-    };
-    let sizing_toc_bytes = rmp_serde::to_vec(&sizing_toc)
-        .map_err(|e| PlanError::SerializationError(e.to_string()))?;
-    let toc_byte_len = sizing_toc_bytes.len() as u64;
-
-    // Compute real offsets using the known TOC size
-    let shared_offset = header_prefix_len + toc_byte_len;
+    // Compute layout: TOC goes at the end, so all data offsets are known first.
+    // Header: [4B magic][8B toc_offset] = 12 bytes
+    let header_len: u64 = 12;
+    let shared_offset = header_len;
     let mut chunk_offsets: Vec<(u64, u64)> = Vec::with_capacity(num_chunks);
     let mut cursor = shared_offset + shared_compressed.len() as u64;
     for cc in &chunk_compressed {
         chunk_offsets.push((cursor, cc.len() as u64));
         cursor += cc.len() as u64;
     }
+    let toc_offset = cursor;
 
-    // Second pass: serialize with real offsets
-    let real_toc = PlanToc {
+    // Build TOC with final offsets (no fixpoint problem — TOC is written after all data)
+    let toc = PlanToc {
         version: PHRAYAPLAN_VERSION,
         flags: 0,
         num_chunks: num_chunks as u32,
@@ -634,16 +614,8 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
         shared_frame_len: shared_compressed.len() as u64,
         chunk_frame_offsets: chunk_offsets,
     };
-    let toc_bytes = rmp_serde::to_vec(&real_toc)
+    let toc_bytes = rmp_serde::to_vec(&toc)
         .map_err(|e| PlanError::SerializationError(e.to_string()))?;
-
-    // Sanity check: the real TOC must be the same size as the sizing TOC.
-    // This holds because msgpack uses the same encoding width for u64::MAX
-    // as for any other large u64 (9 bytes: 1 type + 8 value).
-    debug_assert_eq!(
-        toc_bytes.len() as u64, toc_byte_len,
-        "TOC size must be stable between sizing and real pass"
-    );
 
     // Write the file
     let file =
@@ -654,10 +626,7 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
         .write_all(&V7_MAGIC)
         .map_err(|e| PlanError::IoError(e.to_string()))?;
     writer
-        .write_all(&toc_byte_len.to_le_bytes())
-        .map_err(|e| PlanError::IoError(e.to_string()))?;
-    writer
-        .write_all(&toc_bytes)
+        .write_all(&toc_offset.to_le_bytes())
         .map_err(|e| PlanError::IoError(e.to_string()))?;
     writer
         .write_all(&shared_compressed)
@@ -667,6 +636,10 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
             .write_all(cc)
             .map_err(|e| PlanError::IoError(e.to_string()))?;
     }
+    // TOC at end — offsets are now finalized
+    writer
+        .write_all(&toc_bytes)
+        .map_err(|e| PlanError::IoError(e.to_string()))?;
     writer
         .flush()
         .map_err(|e| PlanError::IoError(e.to_string()))?;
@@ -674,7 +647,8 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
     Ok(())
 }
 
-/// Read the TOC from a v7 plan file (uncompressed msgpack after the 12-byte header).
+/// Read the TOC from a v7 plan file.
+/// Layout: [4B magic][8B toc_offset][data frames...][toc_msgpack at toc_offset]
 fn read_toc(data: &[u8]) -> Result<PlanToc, PlanError> {
     if data.len() < 12 {
         return Err(PlanError::DecompressionError(
@@ -686,13 +660,13 @@ fn read_toc(data: &[u8]) -> Result<PlanToc, PlanError> {
             "not a v7 plan file (bad magic)".to_string(),
         ));
     }
-    let toc_len = u64::from_le_bytes(data[4..12].try_into().unwrap()) as usize;
-    if data.len() < 12 + toc_len {
+    let toc_offset = u64::from_le_bytes(data[4..12].try_into().unwrap()) as usize;
+    if toc_offset > data.len() {
         return Err(PlanError::DecompressionError(
-            "file truncated: TOC extends past EOF".to_string(),
+            "file truncated: TOC offset past EOF".to_string(),
         ));
     }
-    let toc_raw = &data[12..12 + toc_len];
+    let toc_raw = &data[toc_offset..];
     let toc: PlanToc = rmp_serde::from_slice(toc_raw)
         .map_err(|e| PlanError::SerializationError(e.to_string()))?;
 
@@ -1054,24 +1028,27 @@ mod tests {
 
     #[test]
     fn version_mismatch_handling() {
-        // Simulate a future-version v7 file by writing a TOC with version=999
+        // Simulate a future-version v7 file: TOC at end with version=999
         let future_toc = PlanToc {
             version: 999,
             flags: 0,
             num_chunks: 1,
-            shared_frame_offset: 100,
+            shared_frame_offset: 12,
             shared_frame_len: 50,
-            chunk_frame_offsets: vec![(150, 50)],
+            chunk_frame_offsets: vec![(62, 50)],
         };
         let toc_bytes = rmp_serde::to_vec(&future_toc).unwrap();
 
         let temp = NamedTempFile::new().unwrap();
         let mut file_bytes = Vec::new();
         file_bytes.extend_from_slice(&V7_MAGIC);
-        file_bytes.extend_from_slice(&(toc_bytes.len() as u64).to_le_bytes());
-        file_bytes.extend_from_slice(&toc_bytes);
-        // Pad to satisfy offset requirements (won't actually be read — version check fails first)
+        // TOC offset = header (12) + padding (200) = 212
+        let toc_offset: u64 = 12 + 200;
+        file_bytes.extend_from_slice(&toc_offset.to_le_bytes());
+        // Pad with dummy data frames (won't be read — version check fails first)
         file_bytes.extend(vec![0u8; 200]);
+        // TOC at the end
+        file_bytes.extend_from_slice(&toc_bytes);
         std::fs::write(temp.path(), &file_bytes).unwrap();
 
         // Reading should fail with version mismatch
