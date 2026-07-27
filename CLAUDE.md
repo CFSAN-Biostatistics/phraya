@@ -29,7 +29,7 @@ phraya-cli/      # Binary CLI: plan/plan-tasks/align/merge/filter subcommands
 - **Library-first**: `phraya-filter` crate exposes filtering API. CLI is thin wrapper. Enables Python bindings, R integration, custom pipelines.
 - **Evidence-informed alignment**: `.phrayaplan` files contain k-mer landscape + variation hotspots estimated from input sequences before alignment begins.
 - **Platform-native SIMD**: simd-minimizers handles AVX2/NEON dispatch for sketching. The WFA/Myers inner loop (match extension) is SIMD-accelerated via `count_matching_prefix` (SSE2 on x86_64 / NEON on aarch64, both arch baselines — selected at compile time, no runtime dispatch; portable u64-XOR fallback elsewhere). ~5–9× faster than scalar on long match runs.
-- **Sketch reuse**: `phraya plan` computes `MinimizerSketch` per sequence and stores them in `.phrayaplan` (v2) keyed by sequence ID. `phraya align` reuses them instead of recomputing; falls back to recomputing if sketch not in plan.
+- **Sketch reuse**: `phraya plan` computes `MinimizerSketch` per sequence and stores them in `.phrayaplan` v7 (reference sketches keyed by sequence ID, read sketches keyed by content hash). `phraya align` reuses them instead of recomputing; falls back to recomputing if sketch not in plan. Batch workers load only their chunk's read sketches via `read_plan_worker`.
 
 ## Pipeline
 
@@ -75,10 +75,16 @@ Each preset selects an algorithm **and** a default coverage-window radius; `--co
 
 ## File Formats
 
-### `.phrayaplan` v2 (binary MessagePack + zstd)
-- **Read-only** during alignment, transmitted to all workers
-- Contains: metadata (use case, input files), `kmer_index: HashMap<String, MinimizerSketch>` (sketches keyed by sequence ID), k-mer uniqueness scores, task list
-- Version field checked on read; v1 files are rejected (incompatible kmer_index type)
+### `.phrayaplan` v7 (chunk-addressable, seekable zstd frames)
+- **Read-only** during alignment; workers load only the data they need
+- **File layout**: `[4B magic "PHR7"][8B toc_offset][shared_zstd][chunk_0_zstd]...[chunk_N-1_zstd][toc_msgpack]`
+- **TOC** (at end of file, uncompressed msgpack): `PlanToc { version, flags, num_chunks, shared_frame_offset/len, chunk_frame_offsets }`
+- **Shared frame** (loaded by every worker): metadata, reference palette, kmer_index, kmer_uniqueness, task list, kmer_params, batch config
+- **Chunk frames** (one per positional slice): read_sketches, read_byte_offsets, mate_info for that chunk's reads
+- `phraya plan --chunks N` physically pre-splits read sketches into N chunk frames; default N=1 (single chunk)
+- `read_plan()` loads all chunks (non-batch path); `read_plan_worker(path, id, count)` loads shared + one chunk (batch path)
+- Fallback: N=1 plan with `--worker K/N` filters the single chunk in-memory by positional range
+- PHRAYAPLAN_VERSION = 7; non-v7 files (no "PHR7" magic) hard-rejected with version mismatch error
 - CLI tool: `phraya plan-tasks` dumps task list for GNU Parallel/xargs/WDL/Nextflow
 
 ### `.phraya` (position index, binary MessagePack + zstd)
@@ -203,5 +209,5 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 - **Score ratio hard-coded**: 0.95 threshold for multi-mapping is Phraya's opinion, not user-configurable
 - **Centroid selection**: For case 3 (contigs + reads, no ref), select contig closest to k-mer space center (median Jaccard similarity) as reference coordinate space
 - **MinimizerSketch positions**: `u32` (not `usize`) — matches simd-minimizers output directly
-- **PHRAYAPLAN_VERSION = 2**: v1 files (Vec<MinimimizerSketch>) rejected; plan files are ephemeral (always regenerate with `phraya plan`)
+- **PHRAYAPLAN_VERSION = 7**: non-v7 files (missing "PHR7" magic) hard-rejected; plan files are ephemeral (always regenerate with `phraya plan`)
 - **`MinimimizerSketch` typo**: The old crate used `MinimimizerSketch` (extra 'i'). The current type is `MinimizerSketch`. Do not reintroduce the old name.
