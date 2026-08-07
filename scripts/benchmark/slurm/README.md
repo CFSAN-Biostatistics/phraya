@@ -290,6 +290,55 @@ MEI = peak_rss_gb / genome_size_gb
 ```
 Index "bloat factor" (lower is better).
 
+## Protein-space benchmarking (ADR-0013)
+
+`--alphabet protein` runs a separate aligner set (`diamond-blastp`, `blastp`,
+`phraya-protein`, `phraya-protein-sensitive`) against `config/targets_protein.conf`
+instead of `config/targets.conf`. Protein wrappers take **4** positional args
+(`<proteome.fasta> <query.fasta> <out_dir> <threads>`, no paired reads) —
+different from the DNA harness's 5-arg contract, since protein search has no
+read pairing. See `../BENCHMARK_EXPANSION.md` for the full design rationale.
+
+```bash
+./run_benchmark.sh --alphabet protein
+./run_benchmark.sh --alphabet both   # submits DNA and protein as separate array jobs
+```
+
+Protein targets are generated once by `../local/gen_synthetic_protein.py` and
+staged like STREAM Triad's platform characterization — there's no external
+"real proteome + known ground truth" corpus to point at the way `acquire.py`
+stages real genomes for DNA targets. `results.json` entries for protein
+targets carry `proteome_residues` (not `genome_size_gb`) and `rnt` (not
+relevant to score.py's BNT, which is genome-GB-normalized) — Residue-Normalized
+Throughput, `queries / (wall_s × threads × stream_triad_GBps)`.
+
+**Known gap**: placement accuracy (`pa`) is only computed for `phraya-protein*`
+today, via `phraya_accuracy_protein.py` (reads `gen_synthetic_protein.py`'s own
+truth sidecar — no wgsim-style encoding exists for protein). DIAMOND/BLASTP
+write tabular output, not SAM, and don't have a PA helper yet; their `pa` field
+is `null`, not a fabricated `0.0`.
+
+## Gap-affine scoring benchmarking (ADR-0014)
+
+`phraya-sensitive-linear` and `phraya-sensitive-affine` (once ADR-0014 ships;
+today only `phraya-sensitive-linear` explicitly forces `--gap-model linear`,
+since bare `phraya-sensitive` becomes affine-by-default automatically once the
+flag exists) run on the **same existing DNA targets**, unchanged —
+dwgsim's default read simulation already includes realistic indels, so no new
+target axis was needed.
+
+**Indel Event Concordance (IEC)** — whether a read's true indel events are
+reported as the same number of CIGAR I/D ops — is fully implemented and
+immediately usable at local-bench scale (`../local/compute_indel_recovery.py`,
+wired into `../local/run_local_bench.sh` via `INDEL_RATE`). It is **not**
+computed at SLURM scale in this pass: that needs dwgsim's true-indel encoding
+parsed out of its read names, a different (and unverified in this codebase)
+format from the `wgsim` encoding the existing PA helpers already parse —
+flagged as follow-up work, not implemented speculatively. `results.json`
+entries do carry a `gap_model` field (`linear`/`affine`, parsed from the
+aligner-variant name) so linear-vs-affine timing/RSS/PA comparisons work today
+even without SLURM-scale IEC.
+
 ## Known Limitations
 
 ### Phase 1 (Complete)

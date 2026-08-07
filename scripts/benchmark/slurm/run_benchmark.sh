@@ -1,6 +1,6 @@
 #!/bin/bash
 # Main orchestrator for HPC aligner benchmark
-# Usage: ./run_benchmark.sh [--targets targets.conf] [--large] [--dry-run]
+# Usage: ./run_benchmark.sh [--targets targets.conf] [--large] [--dry-run] [--alphabet {dna|protein|both}]
 
 set -euo pipefail
 
@@ -8,14 +8,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config/global.env"
 
 # Parse arguments
-TARGETS_FILE="$SCRIPT_DIR/config/targets.conf"
+TARGETS_FILE_OVERRIDE=""
 INCLUDE_LARGE=0
 DRY_RUN=0
+ALPHABET="dna"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --targets)
-            TARGETS_FILE="$2"
+            TARGETS_FILE_OVERRIDE="$2"
             shift 2
             ;;
         --large)
@@ -26,20 +27,34 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=1
             shift
             ;;
+        --alphabet)
+            ALPHABET="$2"
+            shift 2
+            ;;
         -h|--help)
             cat <<EOF
 Usage: $0 [OPTIONS]
 
 Options:
-  --targets FILE    Use custom targets file (default: config/targets.conf)
-  --large           Include large targets (T8b 17Gb, T8c 4.3Gb)
-  --dry-run         Show what would be run without submitting jobs
-  -h, --help        Show this help message
+  --targets FILE       Use custom targets file (default: config/targets.conf for
+                        dna, config/targets_protein.conf for protein). Not valid
+                        with --alphabet both (ambiguous which alphabet it targets)
+                        — run dna and protein separately with their own --targets.
+  --alphabet MODE      dna (default) | protein | both. See ADR-0013;
+                        --alphabet protein exercises DIAMOND/BLASTP + phraya
+                        --alphabet protein instead of the DNA aligner set, on
+                        a 4-arg <proteome> <query> <out_dir> <threads> wrapper
+                        contract (no paired reads) — see BENCHMARK_EXPANSION.md.
+  --large              Include large targets (T8b 17Gb, T8c 4.3Gb) (dna only)
+  --dry-run            Show what would be run without submitting jobs
+  -h, --help           Show this help message
 
 Examples:
-  $0                    # Run on default targets (small + medium)
-  $0 --large            # Include large wheat genomes
-  $0 --dry-run          # Preview array size and configuration
+  $0                        # Run DNA aligners on default targets (small + medium)
+  $0 --large                # Include large wheat genomes
+  $0 --alphabet protein     # Run DIAMOND/BLASTP/phraya-protein on protein targets
+  $0 --alphabet both        # Submit both DNA and protein runs (separate array jobs)
+  $0 --dry-run              # Preview array size and configuration
 EOF
             exit 0
             ;;
@@ -51,26 +66,42 @@ EOF
     esac
 done
 
-# Verify targets file exists
-if [[ ! -f "$TARGETS_FILE" ]]; then
-    echo "ERROR: Targets file not found: $TARGETS_FILE" >&2
+case "$ALPHABET" in
+    dna|protein|both) ;;
+    *)
+        echo "ERROR: --alphabet must be dna, protein, or both (got: $ALPHABET)" >&2
+        exit 1
+        ;;
+esac
+
+if [[ -n "$TARGETS_FILE_OVERRIDE" && "$ALPHABET" == "both" ]]; then
+    echo "ERROR: --targets is ambiguous with --alphabet both (which alphabet does it target?)." >&2
+    echo "  Run --alphabet dna and --alphabet protein separately, each with its own --targets." >&2
     exit 1
 fi
 
-# Generate run timestamp
+# DNA and protein each get an independent aligner set and wrapper-arg-count
+# contract (5-arg paired-reads vs 4-arg single-query-FASTA — see
+# BENCHMARK_EXPANSION.md). Kept as separate arrays rather than one combined
+# list so a protein-only run never asks a DNA-only tool (or vice versa) to run
+# on data its wrapper contract can't accept.
+ALIGNERS_DNA=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-sensitive-linear" "phraya-fast" "bowtie2" "minibwa" "rammap")
+ALIGNERS_PROTEIN=("diamond-blastp" "blastp" "phraya-protein" "phraya-protein-sensitive")
+
+# Generate run timestamp (shared across both alphabets when --alphabet both)
 RUN_ID="run_$(date +%Y%m%d_%H%M%S)"
-RUN_DIR="$RESULTS_ROOT/$RUN_ID"
-mkdir -p "$RUN_DIR"
+RUN_DIR_ROOT="$RESULTS_ROOT/$RUN_ID"
+mkdir -p "$RUN_DIR_ROOT"
 
 echo "=== Phraya Aligner Benchmark ==="
 echo "Run ID:     $RUN_ID"
-echo "Output:     $RUN_DIR"
-echo "Targets:    $TARGETS_FILE"
+echo "Output:     $RUN_DIR_ROOT"
+echo "Alphabet:   $ALPHABET"
 echo "Threads:    $THREADS"
 echo "Replicates: $REPLICATES"
 echo
 
-# Discover available nodes for rotation
+# Discover available nodes for rotation (shared across both alphabets)
 echo "Discovering available nodes..."
 NODELIST=$("$SCRIPT_DIR/utils/nodelist.sh" "$REPLICATES" 2>&1) || {
     echo "ERROR: Node discovery failed" >&2
@@ -83,115 +114,154 @@ NODELIST=$("$SCRIPT_DIR/utils/nodelist.sh" "$REPLICATES" 2>&1) || {
 echo "Using nodes: $NODELIST"
 echo
 
-# Count targets (excluding comments and large if not requested)
-if [[ $INCLUDE_LARGE -eq 0 ]]; then
-    TARGET_COUNT=$(grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | grep -v '|large|' | wc -l)
-else
-    TARGET_COUNT=$(grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | wc -l)
-fi
-
-if [[ $TARGET_COUNT -eq 0 ]]; then
-    echo "ERROR: No targets found in $TARGETS_FILE" >&2
-    exit 1
-fi
-
-# Array dimensions: targets × aligners × replicates
-# bwa-mem2/minimap2: alignment-only throughput baselines
-# bwa-pipeline: full variant-calling pipeline (fair phraya comparison)
-# phraya/phraya-sensitive/phraya-fast: three Phraya strategy modes
-# bowtie2: industry-standard gapped aligner (Illumina baseline)
-# minibwa: hybrid bwa-mem/minimap2 (modern BWA-family baseline)
-# rammap: pure-Rust minimap2 clone (SIMD DP)
-ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-fast" "bowtie2" "minibwa" "rammap")
-NUM_ALIGNERS=${#ALIGNERS[@]}
-ARRAY_SIZE=$((TARGET_COUNT * NUM_ALIGNERS * REPLICATES))
-
-echo "Benchmark configuration:"
-echo "  Targets:    $TARGET_COUNT"
-echo "  Aligners:   $NUM_ALIGNERS (${ALIGNERS[*]})"
-echo "  Replicates: $REPLICATES"
-echo "  Array size: $ARRAY_SIZE tasks"
-echo
-
-if [[ $DRY_RUN -eq 1 ]]; then
-    echo "DRY RUN: Would submit $ARRAY_SIZE array job tasks"
-    echo
-    echo "Tasks would be:"
-    grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | grep -v '|large|' | while IFS='|' read -r tid tpath tclass tsize; do
-        for aligner in "${ALIGNERS[@]}"; do
-            for rep in $(seq 0 $((REPLICATES - 1))); do
-                echo "  - $tid / $aligner / rep_$rep (genome: ${tsize}GB)"
-            done
-        done
-    done
-    exit 0
-fi
-
-# Step 1: STREAM Triad characterization — use cached value if present, else run once
+# Step 1: STREAM Triad characterization (hardware property, alphabet-independent;
+# shared cache and shared per-run copy regardless of how many alphabets run).
 echo "=== Step 1: STREAM Triad Platform Characterization ==="
 STREAM_CACHE="$SCRIPT_DIR/cache/stream_triad_c064.txt"
 if [[ -f "$STREAM_CACHE" ]]; then
-    cp "$STREAM_CACHE" "$RUN_DIR/stream_triad.txt"
+    cp "$STREAM_CACHE" "$RUN_DIR_ROOT/stream_triad.txt"
     echo "  Using cached STREAM Triad: $(cat "$STREAM_CACHE") MB/s"
-elif [[ ! -f "$RUN_DIR/stream_triad.txt" ]]; then
+elif [[ ! -f "$RUN_DIR_ROOT/stream_triad.txt" ]]; then
     echo "  Submitting STREAM Triad job..."
     STREAM_JOB=$(sbatch --parsable \
         --job-name="benchmark_stream_$RUN_ID" \
-        --output="$RUN_DIR/stream_%N.log" \
+        --output="$RUN_DIR_ROOT/stream_%N.log" \
         --nodelist="$NODELIST" \
-        "$SCRIPT_DIR/stream.slurm" "$RUN_DIR")
+        "$SCRIPT_DIR/stream.slurm" "$RUN_DIR_ROOT")
 
     echo "  STREAM job ID: $STREAM_JOB"
     echo "  Waiting for completion..."
 
-    # squeue returns exit 0 even for finished jobs — check for job ID in output
     while squeue -j "$STREAM_JOB" -h 2>/dev/null | grep -q "$STREAM_JOB"; do
         sleep 5
     done
 
-    if [[ ! -f "$RUN_DIR/stream_triad.txt" ]]; then
+    if [[ ! -f "$RUN_DIR_ROOT/stream_triad.txt" ]]; then
         echo "ERROR: STREAM job completed but stream_triad.txt not found" >&2
         exit 1
     fi
     echo "  STREAM Triad measurement complete"
-    cp "$RUN_DIR/stream_triad.txt" "$STREAM_CACHE"
+    cp "$RUN_DIR_ROOT/stream_triad.txt" "$STREAM_CACHE"
     echo "  Cached result for future runs"
 fi
 echo
 
-# Step 2: Submit main benchmark array job
-echo "=== Step 2: Submit Benchmark Array Job ==="
-echo "Submitting $ARRAY_SIZE array tasks..."
-BENCHMARK_JOB=$(sbatch --parsable \
-    --job-name="phraya_benchmark_$RUN_ID" \
-    --array="0-$((ARRAY_SIZE - 1))" \
-    --output="$RUN_DIR/slurm-%A_%a.log" \
-    --export=ALL,SCRIPT_DIR="$SCRIPT_DIR",RUN_DIR="$RUN_DIR",TARGETS_FILE="$TARGETS_FILE",NODELIST="$NODELIST",INCLUDE_LARGE="$INCLUDE_LARGE" \
-    "$SCRIPT_DIR/benchmark.slurm")
+# submit_alphabet_run <alphabet> <targets_file> <aligners_array_name>
+#
+# Submits one benchmark array job + its dependent aggregation job for one
+# alphabet. When --alphabet is a single value, RUN_DIR == RUN_DIR_ROOT (today's
+# exact layout, unchanged). When --alphabet both, each alphabet gets its own
+# RUN_DIR_ROOT/<alphabet> subdirectory so the two runs' outputs never collide.
+submit_alphabet_run() {
+    local alphabet="$1" targets_file="$2" aligners_ref="$3"
+    local -n aligners="$aligners_ref"
+    local run_dir="$RUN_DIR_ROOT"
+    if [[ "$ALPHABET" == "both" ]]; then
+        run_dir="$RUN_DIR_ROOT/$alphabet"
+        mkdir -p "$run_dir"
+        cp "$RUN_DIR_ROOT/stream_triad.txt" "$run_dir/stream_triad.txt"
+    fi
 
-echo "  Benchmark job ID: $BENCHMARK_JOB"
-echo "  Monitor: squeue -j $BENCHMARK_JOB"
-echo "  Logs:    $RUN_DIR/slurm-*.log"
-echo
+    if [[ ! -f "$targets_file" ]]; then
+        echo "ERROR: Targets file not found: $targets_file" >&2
+        exit 1
+    fi
 
-# Step 3: Submit aggregation job (depends on benchmark completion)
-echo "=== Step 3: Submit Aggregation Job ==="
-AGGREGATE_JOB=$(sbatch --parsable \
-    --job-name="benchmark_aggregate_$RUN_ID" \
-    --dependency=afterok:$BENCHMARK_JOB \
-    --output="$RUN_DIR/aggregate.log" \
-    --export=ALL,SCRIPT_DIR="$SCRIPT_DIR",RUN_DIR="$RUN_DIR" \
-    "$SCRIPT_DIR/utils/aggregate.slurm")
+    local target_count
+    if [[ "$alphabet" == "dna" && $INCLUDE_LARGE -eq 0 ]]; then
+        target_count=$(grep -v '^#' "$targets_file" | grep -v '^[[:space:]]*$' | grep -v '|large|' | wc -l)
+    else
+        target_count=$(grep -v '^#' "$targets_file" | grep -v '^[[:space:]]*$' | wc -l)
+    fi
 
-echo "  Aggregation job ID: $AGGREGATE_JOB (runs after $BENCHMARK_JOB)"
-echo
+    if [[ $target_count -eq 0 ]]; then
+        echo "ERROR: No targets found in $targets_file" >&2
+        exit 1
+    fi
+
+    local num_aligners=${#aligners[@]}
+    local array_size=$((target_count * num_aligners * REPLICATES))
+
+    echo "=== [$alphabet] Benchmark configuration ==="
+    echo "  Targets file: $targets_file"
+    echo "  Targets:      $target_count"
+    echo "  Aligners:     $num_aligners (${aligners[*]})"
+    echo "  Replicates:   $REPLICATES"
+    echo "  Array size:   $array_size tasks"
+    echo
+
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "DRY RUN [$alphabet]: Would submit $array_size array job tasks"
+        local large_filter="grep -v '|large|'"
+        if [[ "$alphabet" != "dna" || $INCLUDE_LARGE -eq 1 ]]; then
+            large_filter="cat"
+        fi
+        grep -v '^#' "$targets_file" | grep -v '^[[:space:]]*$' | eval "$large_filter" | while IFS='|' read -r tid tpath tclass tsize; do
+            for aligner in "${aligners[@]}"; do
+                for rep in $(seq 0 $((REPLICATES - 1))); do
+                    echo "  - [$alphabet] $tid / $aligner / rep_$rep"
+                done
+            done
+        done
+        echo
+        return 0
+    fi
+
+    echo "=== [$alphabet] Submit Benchmark Array Job ==="
+    local benchmark_job
+    benchmark_job=$(sbatch --parsable \
+        --job-name="phraya_benchmark_${RUN_ID}_${alphabet}" \
+        --array="0-$((array_size - 1))" \
+        --output="$run_dir/slurm-%A_%a.log" \
+        --export=ALL,SCRIPT_DIR="$SCRIPT_DIR",RUN_DIR="$run_dir",TARGETS_FILE="$targets_file",NODELIST="$NODELIST",INCLUDE_LARGE="$INCLUDE_LARGE",ALPHABET="$alphabet" \
+        "$SCRIPT_DIR/benchmark.slurm")
+
+    echo "  Benchmark job ID: $benchmark_job"
+    echo "  Monitor: squeue -j $benchmark_job"
+    echo "  Logs:    $run_dir/slurm-*.log"
+    echo
+
+    echo "=== [$alphabet] Submit Aggregation Job ==="
+    local aggregate_job
+    aggregate_job=$(sbatch --parsable \
+        --job-name="benchmark_aggregate_${RUN_ID}_${alphabet}" \
+        --dependency=afterok:$benchmark_job \
+        --output="$run_dir/aggregate.log" \
+        --export=ALL,SCRIPT_DIR="$SCRIPT_DIR",RUN_DIR="$run_dir" \
+        "$SCRIPT_DIR/utils/aggregate.slurm")
+
+    echo "  Aggregation job ID: $aggregate_job (runs after $benchmark_job)"
+    echo
+    echo "  Results will appear in: $run_dir/results.json"
+    echo
+}
+
+TARGETS_DNA="${TARGETS_FILE_OVERRIDE:-$SCRIPT_DIR/config/targets.conf}"
+TARGETS_PROTEIN="${TARGETS_FILE_OVERRIDE:-$SCRIPT_DIR/config/targets_protein.conf}"
+
+case "$ALPHABET" in
+    dna)
+        submit_alphabet_run dna "$TARGETS_DNA" ALIGNERS_DNA
+        ;;
+    protein)
+        submit_alphabet_run protein "$TARGETS_PROTEIN" ALIGNERS_PROTEIN
+        ;;
+    both)
+        submit_alphabet_run dna "$TARGETS_DNA" ALIGNERS_DNA
+        submit_alphabet_run protein "$TARGETS_PROTEIN" ALIGNERS_PROTEIN
+        ;;
+esac
+
+if [[ $DRY_RUN -eq 1 ]]; then
+    exit 0
+fi
 
 echo "=== Benchmark Submitted ==="
 echo "Run ID: $RUN_ID"
-echo "Status: squeue -j $BENCHMARK_JOB,$AGGREGATE_JOB"
-echo "Cancel: scancel $BENCHMARK_JOB $AGGREGATE_JOB"
-echo
-echo "Results will appear in: $RUN_DIR/results.json"
-echo
 echo "After completion, score results:"
-echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR/results.json --sensitivity"
+if [[ "$ALPHABET" == "both" ]]; then
+    echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/dna/results.json --sensitivity"
+    echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/protein/results.json --sensitivity"
+else
+    echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/results.json --sensitivity"
+fi

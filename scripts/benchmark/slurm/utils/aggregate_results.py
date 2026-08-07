@@ -94,6 +94,7 @@ def load_rep_timing(rep_dir: Path) -> Optional[dict]:
     out["n_aligned"] = int(raw.get("n_aligned") or 0)
     out["unaligned_frac"] = float(raw.get("unaligned_frac") or 0)
     out["n_variants"] = raw.get("n_variants")
+    out["alphabet"] = raw.get("alphabet", "dna")  # older runs predate this field
     return out
 
 
@@ -176,6 +177,84 @@ def compute_pa_phraya(queries_file: Path, total_reads: int = 0, tolerance: int =
         return None
 
 
+def compute_pa_protein(queries_file: Path, truth_file: Path, total_queries: int = 0, tolerance: int = 10) -> float | None:
+    """Placement accuracy for phraya protein-mode alignment, using
+    gen_synthetic_protein.py's own truth.tsv sidecar (ADR-0013) instead of
+    wgsim/dwgsim read-name encoding — see phraya_accuracy_protein.py."""
+    helper = SCRIPT_DIR / "phraya_accuracy_protein.py"
+    if not helper.exists():
+        print(f"WARNING: {helper} not found — PA will be null for phraya-protein", file=sys.stderr)
+        return None
+    if not truth_file.exists():
+        print(f"WARNING: {truth_file} not found — PA will be null for phraya-protein", file=sys.stderr)
+        return None
+    try:
+        python3 = os.environ.get("PYTHON3_BIN", "python3")
+        cmd = [python3, str(helper), str(queries_file), f"--truth={truth_file}", f"--tolerance={tolerance}"]
+        if total_queries > 0:
+            cmd.append(f"--total-queries={total_queries}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            print(f"WARNING: phraya_accuracy_protein.py failed: {result.stderr[:200]}", file=sys.stderr)
+            return None
+        parts = result.stdout.strip().split("\t")
+        return float(parts[0])
+    except Exception as e:
+        print(f"WARNING: PA (phraya-protein) failed for {queries_file}: {e}", file=sys.stderr)
+        return None
+
+
+def compute_iec(phraya_file: Path, truth_file: Path) -> float | None:
+    """Indel Event Concordance (see BENCHMARK_EXPANSION.md) — how often a
+    read/query's reported CIGAR consolidates its true indel events into the
+    right number of I/D ops. Runs `phraya filter --format tsv` and joins
+    against a gen_synthetic*.py truth sidecar via compute_indel_recovery.py.
+    Returns None (not 0.0) when there's nothing to measure — a target with no
+    indel events in its truth data isn't "0% concordant", it's inapplicable."""
+    helper = SCRIPT_DIR.parent.parent / "local" / "compute_indel_recovery.py"
+    if not helper.exists() or not truth_file.exists() or not phraya_file.exists():
+        return None
+    try:
+        phraya_bin = os.environ.get("PHRAYA_ROOT", "") 
+        phraya_bin = str(Path(phraya_bin) / "target" / "release" / "phraya") if phraya_bin else "phraya"
+        filter_proc = subprocess.run(
+            [phraya_bin, "filter", str(phraya_file), "--format", "tsv"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if filter_proc.returncode != 0:
+            print(f"WARNING: phraya filter failed for IEC on {phraya_file}: {filter_proc.stderr[:200]}", file=sys.stderr)
+            return None
+        python3 = os.environ.get("PYTHON3_BIN", "python3")
+        iec_proc = subprocess.run(
+            [python3, str(helper), f"--truth={truth_file}"],
+            input=filter_proc.stdout, capture_output=True, text=True, timeout=300,
+        )
+        if iec_proc.returncode != 0:
+            print(f"WARNING: compute_indel_recovery.py failed: {iec_proc.stderr[:200]}", file=sys.stderr)
+            return None
+        for line in iec_proc.stdout.splitlines():
+            if line.startswith("iec\t"):
+                value = line.split("\t", 1)[1]
+                return None if value == "nan" else float(value)
+        return None
+    except Exception as e:
+        print(f"WARNING: IEC computation failed for {phraya_file}: {e}", file=sys.stderr)
+        return None
+
+
+def gap_model_from_aligner(aligner: str) -> str | None:
+    """Parses the `--gap-model` axis (ADR-0014) out of an aligner-variant name
+    (e.g. `phraya-sensitive-affine` -> "affine"). `None` when the aligner name
+    doesn't encode a gap model (non-phraya tools, or `phraya-sensitive` bare —
+    this script can't observe phraya's own runtime default, so it doesn't
+    guess)."""
+    if aligner.endswith("-affine"):
+        return "affine"
+    if aligner.endswith("-linear"):
+        return "linear"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Read counting
 # ---------------------------------------------------------------------------
@@ -197,18 +276,21 @@ def count_fastq_reads(path: Path) -> int | None:
 # targets.conf loader
 # ---------------------------------------------------------------------------
 
-def load_targets_conf(run_dir: Path) -> tuple[dict, dict]:
-    """Returns (genome_sizes, target_paths) dicts keyed by target id."""
+def load_targets_conf(run_dir: Path, filename: str = "targets.conf") -> tuple[dict, dict]:
+    """Returns (size_metric, target_paths) dicts keyed by target id. `size_metric`
+    is the 4th pipe-delimited column, whatever it means for `filename`
+    (genome GB for targets.conf, proteome residue count for
+    targets_protein.conf — both share the same 4-field shape)."""
     candidates = [
-        run_dir.parent.parent / "scripts" / "benchmark" / "slurm" / "config" / "targets.conf",
-        SCRIPT_DIR.parent / "config" / "targets.conf",
+        run_dir.parent.parent / "scripts" / "benchmark" / "slurm" / "config" / filename,
+        SCRIPT_DIR.parent / "config" / filename,
     ]
     conf_path = next((p for p in candidates if p.exists()), None)
-    genome_sizes: dict[str, float] = {}
+    size_metric: dict[str, float] = {}
     target_paths: dict[str, str] = {}
     if conf_path is None:
-        print("WARNING: targets.conf not found — genome sizes will be 0", file=sys.stderr)
-        return genome_sizes, target_paths
+        print(f"WARNING: {filename} not found — sizes will be 0", file=sys.stderr)
+        return size_metric, target_paths
     for line in conf_path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -216,9 +298,14 @@ def load_targets_conf(run_dir: Path) -> tuple[dict, dict]:
         parts = line.split("|")
         if len(parts) >= 4:
             tid = parts[0].strip()
-            genome_sizes[tid] = float(parts[3].strip())
+            size_metric[tid] = float(parts[3].strip())
             target_paths[tid] = parts[1].strip()
-    return genome_sizes, target_paths
+    return size_metric, target_paths
+
+
+def load_targets_protein_conf(run_dir: Path) -> tuple[dict, dict]:
+    """Returns (proteome_residues, target_paths) from targets_protein.conf."""
+    return load_targets_conf(run_dir, filename="targets_protein.conf")
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +315,8 @@ def load_targets_conf(run_dir: Path) -> tuple[dict, dict]:
 def aggregate(run_dir_str: str) -> dict:
     run_dir = Path(run_dir_str)
     stream_triad_gbps = read_stream_triad(run_dir)
-    genome_sizes, target_paths = load_targets_conf(run_dir)
+    genome_sizes, dna_target_paths = load_targets_conf(run_dir)
+    proteome_residues, protein_target_paths = load_targets_protein_conf(run_dir)
     # PA for SAM/BAM aligners uses sam_accuracy.py (wgsim read-name parsing),
     # not paftools.js mapeval (which expects dwgsim format, not wgsim format).
     paftools = "unused"  # kept for compatibility with call site below
@@ -285,10 +373,10 @@ def aggregate(run_dir_str: str) -> dict:
 
             # Read count: prefer what wrappers captured, fall back to FASTQ
             total_reads = max((r["total_reads"] for r in reps), default=0)
-            if total_reads == 0 and target_id in target_paths:
-                fastq = data_root / target_paths[target_id] / "data" / "reads" / "reads_1_30k.fastq.gz"
+            if total_reads == 0 and target_id in dna_target_paths:
+                fastq = data_root / dna_target_paths[target_id] / "data" / "reads" / "reads_1_30k.fastq.gz"
                 if not fastq.exists():
-                    fastq = data_root / target_paths[target_id] / "data" / "reads" / "reads_1.fastq.gz"
+                    fastq = data_root / dna_target_paths[target_id] / "data" / "reads" / "reads_1.fastq.gz"
                 if fastq.exists():
                     count = count_fastq_reads(fastq)
                     if count is not None:
@@ -302,12 +390,25 @@ def aggregate(run_dir_str: str) -> dict:
             rep0_dir = run_dir / target_id / aligner / "rep_0"
             pa = None
             is_phraya = aligner.startswith("phraya")
+            alphabet = reps[0].get("alphabet", "dna")
+            gap_model = gap_model_from_aligner(aligner)
 
-            if is_phraya:
+            if is_phraya and alphabet == "protein":
+                queries_file = rep0_dir / "alignment.phraya.queries"
+                truth_file = data_root / protein_target_paths.get(target_id, "") / "data" / "protein" / "queries.fasta.truth.tsv"
+                if queries_file.exists():
+                    print(f"Computing PA (phraya-protein) for {aligner} {target_id}...", file=sys.stderr)
+                    pa = compute_pa_protein(queries_file, truth_file, total_queries=total_reads)
+            elif is_phraya:
                 queries_file = rep0_dir / "alignment.phraya.queries"
                 if queries_file.exists():
                     print(f"Computing PA (phraya) for {aligner} {target_id}...", file=sys.stderr)
                     pa = compute_pa_phraya(queries_file, total_reads=total_reads)
+            elif alphabet == "protein":
+                # DIAMOND/BLASTP write tabular (not SAM) output — no PA helper
+                # implemented yet for that format. Timing/RSS/unaligned_frac are
+                # still computed above; pa stays None rather than a fabricated 0.0.
+                pass
             else:
                 sam_file = rep0_dir / "alignment.sam"
                 if not sam_file.exists():
@@ -317,6 +418,17 @@ def aggregate(run_dir_str: str) -> dict:
                 if sam_file.exists():
                     print(f"Computing PA (sam) for {aligner} {target_id}...", file=sys.stderr)
                     pa = compute_pa_sam(sam_file, paftools)
+
+            # Indel Event Concordance (ADR-0014): phraya-only (needs a .phraya
+            # file to `filter --format tsv`), and only where a truth sidecar
+            # with indel events exists — protein targets always have one
+            # (gen_synthetic_protein.py), DNA SLURM targets don't (dwgsim
+            # truth isn't in our sidecar format — see BENCHMARK_EXPANSION.md).
+            iec = None
+            if is_phraya and alphabet == "protein":
+                phraya_file = rep0_dir / "alignment.phraya"
+                truth_file = data_root / protein_target_paths.get(target_id, "") / "data" / "protein" / "queries.fasta.truth.tsv"
+                iec = compute_iec(phraya_file, truth_file)
 
             # Variant count for bwa-pipeline (informational)
             n_variants = None
@@ -333,12 +445,29 @@ def aggregate(run_dir_str: str) -> dict:
                 "reads": total_reads,
                 "wall_time_s": round(mean_wall, 2),
                 "threads": 8,
+                "alphabet": alphabet,
                 "pa": round(pa, 4) if pa is not None else None,
                 "mcs": 0.0,  # MAPQ calibration — not yet implemented; 0.0 so score.py can run
                 "peak_rss_gb": round(mean(rss_values), 3) if any(v > 0 for v in rss_values) else None,
-                "genome_size_gb": genome_sizes.get(target_id, 0.0),
                 "unaligned_frac": round(mean_unaligned, 4) if mean_unaligned is not None else None,
             }
+            if alphabet == "protein":
+                residues = proteome_residues.get(target_id, 0.0)
+                entry["proteome_residues"] = residues
+                # RNT (Residue-Normalized Throughput): BNT's formula
+                # (queries / (wall × threads × triad_GBps)) with "reads"
+                # swapped for "queries" — same units/interpretation, applied to
+                # the axis meaningful for protein workloads (see
+                # BENCHMARK_EXPANSION.md; genome-GB-normalized BNT/MEI don't
+                # apply to a proteome-scale workload).
+                denom = mean_wall * 8 * stream_triad_gbps / 1000  # GB/s
+                entry["rnt"] = round(total_reads / denom, 4) if denom > 0 else None
+            else:
+                entry["genome_size_gb"] = genome_sizes.get(target_id, 0.0)
+            if gap_model is not None:
+                entry["gap_model"] = gap_model
+            if iec is not None:
+                entry["iec"] = round(iec, 4)
             if n_variants is not None:
                 entry["n_variants"] = n_variants
 

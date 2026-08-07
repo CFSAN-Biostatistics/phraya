@@ -1,9 +1,21 @@
 #!/bin/bash
-# Shared phraya runner — called by phraya.sh, phraya-sensitive.sh, phraya-fast.sh
-# Usage: _phraya_run.sh <strategy> <ref.fasta> <reads_1.fq.gz> <reads_2.fq.gz> <out_dir> <threads>
+# Shared phraya runner — called by phraya.sh, phraya-sensitive.sh, phraya-fast.sh,
+# phraya-sensitive-linear.sh
+# Usage: _phraya_run.sh <strategy> <ref.fasta> <reads_1.fq.gz> <reads_2.fq.gz> <out_dir> <threads> [gap_model]
+#
+# `gap_model` is optional (ADR-0014: {linear,affine}, valid only with strategy
+# "sensitive"); omitted, phraya's own default applies. NOT YET SUPPORTED by
+# `phraya align` — passing it errors clearly at the align step until ADR-0014
+# ships (see BENCHMARK_EXPANSION.md, "What ships now vs. what waits").
 set -euo pipefail
 
 STRATEGY=$1; REF=$2; READS_1=$3; READS_2=$4; OUT_DIR=$5; THREADS=$6
+GAP_MODEL="${7:-}"
+
+if [[ -n "$GAP_MODEL" && "$STRATEGY" != "sensitive" ]]; then
+    echo "ERROR: gap_model requires strategy=sensitive (ADR-0014: gap-affine is sensitive-only), got strategy=$STRATEGY" >&2
+    exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config/global.env"
@@ -15,7 +27,7 @@ done
 PHRAYA="${PHRAYA_ROOT}/target/release/phraya"
 [[ -f "$PHRAYA" ]] || { echo "ERROR: phraya binary not found at $PHRAYA" >&2; exit 1; }
 
-echo "=== Phraya Alignment (strategy=$STRATEGY) ==="
+echo "=== Phraya Alignment (strategy=$STRATEGY, gap_model=${GAP_MODEL:-default}) ==="
 echo "Reference: $REF"
 echo "Reads: $READS_1, $READS_2"
 echo "Threads: $THREADS"
@@ -39,8 +51,10 @@ START_SECS=$SECONDS
 # measure_rss.py polls /proc/PID/status for peak RSS; phraya stdout+stderr → align.log
 PYTHON="${PYTHON3_BIN:-python3}"
 MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
+ALIGN_ARGS=(align --strategy "$STRATEGY" --worker 0 "$PLAN_FILE")
+[[ -n "$GAP_MODEL" ]] && ALIGN_ARGS+=(--gap-model "$GAP_MODEL")
 "$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
-    bash -c "RAYON_NUM_THREADS=$THREADS \"$PHRAYA\" align --strategy \"$STRATEGY\" --worker 0 \"$PLAN_FILE\" >\"$OUT_DIR/align.log\" 2>&1"
+    bash -c "RAYON_NUM_THREADS=$THREADS \"$PHRAYA\" ${ALIGN_ARGS[*]@Q} >\"$OUT_DIR/align.log\" 2>&1"
 
 ALIGN_EXIT=$?
 ELAPSED=$((SECONDS - START_SECS))
@@ -71,7 +85,7 @@ UNALIGNED_FRAC=$(awk "BEGIN{if($TOTAL_READS>0) printf \"%.4f\", $N_UNALIGNED/$TO
 cat > "$OUT_DIR/timing.txt" <<TIMING_EOF
 wall_seconds=${ELAPSED}
 threads=${THREADS}
-aligner=phraya-${STRATEGY}
+aligner=phraya-${STRATEGY}${GAP_MODEL:+-$GAP_MODEL}
 peak_rss_gb=${PEAK_RSS_GB}
 total_reads=${TOTAL_READS}
 n_aligned=${N_ALIGNED}
