@@ -72,6 +72,13 @@ enum Commands {
         /// Default: 1 (all reads in one frame). Overridden by --batch-to if specified.
         #[arg(long, value_name = "N")]
         chunks: Option<usize>,
+
+        /// Sequence alphabet (ADR-0013): auto (default, content-sniffed from the
+        /// reference or first input sequence — presence of any of E/F/I/L/P/Q means
+        /// protein), dna, or protein. Protein disables reverse-complement search and
+        /// switches minimizer seeding to non-canonical at protein-scale k/w.
+        #[arg(long, value_name = "MODE", default_value = "auto")]
+        alphabet: String,
     },
     /// Extract task list from a .phrayaplan file and output as TSV
     PlanTasks {
@@ -116,6 +123,14 @@ enum Commands {
         /// Override the per-variant coverage-window radius (bp), independent of --strategy
         #[arg(long, value_name = "N")]
         coverage_window: Option<usize>,
+
+        /// Gap cost model (ADR-0014): linear (uniform per-base cost) or affine
+        /// (gap_open + L*gap_extend per L-base gap — consolidates real indels instead of
+        /// scattering them as mismatch-cost-tied substitutions). Valid only with
+        /// --strategy sensitive, where it defaults to affine; Balanced/Fast are
+        /// Myers-primary and have no affine mode, so this flag is rejected with them.
+        #[arg(long, value_name = "MODEL")]
+        gap_model: Option<String>,
 
         /// Batch mode: worker ID (0-indexed)
         #[arg(long, value_name = "N")]
@@ -224,6 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_by,
             batch_output_pattern,
             chunks,
+            alphabet,
         } => {
             // Validate batch flags
             if (batch_to.is_some() || batch_by.is_some()) && batch_output_pattern.is_none() {
@@ -240,6 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 batch_by,
                 batch_output_pattern.as_deref(),
                 chunks,
+                &alphabet,
             )?;
         }
         Commands::PlanTasks { plan_file } => {
@@ -252,6 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             output,
             strategy,
             coverage_window,
+            gap_model,
             worker,
             ensure,
             threads,
@@ -275,6 +293,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(radius) = coverage_window {
                 config = config.with_coverage_window_radius(radius);
             }
+
+            // ADR-0014: --gap-model is sensitive-only. Balanced/Fast are Myers-primary and
+            // have no affine mode, so pairing them with --gap-model is a hard error, not a
+            // silent no-op — the flag would otherwise look accepted while doing nothing.
+            if let Some(model) = gap_model {
+                if strat != Strategy::Sensitive {
+                    return Err(format!(
+                        "--gap-model requires --strategy sensitive (got --strategy {strategy}); \
+                         balanced/fast are Myers-primary with no affine mode"
+                    )
+                    .into());
+                }
+                let parsed = match model.as_str() {
+                    "linear" => phraya_align::executor::GapModel::Linear,
+                    "affine" => phraya_align::executor::GapModel::Affine,
+                    other => {
+                        return Err(format!(
+                            "unknown gap-model: {other}; expected linear or affine"
+                        )
+                        .into())
+                    }
+                };
+                config = config.with_gap_model(parsed);
+            }
+
 
             if !reference.is_empty() {
                 // Reference palette mode (ADR-0011): mutually exclusive with the other modes.
@@ -1031,7 +1074,20 @@ fn run_plan(
     batch_by: Option<usize>,
     batch_output_pattern: Option<&str>,
     chunks: Option<usize>,
+    alphabet_flag: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use phraya_core::types::{detect_alphabet, sketch_sequence_default_for, Alphabet};
+
+    // None = "auto" (resolve from content on first sight of a sequence, below);
+    // Some(_) = explicit --alphabet dna/protein override.
+    let mut alphabet: Option<Alphabet> = match alphabet_flag {
+        "auto" => None,
+        "dna" => Some(Alphabet::Dna),
+        "protein" => Some(Alphabet::Protein),
+        other => {
+            return Err(format!("--alphabet must be auto, dna, or protein (got: {other})").into())
+        }
+    };
     // Read all input sequences and track which file they came from
     let mut all_sequences: Vec<(Sequence, String)> = Vec::new();
     let mut sequence_to_file_index: Vec<usize> = Vec::new(); // Track which input file each sequence came from
@@ -1045,13 +1101,18 @@ fn run_plan(
         let (sequences, _mate_info) = parse_sequences_from_file(ref_path)?;
 
         if let Some(seq) = sequences.into_iter().next() {
+            // Resolve alphabet from the first reference sequence's content if not
+            // already overridden/detected — see detect_alphabet's doc for the
+            // detection rule and its known short-peptide-in-ACGT-letters ambiguity.
+            let seq_alphabet = *alphabet.get_or_insert_with(|| detect_alphabet(seq.bases()));
+
             // Compute content hash from the sequence bytes
             let content_hash = phraya_io::plan::content_hash_for_sequence(&seq);
             let seq_id = seq.id().to_string();
 
             // Create sketches for this reference space
             let mut space_sketches = std::collections::HashMap::new();
-            let sketch = phraya_core::types::sketch_sequence_default(&seq);
+            let sketch = sketch_sequence_default_for(&seq, seq_alphabet);
             space_sketches.insert(seq_id, sketch);
 
             // Create and store the reference space
@@ -1102,10 +1163,16 @@ fn run_plan(
         return Err("No sequences found in input files".into());
     }
 
+    // Finalize alphabet: override or reference-detected value from the loop above,
+    // else (no reference provided) detect from the first input sequence's content.
+    let alphabet: Alphabet =
+        alphabet.unwrap_or_else(|| detect_alphabet(all_sequences[0].0.bases()));
+    eprintln!("Detected alphabet: {:?}", alphabet);
+
     // Compute sketches for all sequences (ordered Vec for task generation)
     let sketches: Vec<MinimizerSketch> = all_sequences
         .iter()
-        .map(|(seq, _)| sketch_sequence_default(seq))
+        .map(|(seq, _)| sketch_sequence_default_for(seq, alphabet))
         .collect();
 
     // Detect use case
@@ -1175,6 +1242,7 @@ fn run_plan(
     plan.insert_size_distribution = insert_size_distribution;
     plan.mate_info = all_mate_info;
     plan.reference_space = reference_spaces;
+    plan.alphabet = alphabet;
 
     // Populate read_sketches keyed by content hash (ADR-0011)
     // Skip the reference if present; read_sketches are for reads only.

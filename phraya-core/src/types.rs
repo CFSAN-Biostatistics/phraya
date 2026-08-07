@@ -1745,6 +1745,59 @@ pub const DEFAULT_K: usize = 21;
 /// Default window length for minimizer sketching
 pub const DEFAULT_W: usize = 11;
 
+/// Default k-mer length for protein-space minimizer sketching (ADR-0013).
+///
+/// DNA's k=21 is tuned for 4-symbol entropy (~2 bits/base); at 20-symbol amino-acid
+/// entropy (~4.3 bits/aa), k=21 would be >90 bits of specificity — homologous but
+/// divergent proteins would share essentially no seeds. k=6 matches the seeding scale
+/// BLASTP/DIAMOND use for amino-acid search.
+pub const DEFAULT_K_PROTEIN: usize = 6;
+
+/// Default window length for protein-space minimizer sketching (ADR-0013).
+pub const DEFAULT_W_PROTEIN: usize = 5;
+
+/// Sequence alphabet a reference space or query is aligned in (ADR-0013).
+///
+/// Purely a seeding/orientation switch — never changes the extension engine
+/// (WFA/Myers are already alphabet-blind byte comparators). `Protein` disables
+/// reverse-complement/dual-strand search entirely (no biological reverse strand)
+/// and switches minimizer seeding from canonical (reverse-complement-aware) to
+/// plain minimizers, at protein-scale k/w defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Alphabet {
+    #[default]
+    Dna,
+    Protein,
+}
+
+/// One-letter amino-acid codes with no meaning as an IUPAC nucleotide code —
+/// E, F, I, L, P, Q. Every other standard amino-acid letter (A, C, D, G, H, K,
+/// M, N, R, S, T, V, W, Y) doubles as a valid IUPAC nucleotide base or
+/// ambiguity code, so it can't distinguish the alphabets on its own.
+const PROTEIN_ONLY_LETTERS: [u8; 6] = *b"EFILPQ";
+
+/// Auto-detect whether `bases` is DNA or protein from byte content (ADR-0013).
+///
+/// A sequence is `Protein` iff it contains at least one byte (case-insensitive)
+/// from [`PROTEIN_ONLY_LETTERS`] — a letter with no IUPAC nucleotide meaning.
+/// Otherwise `Dna` (the default, matching today's exclusively-DNA behavior).
+///
+/// **Known ambiguity**: a short peptide spelled entirely in residues that are
+/// also valid nucleotide letters (e.g. `"CAT"`, coding Cys-His-... — every
+/// letter also an IUPAC base) is indistinguishable from DNA by content alone.
+/// Callers needing certainty should offer an explicit override rather than
+/// rely solely on this heuristic.
+pub fn detect_alphabet(bases: &[u8]) -> Alphabet {
+    if bases
+        .iter()
+        .any(|&b| PROTEIN_ONLY_LETTERS.contains(&b.to_ascii_uppercase()))
+    {
+        Alphabet::Protein
+    } else {
+        Alphabet::Dna
+    }
+}
+
 /// A minimizer sketch: sparse representation of a sequence as (hash, position) pairs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MinimizerSketch {
@@ -1785,20 +1838,49 @@ impl MinimizerSketch {
     }
 }
 
-/// Sketch a raw byte sequence using simd-minimizers canonical minimizers.
-pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimizerSketch {
+/// Sketch a raw byte sequence at the given alphabet (ADR-0013).
+///
+/// `Dna` uses canonical minimizers (reverse-complement-aware — a sequence and
+/// its RC select the same positions, which is what makes dual-strand search
+/// work). `Protein` uses plain (non-canonical) minimizers — there is no
+/// reverse complement for amino acids, so canonicalization would be meaningless.
+/// Both are SIMD-accelerated via `simd-minimizers`' generic ASCII path.
+pub fn sketch_alphabet(sequence: &[u8], k: usize, w: usize, alphabet: Alphabet) -> MinimizerSketch {
     use packed_seq::AsciiSeq;
     let mut positions = Vec::new();
-    let output =
-        simd_minimizers::canonical_minimizers(k, w).run(AsciiSeq(sequence), &mut positions);
-    let minimizers: Vec<(u64, u32)> = output
-        .pos_and_values_u64()
-        .map(|(pos, val)| (val, pos))
-        .collect();
+    // Each arm collects to a concrete Vec independently: `canonical_minimizers`/
+    // `minimizers` return `Output<'_, CANONICAL, _>` for different const-generic
+    // `CANONICAL` bools, so the two arms are different types and can't unify as
+    // one `output` binding — only their collected `Vec<(u64, u32)>` can.
+    let minimizers: Vec<(u64, u32)> = match alphabet {
+        Alphabet::Dna => simd_minimizers::canonical_minimizers(k, w)
+            .run(AsciiSeq(sequence), &mut positions)
+            .pos_and_values_u64()
+            .map(|(pos, val)| (val, pos))
+            .collect(),
+        Alphabet::Protein => simd_minimizers::minimizers(k, w)
+            .run(AsciiSeq(sequence), &mut positions)
+            .pos_and_values_u64()
+            .map(|(pos, val)| (val, pos))
+            .collect(),
+    };
     MinimizerSketch { minimizers, k, w }
 }
 
-/// Sketch a Sequence using given k and w.
+/// Sketch a raw byte sequence using simd-minimizers canonical minimizers (DNA).
+///
+/// Equivalent to `sketch_alphabet(sequence, k, w, Alphabet::Dna)` — kept as the
+/// unparameterized entry point so every existing DNA caller is untouched.
+pub fn sketch(sequence: &[u8], k: usize, w: usize) -> MinimizerSketch {
+    sketch_alphabet(sequence, k, w, Alphabet::Dna)
+}
+
+/// Sketch a Sequence at the given alphabet and k/w.
+pub fn sketch_sequence_alphabet(seq: &Sequence, k: usize, w: usize, alphabet: Alphabet) -> MinimizerSketch {
+    sketch_alphabet(seq.bases(), k, w, alphabet)
+}
+
+/// Sketch a Sequence using given k and w (DNA, canonical minimizers).
 pub fn sketch_sequence(seq: &Sequence, k: usize, w: usize) -> MinimizerSketch {
     sketch(seq.bases(), k, w)
 }
@@ -1806,6 +1888,16 @@ pub fn sketch_sequence(seq: &Sequence, k: usize, w: usize) -> MinimizerSketch {
 /// Sketch a Sequence using default parameters (k=21, w=11).
 pub fn sketch_sequence_default(seq: &Sequence) -> MinimizerSketch {
     sketch_sequence(seq, DEFAULT_K, DEFAULT_W)
+}
+
+/// Sketch a Sequence using the given alphabet's default k/w (ADR-0013):
+/// `DEFAULT_K`/`DEFAULT_W` for `Dna` (identical to [`sketch_sequence_default`]),
+/// `DEFAULT_K_PROTEIN`/`DEFAULT_W_PROTEIN` for `Protein`.
+pub fn sketch_sequence_default_for(seq: &Sequence, alphabet: Alphabet) -> MinimizerSketch {
+    match alphabet {
+        Alphabet::Dna => sketch_sequence_default(seq),
+        Alphabet::Protein => sketch_sequence_alphabet(seq, DEFAULT_K_PROTEIN, DEFAULT_W_PROTEIN, alphabet),
+    }
 }
 
 fn jaccard_similarity(a: &MinimizerSketch, b: &MinimizerSketch) -> f64 {

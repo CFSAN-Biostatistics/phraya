@@ -1,4 +1,4 @@
-use phraya_core::types::MinimizerSketch;
+use phraya_core::types::{Alphabet, MinimizerSketch};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -86,6 +86,18 @@ struct SharedFrame {
     pub batch_num_chunks: Option<usize>,
     pub batch_reads_per_chunk: Option<usize>,
     pub batch_output_paths: Vec<String>,
+    // `alphabet` must stay here, in the always-serialized head block, never after
+    // any `skip_serializing_if` field. rmp_serde serializes structs positionally
+    // (as an array), and `SerializeStruct::skip_field` genuinely omits the byte —
+    // it does not write a placeholder. A field placed after a *conditionally*
+    // skipped field shifts into that field's slot on read whenever the skip
+    // triggers, corrupting every field after it (reproduced in
+    // `debug_shared_frame_roundtrip` below before this fix). Skippable fields are
+    // only safe as a strictly *trailing* group with nothing non-skipped following
+    // them — `insert_size_distribution`/`dense_kmer_index`/`w11_membership`/
+    // `sparse_mode` below are exactly that group; `alphabet` cannot join it.
+    #[serde(default)]
+    pub alphabet: Alphabet,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insert_size_distribution: Option<InsertSizeDistribution>,
     #[serde(
@@ -302,6 +314,12 @@ pub struct PhrayaPlan {
     /// Output paths for each batch chunk (empty if no batching)
     #[serde(default)]
     pub batch_output_paths: Vec<String>,
+    /// Sequence alphabet this plan was built for (ADR-0013). Must stay here, in
+    /// the always-serialized head block, before any `skip_serializing_if` field —
+    /// see the placement comment on `SharedFrame::alphabet` (same struct-as-array
+    /// positional-shift hazard applies here).
+    #[serde(default)]
+    pub alphabet: Alphabet,
     /// Insert size distribution (None for FASTQ input without alignment)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insert_size_distribution: Option<InsertSizeDistribution>,
@@ -371,6 +389,7 @@ impl PhrayaPlan {
             sparse_mode: false,
             reference_space: Vec::new(),
             read_hash_order: Vec::new(),
+            alphabet: Alphabet::default(),
         }
     }
 
@@ -575,6 +594,7 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
         dense_kmer_index: plan.dense_kmer_index.clone(),
         w11_membership: plan.w11_membership.clone(),
         sparse_mode: plan.sparse_mode,
+        alphabet: plan.alphabet,
     };
 
     let shared_bytes = rmp_serde::to_vec(&shared)
@@ -751,6 +771,7 @@ fn assemble_plan(shared: SharedFrame, chunks: Vec<ChunkFrame>) -> PhrayaPlan {
         dense_kmer_index: shared.dense_kmer_index,
         w11_membership: shared.w11_membership,
         sparse_mode: shared.sparse_mode,
+        alphabet: shared.alphabet,
         read_hash_order,
     }
 }
@@ -882,6 +903,57 @@ mod tests {
     use super::*;
     use phraya_core::types::Sequence;
     use tempfile::NamedTempFile;
+
+    /// Regression test for the rmp_serde positional-array serialization hazard:
+    /// `SharedFrame`/`PhrayaPlan` are serialized as msgpack arrays (positional,
+    /// not by field name), and `#[serde(skip_serializing_if)]` fields genuinely
+    /// omit their byte on skip — they don't write a placeholder. Any field
+    /// declared after a *conditionally* skipped field shifts into that field's
+    /// slot on read whenever the skip triggers, silently corrupting every field
+    /// after it. This caught exactly that when `alphabet` was first added after
+    /// the `insert_size_distribution`/`dense_kmer_index`/`w11_membership`/
+    /// `sparse_mode` skippable tail — `Alphabet::Protein` (always serialized,
+    /// non-default) shifted into `insert_size_distribution`'s slot and broke
+    /// deserialization. Covers both alphabet variants since `Dna` is the
+    /// serde-default and wouldn't by itself distinguish "skipped" from
+    /// "shifted" the way `Protein` does.
+    #[test]
+    fn shared_frame_roundtrips_regardless_of_skipped_tail_fields() {
+        for alphabet in [phraya_core::types::Alphabet::Dna, phraya_core::types::Alphabet::Protein] {
+            let shared = SharedFrame {
+                version: PHRAYAPLAN_VERSION,
+                use_case: UseCase::ReadsWithRef,
+                reference_space: Vec::new(),
+                input_files: vec!["a".to_string()],
+                timestamp: "t".to_string(),
+                kmer_index: HashMap::new(),
+                kmer_uniqueness: HashMap::new(),
+                task_list: vec![],
+                hotspot_intervals: vec![],
+                reads_per_file: vec![],
+                total_read_count: 0,
+                kmer_params: KmerParams::default(),
+                batch_num_chunks: None,
+                batch_reads_per_chunk: None,
+                batch_output_paths: vec![],
+                alphabet,
+                // The skippable tail — every one of these deliberately triggers
+                // its skip (None / empty / false), the exact scenario that broke.
+                insert_size_distribution: None,
+                dense_kmer_index: HashMap::new(),
+                w11_membership: HashMap::new(),
+                sparse_mode: false,
+            };
+            let bytes = rmp_serde::to_vec(&shared).unwrap();
+            let back: SharedFrame = rmp_serde::from_slice(&bytes)
+                .unwrap_or_else(|e| panic!("roundtrip failed for alphabet={alphabet:?}: {e}"));
+            assert_eq!(back.version, shared.version);
+            assert_eq!(back.input_files, shared.input_files);
+            assert_eq!(back.alphabet, alphabet, "alphabet must survive the roundtrip unshifted");
+            assert!(back.insert_size_distribution.is_none());
+            assert!(!back.sparse_mode);
+        }
+    }
 
     /// Generate a deterministic DNA sequence of given length, unique per seed.
     /// Uses a simple LCG to produce only ACGT characters.

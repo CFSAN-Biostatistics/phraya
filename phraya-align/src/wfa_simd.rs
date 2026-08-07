@@ -487,6 +487,453 @@ fn fill_wfa_fitting(q: &[u8], t: &[u8]) -> Option<(String, usize, usize)> {
     fill_wfa_fitting_impl(q, t, None)
 }
 
+// ============================================================================
+// Gap-affine WFA (ADR-0014)
+// ============================================================================
+//
+// Extends the linear-cost WFA above with a gap-affine cost model: an L-base gap costs
+// `gap_open + L * gap_extend` instead of `L * mismatch` — a single mutational event
+// (one real indel) is charged once, not once per base, so the search actively prefers
+// consolidating a multi-base indel into one gap over the linear model's indifference
+// between "one gap" and "several scattered mismatches that happen to tie in cost."
+//
+// Three wavefront layers per score `s` (Marco-Sola et al.'s gap-affine WFA formulation):
+//   - `m`   (match/mismatch): the "in an alignment column" state.
+//   - `ins` (query has an extra, unmatched base — CIGAR **'D'** in this codebase's
+//     convention; see `extract_variants_from_cigar`'s "WFA convention: 'D' = query has
+//     extra" comment. Opens/extends by moving diagonal `k -> k+1`, query position `+1`.
+//   - `del` (target has an extra, unmatched base — CIGAR **'I'** here). Diagonal
+//     `k -> k-1`, query position unchanged.
+//
+// Recurrences (all costs are the *affine* score axis, independent of the *reported*
+// `edit_distance`, which ADR-0014 keeps on the traditional mismatches+indel-bases
+// definition — computed from the resulting CIGAR by `levenshtein_from_cigar`, not from
+// the affine score `s` this search explores):
+//   ins[s][k] = max(m[s-open-extend][k-1] + 1,  ins[s-extend][k-1] + 1)
+//   del[s][k] = max(m[s-open-extend][k+1],      del[s-extend][k+1])
+//   m[s][k]   = max(m[s-mismatch][k] + 1, ins[s][k], del[s][k]), then greedily
+//               extended along matching bytes (free, via `count_matching_prefix`).
+
+/// Gap-affine cost model: an `L`-base gap costs `gap_open + L * gap_extend` (WFA2-lib
+/// convention — `gap_open` is charged once per gap in addition to `gap_extend` for
+/// every base of it, so a 1-base gap costs `gap_open + gap_extend`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AffineCosts {
+    pub mismatch: i32,
+    pub gap_open: i32,
+    pub gap_extend: i32,
+}
+
+impl Default for AffineCosts {
+    /// Hard-coded opinion (same status as `FAST_MAX_DIVERGENCE`/`SCORE_REPORT_THRESHOLD`
+    /// elsewhere in this crate — not user-tunable today). `mismatch = 2` keeps a lone
+    /// substitution strictly cheaper than opening any gap (`gap_open + gap_extend = 5`),
+    /// so isolated SNPs never get reinterpreted as gaps. `gap_extend = 1`, half of
+    /// `mismatch`, makes a run of >=2 gap bases cheaper than the same-length run of
+    /// mismatches once a gap is open — the actual behavior change ADR-0014 exists to
+    /// deliver: a real multi-base indel gets consolidated into one gap instead of
+    /// scattered across several mismatch-cost-equivalent edits. Tuned for Phraya's
+    /// close-strain-comparison domain, not BLAST-style remote-homology defaults.
+    fn default() -> Self {
+        AffineCosts { mismatch: 2, gap_open: 4, gap_extend: 1 }
+    }
+}
+
+const AFF_UNSET: i32 = i32::MIN;
+
+/// One affine wavefront generation: `m`/`ins`/`del` furthest-reaching query positions
+/// per diagonal (index = `k + tn`, `AFF_UNSET` sentinel), plus per-diagonal backtrace op
+/// codes. `m_op`: 0 = mismatch-extend from `m` at `s - mismatch`; 1 = close from `ins` at
+/// this same `s`; 2 = close from `del` at this same `s`. `ins_op`/`del_op`: 0 = open (from
+/// `m` at `s - gap_open - gap_extend`); 1 = extend (from `ins`/`del` at `s - gap_extend`).
+struct AffineFrame {
+    m: Vec<i32>,
+    ins: Vec<i32>,
+    del: Vec<i32>,
+    m_op: Vec<u8>,
+    ins_op: Vec<u8>,
+    del_op: Vec<u8>,
+}
+
+/// Returns `true` and clamps nothing — just validates that wavefront position `pos` on
+/// diagonal `k` is a real, in-bounds `(query, target)` cell. Every layer's recurrence
+/// must be checked against this before being accepted as a candidate — an unchecked
+/// `ins`/`del` step can walk `pos` past `qn` or its implied target position past `tn`.
+#[inline]
+fn affine_pos_valid(pos: i32, k: i32, qn: i32, tn: i32) -> bool {
+    if pos == AFF_UNSET || pos < 0 || pos > qn {
+        return false;
+    }
+    let t_pos = pos - k;
+    t_pos >= 0 && t_pos <= tn
+}
+
+/// Core gap-affine wavefront fill, shared by the global and fitting entry points.
+/// `fitting`: query must be fully consumed (`qi == qn`); target end is free when `true`,
+/// fixed at `tn` when `false`. `max_s_cap`: abandon (return `None`) if the affine score
+/// exceeds this before an endpoint is found — mirrors the linear path's score-bounded
+/// early abandonment.
+///
+/// Returns `(cigar, affine_score, target_consumed)`. `affine_score` is the *search* cost
+/// (used only to find the winning alignment) — callers must derive the *reported*
+/// `edit_distance` from the returned CIGAR via `levenshtein_from_cigar`, not from this
+/// value (ADR-0014's decision: affine cost steers the search, never the reported metric).
+fn fill_wfa_affine_generic(
+    q: &[u8],
+    t: &[u8],
+    costs: AffineCosts,
+    fitting: bool,
+    max_s_cap: Option<i32>,
+) -> Option<(String, i32, usize)> {
+    let qn = q.len() as i32;
+    let tn = t.len() as i32;
+
+    if qn == 0 && tn == 0 {
+        return Some((String::new(), 0, 0));
+    }
+    if qn == 0 {
+        // No query bases at all: fitting trivially consumes zero target; global must
+        // consume every target base as target-extra ('I' — see module doc convention).
+        return if fitting {
+            Some((String::new(), 0, 0))
+        } else {
+            Some((format!("{tn}I"), costs.gap_open + tn * costs.gap_extend, tn as usize))
+        };
+    }
+
+    let size = (qn + tn + 1) as usize;
+    let diag_lo = -tn;
+    let diag_hi = qn;
+
+    let extend = |q_pos: i32, k: i32| -> i32 {
+        let j = q_pos - k;
+        if q_pos < 0 || q_pos >= qn || j < 0 || j >= tn {
+            return q_pos;
+        }
+        let qi = q_pos as usize;
+        let ti = j as usize;
+        q_pos + count_matching_prefix(&q[qi..], &t[ti..]) as i32
+    };
+
+    let endpoint = |frame: &AffineFrame| -> Option<(usize, i32, u8)> {
+        let check = |ki: usize| -> Option<u8> {
+            if ki < frame.m.len() && frame.m[ki] == qn {
+                Some(0)
+            } else if ki < frame.ins.len() && frame.ins[ki] == qn {
+                Some(1)
+            } else if ki < frame.del.len() && frame.del[ki] == qn {
+                Some(2)
+            } else {
+                None
+            }
+        };
+        if !fitting {
+            let k = qn - tn;
+            let ki = (k + tn) as usize;
+            return check(ki).map(|layer| (tn as usize, k, layer));
+        }
+        let mut best: Option<(usize, i32, u8)> = None;
+        for k in (qn - tn)..=qn {
+            let t_end = qn - k;
+            if t_end < 0 || t_end > tn {
+                continue;
+            }
+            let ki = (k + tn) as usize;
+            if let Some(layer) = check(ki) {
+                let te = t_end as usize;
+                if best.is_none_or(|b| te > b.0) {
+                    best = Some((te, k, layer));
+                }
+            }
+        }
+        best
+    };
+
+    let mut hist: Vec<AffineFrame> = Vec::new();
+    let mut m0 = vec![AFF_UNSET; size];
+    m0[tn as usize] = extend(0, 0);
+    hist.push(AffineFrame {
+        m: m0,
+        ins: vec![AFF_UNSET; size],
+        del: vec![AFF_UNSET; size],
+        m_op: vec![0; size],
+        ins_op: vec![0; size],
+        del_op: vec![0; size],
+    });
+
+    if let Some((t_end, k, layer)) = endpoint(&hist[0]) {
+        return Some((affine_traceback(&hist, q, t, 0, t_end, k, layer, costs), 0, t_end));
+    }
+
+    // Generous upper bound: every query+target base as a mismatch, plus one gap's worth
+    // of headroom for the open/extend accounting below to never underflow the cap check.
+    let hard_max_s = (qn + tn) * costs.mismatch.max(1) + costs.gap_open + costs.gap_extend + 4;
+    let explore_to = max_s_cap.map_or(hard_max_s, |cap| cap.min(hard_max_s));
+
+    for s in 1..=explore_to {
+        let mut ins = vec![AFF_UNSET; size];
+        let mut ins_op = vec![0u8; size];
+        let mut del = vec![AFF_UNSET; size];
+        let mut del_op = vec![0u8; size];
+
+        let s_open = s - costs.gap_open - costs.gap_extend;
+        let s_ext = s - costs.gap_extend;
+
+        for k in diag_lo..=diag_hi {
+            let ki = (k + tn) as usize;
+
+            // ins (query-extra): open from m[s_open][k-1]+1, or extend from ins[s_ext][k-1]+1.
+            let mut best = (AFF_UNSET, 0u8);
+            if s_open >= 0 && k - 1 >= diag_lo {
+                let pk = (k - 1 + tn) as usize;
+                let prev = &hist[s_open as usize];
+                if pk < prev.m.len() && prev.m[pk] != AFF_UNSET {
+                    let cand = prev.m[pk] + 1;
+                    if affine_pos_valid(cand, k, qn, tn) && cand > best.0 {
+                        best = (cand, 0);
+                    }
+                }
+            }
+            if s_ext >= 0 && k - 1 >= diag_lo {
+                let pk = (k - 1 + tn) as usize;
+                let prev = &hist[s_ext as usize];
+                if pk < prev.ins.len() && prev.ins[pk] != AFF_UNSET {
+                    let cand = prev.ins[pk] + 1;
+                    if affine_pos_valid(cand, k, qn, tn) && cand > best.0 {
+                        best = (cand, 1);
+                    }
+                }
+            }
+            if best.0 != AFF_UNSET {
+                ins[ki] = best.0;
+                ins_op[ki] = best.1;
+            }
+
+            // del (target-extra): open from m[s_open][k+1], or extend from del[s_ext][k+1].
+            let mut best = (AFF_UNSET, 0u8);
+            if s_open >= 0 && k + 1 <= diag_hi {
+                let pk = (k + 1 + tn) as usize;
+                let prev = &hist[s_open as usize];
+                if pk < prev.m.len() && prev.m[pk] != AFF_UNSET {
+                    let cand = prev.m[pk];
+                    if affine_pos_valid(cand, k, qn, tn) && cand > best.0 {
+                        best = (cand, 0);
+                    }
+                }
+            }
+            if s_ext >= 0 && k + 1 <= diag_hi {
+                let pk = (k + 1 + tn) as usize;
+                let prev = &hist[s_ext as usize];
+                if pk < prev.del.len() && prev.del[pk] != AFF_UNSET {
+                    let cand = prev.del[pk];
+                    if affine_pos_valid(cand, k, qn, tn) && cand > best.0 {
+                        best = (cand, 1);
+                    }
+                }
+            }
+            if best.0 != AFF_UNSET {
+                del[ki] = best.0;
+                del_op[ki] = best.1;
+            }
+        }
+
+        let mut m = vec![AFF_UNSET; size];
+        let mut m_op = vec![0u8; size];
+        let s_mm = s - costs.mismatch;
+        for k in diag_lo..=diag_hi {
+            let ki = (k + tn) as usize;
+            let mut best = (AFF_UNSET, 0u8);
+            if s_mm >= 0 {
+                let prev = &hist[s_mm as usize];
+                if ki < prev.m.len() && prev.m[ki] != AFF_UNSET {
+                    let cand = prev.m[ki] + 1;
+                    if affine_pos_valid(cand, k, qn, tn) && cand > best.0 {
+                        best = (cand, 0);
+                    }
+                }
+            }
+            if ins[ki] != AFF_UNSET && affine_pos_valid(ins[ki], k, qn, tn) && ins[ki] > best.0 {
+                best = (ins[ki], 1);
+            }
+            if del[ki] != AFF_UNSET && affine_pos_valid(del[ki], k, qn, tn) && del[ki] > best.0 {
+                best = (del[ki], 2);
+            }
+            if best.0 != AFF_UNSET {
+                m[ki] = extend(best.0, k);
+                m_op[ki] = best.1;
+            }
+        }
+
+        hist.push(AffineFrame { m, ins, del, m_op, ins_op, del_op });
+
+        if let Some((t_end, k, layer)) = endpoint(&hist[s as usize]) {
+            return Some((
+                affine_traceback(&hist, q, t, s, t_end, k, layer, costs),
+                s,
+                t_end,
+            ));
+        }
+    }
+
+    None
+}
+
+/// Walk backward from an affine-wavefront endpoint to reconstruct the CIGAR, switching
+/// between the `m`/`ins`/`del` layers as their stored op codes dictate. `start_layer`:
+/// 0 = `m`, 1 = `ins`, 2 = `del`. See the module doc for the CIGAR-letter convention
+/// (`ins` -> 'D', `del` -> 'I' — this codebase's, not SAM's).
+fn affine_traceback(
+    hist: &[AffineFrame],
+    q: &[u8],
+    t: &[u8],
+    s_end: i32,
+    t_end: usize,
+    k_end: i32,
+    start_layer: u8,
+    costs: AffineCosts,
+) -> String {
+    let qn = q.len() as i32;
+    let tn = t.len() as i32;
+
+    let mut ops: Vec<char> = Vec::new();
+    let mut qi = qn;
+    let mut ti = t_end as i32;
+    let mut k = k_end;
+    let mut s = s_end;
+    let mut layer = start_layer;
+
+    while qi > 0 || ti > 0 {
+        if s == 0 {
+            while qi > 0 && ti > 0 {
+                ops.push('M');
+                qi -= 1;
+                ti -= 1;
+            }
+            break;
+        }
+        let ki = (k + tn) as usize;
+        let frame = &hist[s as usize];
+        match layer {
+            0 => match frame.m_op[ki] {
+                0 => {
+                    let s_mm = s - costs.mismatch;
+                    let pred_pos = hist[s_mm as usize].m[ki];
+                    let raw = pred_pos + 1;
+                    for _ in 0..(qi - raw).max(0) {
+                        ops.push('M');
+                        qi -= 1;
+                        ti -= 1;
+                    }
+                    ops.push('X');
+                    qi -= 1;
+                    ti -= 1;
+                    s = s_mm;
+                }
+                1 => {
+                    let raw = frame.ins[ki];
+                    for _ in 0..(qi - raw).max(0) {
+                        ops.push('M');
+                        qi -= 1;
+                        ti -= 1;
+                    }
+                    layer = 1;
+                }
+                _ => {
+                    let raw = frame.del[ki];
+                    for _ in 0..(qi - raw).max(0) {
+                        ops.push('M');
+                        qi -= 1;
+                        ti -= 1;
+                    }
+                    layer = 2;
+                }
+            },
+            1 => {
+                ops.push('D'); // ins (query-extra) -> this codebase's 'D', see module doc
+                qi -= 1;
+                match frame.ins_op[ki] {
+                    0 => {
+                        s -= costs.gap_open + costs.gap_extend;
+                        k -= 1;
+                        layer = 0;
+                    }
+                    _ => {
+                        s -= costs.gap_extend;
+                        k -= 1;
+                    }
+                }
+            }
+            _ => {
+                ops.push('I'); // del (target-extra) -> this codebase's 'I', see module doc
+                ti -= 1;
+                match frame.del_op[ki] {
+                    0 => {
+                        s -= costs.gap_open + costs.gap_extend;
+                        k += 1;
+                        layer = 0;
+                    }
+                    _ => {
+                        s -= costs.gap_extend;
+                        k += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    ops.reverse();
+    compact_cigar(&ops)
+}
+
+/// Standard (Levenshtein-style) edit distance implied by a CIGAR: count of `X` positions
+/// plus total `I`/`D` run length. ADR-0014: this — not the affine search score — is what
+/// `wfa_extend_affine` reports as `edit_distance`, keeping `score_alignments`'s 0.95
+/// retention threshold and every downstream consumer's units unchanged regardless of
+/// which cost model steered the search that produced the CIGAR.
+fn levenshtein_from_cigar(cigar: &str) -> usize {
+    let mut total = 0usize;
+    let mut num = String::new();
+    for ch in cigar.chars() {
+        if ch.is_ascii_digit() {
+            num.push(ch);
+        } else {
+            let n: usize = num.parse().unwrap_or(0);
+            num.clear();
+            if ch != 'M' {
+                total += n;
+            }
+        }
+    }
+    total
+}
+
+/// Gap-affine fitting alignment (ADR-0014): query fully consumed, target end free — the
+/// gap-affine counterpart to [`fill_wfa_fitting_impl`]. Delegates to the global affine
+/// fill for near-equal-length sequences (same `tn <= qn + qn/2 + 10` threshold as the
+/// linear path, for the same reason: fitting's early-termination search is unsound when
+/// the target isn't substantially longer than the query).
+///
+/// Returns `(cigar, edit_distance, target_consumed)` — `edit_distance` is already the
+/// traditional (non-affine) count via [`levenshtein_from_cigar`], ready to use exactly
+/// like the linear path's return value.
+pub fn fill_wfa_affine_fitting_impl(
+    q: &[u8],
+    t: &[u8],
+    costs: AffineCosts,
+    max_s_cap: Option<usize>,
+) -> Option<(String, usize, usize)> {
+    if q.is_empty() {
+        return Some((String::new(), 0, 0));
+    }
+    let qn = q.len() as i32;
+    let tn = t.len() as i32;
+    let fitting = tn > qn + qn / 2 + 10;
+    let cap = max_s_cap.map(|c| c as i32);
+    let (cigar, _affine_score, t_end) = fill_wfa_affine_generic(q, t, costs, fitting, cap)?;
+    let edit_distance = levenshtein_from_cigar(&cigar);
+    Some((cigar, edit_distance, t_end))
+}
+
 /// Find a valid fitting-end diagonal: any k where `wf[k] >= qn` and `0 <= qn - k <= tn`.
 /// Returns `(t_end, k)` for the diagonal that consumes the most target (maximum t_end = qn - k).
 /// Preferring maximum t_end ensures we don't truncate natural deletions at the alignment end.
@@ -2648,6 +3095,401 @@ mod wfa_algorithm_tests {
              at low divergence (O(n×m) takes seconds)",
             elapsed
         );
+    }
+}
+
+/// Differential/correctness tests for gap-affine WFA (ADR-0014). Myers can't serve as
+/// the oracle here (it's linear-only), so this module implements an independent
+/// O(n*m) Gotoh three-matrix affine DP as the ground truth for the *affine score* —
+/// deliberately not reusing any of `fill_wfa_affine_generic`'s machinery — and
+/// separately validates every produced CIGAR is internally consistent (correct op
+/// lengths, correct M/X classification against the actual bytes, full query
+/// consumption).
+#[cfg(test)]
+mod affine_wfa_tests {
+    use super::{
+        fill_wfa_affine_fitting_impl, levenshtein_from_cigar, AffineCosts,
+    };
+
+    /// Independent Gotoh affine-gap DP oracle (fitting mode: query fully consumed,
+    /// target end free). Returns the minimum affine score only — deliberately not a
+    /// CIGAR, so this can never be suspected of sharing a bug with the traceback logic
+    /// under test.
+    fn gotoh_affine_fitting_score(q: &[u8], t: &[u8], costs: AffineCosts) -> i32 {
+        let qn = q.len();
+        let tn = t.len();
+        const INF: i32 = i32::MAX / 2;
+        let stride = tn + 1;
+        let mut m = vec![INF; (qn + 1) * stride];
+        let mut ins = vec![INF; (qn + 1) * stride]; // query-extra ('D')
+        let mut del = vec![INF; (qn + 1) * stride]; // target-extra ('I')
+        m[0] = 0;
+        // Column 0 (ins) and row 0 (del) both open directly off the true origin
+        // `m[0][0] = 0` — a gap immediately at the alignment's start is legitimate
+        // (production's WFA fixes the origin at (0,0) too; a read's true start
+        // sitting a few bases into the target window is exactly this case).
+        for i in 1..=qn {
+            ins[i * stride] = costs.gap_open + costs.gap_extend * i as i32;
+        }
+        for j in 1..=tn {
+            del[j] = costs.gap_open + costs.gap_extend * j as i32;
+        }
+        for i in 1..=qn {
+            for j in 1..=tn {
+                let idx = i * stride + j;
+                let diag = (i - 1) * stride + (j - 1);
+                let up = (i - 1) * stride + j; // consumes query -> ins/'D'
+                let left = i * stride + (j - 1); // consumes target -> del/'I'
+                let sub_cost = if q[i - 1] == t[j - 1] { 0 } else { costs.mismatch };
+                m[idx] = m[diag].min(ins[diag]).min(del[diag]) + sub_cost;
+                // A gap may open from ANY state at its source cell — M, or a gap that
+                // just closed there — mirroring production's M array, which already
+                // folds in "closed from ins/del at this s" as a candidate (see
+                // `fill_wfa_affine_generic`'s `best = [mismatch-extend, ins close, del
+                // close]`). Using the raw `m[...]` alone here (excluding ins/del) was
+                // the original bug — it silently forbade opening a gap immediately
+                // after closing a different one, and starved row 0 / column 0 of the
+                // "closed" values needed for a legitimate leading gap.
+                let em_up = m[up].min(ins[up]).min(del[up]);
+                let em_left = m[left].min(ins[left]).min(del[left]);
+                let ins_open = em_up.saturating_add(costs.gap_open + costs.gap_extend);
+                let ins_ext = ins[up].saturating_add(costs.gap_extend);
+                ins[idx] = ins_open.min(ins_ext);
+                let del_open = em_left.saturating_add(costs.gap_open + costs.gap_extend);
+                let del_ext = del[left].saturating_add(costs.gap_extend);
+                del[idx] = del_open.min(del_ext);
+            }
+        }
+        (0..=tn)
+            .map(|j| {
+                let idx = qn * stride + j;
+                m[idx].min(ins[idx]).min(del[idx])
+            })
+            .min()
+            .unwrap_or(INF)
+    }
+
+    /// Affine cost of a CIGAR under `costs`, computed directly from its run-length ops —
+    /// independent of any WFA internals, used to check the production CIGAR is actually
+    /// optimal under the cost model that chose it (not just *a* valid alignment).
+    fn cigar_affine_cost(cigar: &str, costs: AffineCosts) -> i32 {
+        let mut cost = 0i32;
+        let mut num = String::new();
+        for ch in cigar.chars() {
+            if ch.is_ascii_digit() {
+                num.push(ch);
+            } else {
+                let n: i32 = num.parse().unwrap_or(0);
+                num.clear();
+                match ch {
+                    'X' => cost += n * costs.mismatch,
+                    'I' | 'D' => cost += costs.gap_open + n * costs.gap_extend,
+                    _ => {}
+                }
+            }
+        }
+        cost
+    }
+
+    /// Replays a CIGAR against `q`/`t` starting at (0,0) and asserts: every `M` op is a
+    /// true match, every `X` op is a true mismatch, total query consumption == q.len(),
+    /// and target consumption == the claimed `t_end`. Catches traceback bugs that
+    /// produce a CIGAR with the right *length* but wrong *content*.
+    fn assert_cigar_replays_correctly(cigar: &str, q: &[u8], t: &[u8], t_end: usize) {
+        let mut qi = 0usize;
+        let mut ti = 0usize;
+        let mut num = String::new();
+        for ch in cigar.chars() {
+            if ch.is_ascii_digit() {
+                num.push(ch);
+                continue;
+            }
+            let n: usize = num.parse().unwrap_or(0);
+            num.clear();
+            match ch {
+                'M' => {
+                    for _ in 0..n {
+                        assert_eq!(q[qi], t[ti], "'M' op at q[{qi}]/t[{ti}] must be an actual match");
+                        qi += 1;
+                        ti += 1;
+                    }
+                }
+                'X' => {
+                    for _ in 0..n {
+                        assert_ne!(q[qi], t[ti], "'X' op at q[{qi}]/t[{ti}] must be an actual mismatch");
+                        qi += 1;
+                        ti += 1;
+                    }
+                }
+                'D' => qi += n, // this codebase's convention: 'D' = query-extra
+                'I' => ti += n, // this codebase's convention: 'I' = target-extra
+                _ => panic!("unexpected CIGAR op {ch}"),
+            }
+        }
+        assert_eq!(qi, q.len(), "CIGAR must fully consume the query (fitting mode)");
+        assert_eq!(ti, t_end, "CIGAR target consumption must match the reported target_consumed");
+    }
+
+    fn lcg_bytes(len: usize, alphabet: &[u8], seed: u64) -> Vec<u8> {
+        let mut x = seed;
+        (0..len)
+            .map(|_| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                alphabet[((x >> 33) as usize) % alphabet.len()]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn perfect_match_zero_cost_all_m_cigar() {
+        let costs = AffineCosts::default();
+        let (cigar, edit_dist, t_end) = fill_wfa_affine_fitting_impl(b"ACGTACGT", b"ACGTACGT", costs, None).unwrap();
+        assert_eq!(cigar, "8M");
+        assert_eq!(edit_dist, 0);
+        assert_eq!(t_end, 8);
+    }
+
+    #[test]
+    fn single_mismatch_reported_as_one_edit() {
+        let costs = AffineCosts::default();
+        let q = b"ACGTACGT";
+        let t = b"ACGAACGT"; // T->A at index 3
+        let (cigar, edit_dist, t_end) = fill_wfa_affine_fitting_impl(q, t, costs, None).unwrap();
+        assert_eq!(edit_dist, 1, "single substitution must report edit_distance=1, cigar={cigar}");
+        assert_cigar_replays_correctly(&cigar, q, t, t_end);
+    }
+
+    #[test]
+    fn multi_base_deletion_consolidates_into_one_gap_op() {
+        // Query is target with a clean 5bp deletion in the middle — the exact scenario
+        // ADR-0014 exists for: affine must report ONE indel event (one CIGAR I/D run),
+        // not several mismatch-cost-equivalent substitutions.
+        let costs = AffineCosts::default();
+        let flank_a = b"ACGTACGTACGTACGT".to_vec();
+        let deleted = b"GGCCT".to_vec();
+        let flank_b = b"TTAACCGGTTAACCGG".to_vec();
+        let mut target = flank_a.clone();
+        target.extend_from_slice(&deleted);
+        target.extend_from_slice(&flank_b);
+        let mut query = flank_a.clone();
+        query.extend_from_slice(&flank_b);
+
+        let (cigar, edit_dist, t_end) = fill_wfa_affine_fitting_impl(&query, &target, costs, None).unwrap();
+        assert_cigar_replays_correctly(&cigar, &query, &target, t_end);
+        assert_eq!(edit_dist, 5, "5bp deletion must report edit_distance=5 (Levenshtein), cigar={cigar}");
+        let indel_ops = cigar.chars().filter(|c| *c == 'I' || *c == 'D').count();
+        assert_eq!(
+            indel_ops, 1,
+            "a clean 5bp deletion must consolidate into exactly one CIGAR indel op, got: {cigar}"
+        );
+    }
+
+    #[test]
+    fn multi_base_insertion_consolidates_into_one_gap_op() {
+        let costs = AffineCosts::default();
+        let flank_a = b"ACGTACGTACGTACGT".to_vec();
+        let inserted = b"GGCCT".to_vec();
+        let flank_b = b"TTAACCGGTTAACCGG".to_vec();
+        let mut query = flank_a.clone();
+        query.extend_from_slice(&inserted);
+        query.extend_from_slice(&flank_b);
+        let mut target = flank_a.clone();
+        target.extend_from_slice(&flank_b);
+
+        let (cigar, edit_dist, t_end) = fill_wfa_affine_fitting_impl(&query, &target, costs, None).unwrap();
+        assert_cigar_replays_correctly(&cigar, &query, &target, t_end);
+        assert_eq!(edit_dist, 5, "5bp insertion must report edit_distance=5 (Levenshtein), cigar={cigar}");
+        let indel_ops = cigar.chars().filter(|c| *c == 'I' || *c == 'D').count();
+        assert_eq!(
+            indel_ops, 1,
+            "a clean 5bp insertion must consolidate into exactly one CIGAR indel op, got: {cigar}"
+        );
+    }
+
+    /// The central differential property: the affine score of the CIGAR our
+    /// implementation produces must equal the independent Gotoh oracle's minimum affine
+    /// score — i.e. the wavefront search actually finds a cost-optimal alignment, not
+    /// merely *a* valid one.
+    #[test]
+    fn affine_score_matches_gotoh_oracle_across_random_cases() {
+        let costs = AffineCosts::default();
+        const AA: &[u8] = b"ACGT";
+        let mut checked = 0;
+        for seed in 0..60u64 {
+            let qlen = 20 + (seed % 15) as usize;
+            let q = lcg_bytes(qlen, AA, seed * 31 + 7);
+            // Build target as a mutated copy: substitutions + occasional short indels,
+            // then pad so fitting's target-end-free semantics get exercised too.
+            let mut t = Vec::new();
+            let mut x = seed.wrapping_add(99);
+            let mut qi = 0;
+            while qi < q.len() {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let roll = (x >> 40) % 100;
+                if roll < 8 {
+                    // short insertion (extra target bases not in query)
+                    let len = 1 + (x >> 20) % 3;
+                    for _ in 0..len {
+                        x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        t.push(AA[(x as usize >> 4) % 4]);
+                    }
+                } else if roll < 16 && qi + 1 < q.len() {
+                    // short deletion (skip query bases)
+                    qi += 1;
+                } else if roll < 30 {
+                    // substitution
+                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let alt = AA[(x as usize >> 4) % 4];
+                    t.push(alt);
+                    qi += 1;
+                } else {
+                    t.push(q[qi]);
+                    qi += 1;
+                }
+            }
+            // Pad well past the `tn > qn + qn/2 + 10` fitting threshold (qlen 20..35 here)
+            // so this case always exercises genuine fitting mode, not the global fallback
+            // — a free tail this generator relies on only applies once fitting is active.
+            t.extend_from_slice(&lcg_bytes(q.len() + 20, AA, seed * 13 + 500));
+
+            let (cigar, _edit_dist, t_end) = match fill_wfa_affine_fitting_impl(&q, &t, costs, None) {
+                Some(r) => r,
+                None => continue,
+            };
+            assert_cigar_replays_correctly(&cigar, &q, &t, t_end);
+
+            let produced_cost = cigar_affine_cost(&cigar, costs);
+            let oracle_cost = gotoh_affine_fitting_score(&q, &t, costs);
+            assert_eq!(
+                produced_cost, oracle_cost,
+                "seed={seed}: WFA-affine cost {produced_cost} != Gotoh oracle optimum {oracle_cost} (q={:?}, t={:?}, cigar={cigar})",
+                String::from_utf8_lossy(&q), String::from_utf8_lossy(&t)
+            );
+            checked += 1;
+        }
+        assert!(checked > 40, "expected most of the 60 random cases to produce an alignment, got {checked}");
+    }
+
+    #[test]
+    fn edit_distance_is_never_derived_from_affine_score() {
+        // A case where affine score and Levenshtein edit distance are *provably*
+        // different numbers under the default costs, pinning down that `edit_distance`
+        // really is the traditional count, not the affine search score.
+        let costs = AffineCosts::default(); // mismatch=2, gap_open=4, gap_extend=1
+        let flank_a = b"ACGTACGTACGTACGT".to_vec();
+        let deleted = b"GGCCTAA".to_vec(); // 7bp deletion
+        let flank_b = b"TTAACCGGTTAACCGG".to_vec();
+        let mut target = flank_a.clone();
+        target.extend_from_slice(&deleted);
+        target.extend_from_slice(&flank_b);
+        let query = [flank_a, flank_b].concat();
+
+        let (cigar, edit_dist, t_end) = fill_wfa_affine_fitting_impl(&query, &target, costs, None).unwrap();
+        assert_cigar_replays_correctly(&cigar, &query, &target, t_end);
+        // Levenshtein: exactly 7 (one 7bp deletion). Affine score: gap_open + 7*gap_extend = 4+7=11.
+        assert_eq!(edit_dist, 7, "edit_distance must be the Levenshtein count, not the affine score");
+        assert_eq!(levenshtein_from_cigar(&cigar), 7);
+    }
+
+    /// Same differential property as `affine_score_matches_gotoh_oracle_across_random_cases`,
+    /// but for the **global** fallback path (`tn` not substantially longer than `qn`,
+    /// the `tn <= qn + qn/2 + 10` branch `fill_wfa_affine_fitting_impl` delegates to
+    /// `fill_wfa_affine_generic(..., fitting=false, ...)` for). A real code path
+    /// (triggered whenever the reference window isn't much longer than the read) that
+    /// needs its own coverage — full target consumption required, no free tail.
+    #[test]
+    fn affine_score_matches_gotoh_oracle_in_global_mode() {
+        let costs = AffineCosts::default();
+        const AA: &[u8] = b"ACGT";
+        let mut checked = 0;
+        for seed in 0..40u64 {
+            let qlen = 15 + (seed % 10) as usize;
+            let q = lcg_bytes(qlen, AA, seed * 41 + 3);
+            // Near-equal-length target (small indels only, no long free-tail padding)
+            // so tn stays well under the qn + qn/2 + 10 fitting threshold.
+            let mut t = Vec::new();
+            let mut x = seed.wrapping_add(7);
+            let mut qi = 0;
+            while qi < q.len() {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let roll = (x >> 40) % 100;
+                if roll < 6 && t.len() + 2 < q.len() + 5 {
+                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    t.push(AA[(x as usize >> 4) % 4]);
+                } else if roll < 12 && qi + 1 < q.len() {
+                    qi += 1;
+                } else if roll < 25 {
+                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    t.push(AA[(x as usize >> 4) % 4]);
+                    qi += 1;
+                } else {
+                    t.push(q[qi]);
+                    qi += 1;
+                }
+            }
+            assert!(
+                (t.len() as i32) <= q.len() as i32 + q.len() as i32 / 2 + 10,
+                "test construction must stay in the global-fallback regime"
+            );
+
+            let (cigar, _edit_dist, t_end) = match fill_wfa_affine_fitting_impl(&q, &t, costs, None) {
+                Some(r) => r,
+                None => continue,
+            };
+            assert_eq!(t_end, t.len(), "global mode must consume the entire target");
+            assert_cigar_replays_correctly(&cigar, &q, &t, t_end);
+
+            let produced_cost = cigar_affine_cost(&cigar, costs);
+            // Global oracle: same Gotoh fill, but the endpoint is fixed at (qn, tn) —
+            // no free-tail relaxation over j.
+            let oracle_cost = gotoh_affine_global_score(&q, &t, costs);
+            assert_eq!(
+                produced_cost, oracle_cost,
+                "seed={seed}: WFA-affine cost {produced_cost} != Gotoh oracle optimum {oracle_cost} (q={:?}, t={:?}, cigar={cigar})",
+                String::from_utf8_lossy(&q), String::from_utf8_lossy(&t)
+            );
+            checked += 1;
+        }
+        assert!(checked > 25, "expected most of the 40 random cases to produce an alignment, got {checked}");
+    }
+
+    /// Global-mode Gotoh oracle: identical DP fill to `gotoh_affine_fitting_score`, but
+    /// the endpoint is fixed at `(qn, tn)` — both sequences fully consumed, no free tail.
+    fn gotoh_affine_global_score(q: &[u8], t: &[u8], costs: AffineCosts) -> i32 {
+        let qn = q.len();
+        let tn = t.len();
+        const INF: i32 = i32::MAX / 2;
+        let stride = tn + 1;
+        let mut m = vec![INF; (qn + 1) * stride];
+        let mut ins = vec![INF; (qn + 1) * stride];
+        let mut del = vec![INF; (qn + 1) * stride];
+        m[0] = 0;
+        for i in 1..=qn {
+            ins[i * stride] = costs.gap_open + costs.gap_extend * i as i32;
+        }
+        for j in 1..=tn {
+            del[j] = costs.gap_open + costs.gap_extend * j as i32;
+        }
+        for i in 1..=qn {
+            for j in 1..=tn {
+                let idx = i * stride + j;
+                let diag = (i - 1) * stride + (j - 1);
+                let up = (i - 1) * stride + j;
+                let left = i * stride + (j - 1);
+                let sub_cost = if q[i - 1] == t[j - 1] { 0 } else { costs.mismatch };
+                m[idx] = m[diag].min(ins[diag]).min(del[diag]) + sub_cost;
+                let em_up = m[up].min(ins[up]).min(del[up]);
+                let em_left = m[left].min(ins[left]).min(del[left]);
+                let ins_open = em_up.saturating_add(costs.gap_open + costs.gap_extend);
+                let ins_ext = ins[up].saturating_add(costs.gap_extend);
+                ins[idx] = ins_open.min(ins_ext);
+                let del_open = em_left.saturating_add(costs.gap_open + costs.gap_extend);
+                let del_ext = del[left].saturating_add(costs.gap_extend);
+                del[idx] = del_open.min(del_ext);
+            }
+        }
+        let idx = qn * stride + tn;
+        m[idx].min(ins[idx]).min(del[idx])
     }
 }
 

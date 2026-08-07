@@ -31,3 +31,5 @@ the old one (and update the old one's Status). Do not edit history.
 | [0010](0010-filter-preset-rename-strict-tolerant.md) | Filter presets renamed `conservative`/`sensitive` → `strict`/`tolerant` | Proposed |
 | [0011](0011-content-addressed-reference-palette.md) | Content-addressed reference palette and cross-space superposition | Accepted |
 | [0012](0012-chaining-supersedes-branch-and-bound.md) | Seed chaining supersedes ADR-0007's branch-and-bound | Accepted |
+| [0013](0013-protein-space-alphabet-support.md) | Protein-space alphabet support | Accepted |
+| [0014](0014-gap-affine-scoring-in-sensitive.md) | Gap-affine scoring, defaulted in `sensitive` | Accepted |

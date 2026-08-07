@@ -126,6 +126,46 @@ pub fn myers_extend(query: &[u8], target: &[u8], seed: SeedAnchor) -> WfaResult 
     })
 }
 
+/// Gap-affine WFA extension (ADR-0014) — the `Strategy::Sensitive` default. Separate
+/// M/I/D wavefronts and `wfa_simd::AffineCosts` (`gap_open + L * gap_extend` per
+/// L-base gap) replace linear per-base indel cost, so the search actively prefers
+/// consolidating a real multi-base indel into one gap over the linear model's
+/// indifference to scattering it as cost-equivalent mismatches. Same fitting semantics
+/// as [`wfa_extend`] (query fully consumed, target end free). `edit_distance` is
+/// reported on the traditional (non-affine) mismatches+indel-bases definition — the
+/// affine cost only steers *which* alignment the search picks, never the reported
+/// metric, keeping `score_alignments`'s 0.95 threshold and every downstream consumer
+/// unchanged regardless of gap model.
+pub fn wfa_extend_affine(
+    query: &[u8],
+    target: &[u8],
+    seed: SeedAnchor,
+    costs: wfa_simd::AffineCosts,
+) -> WfaResult {
+    if seed.query_pos > query.len() || seed.target_pos > target.len() {
+        return Err(WfaError::InvalidInput(
+            "Seed position beyond sequence length".to_string(),
+        ));
+    }
+
+    let query_suffix = &query[seed.query_pos..];
+    let target_suffix = &target[seed.target_pos..];
+
+    match wfa_simd::fill_wfa_affine_fitting_impl(query_suffix, target_suffix, costs, None) {
+        Some((cigar, edit_distance, target_consumed)) => Ok(Alignment {
+            cigar,
+            edit_distance,
+            query_start: seed.query_pos,
+            query_end: seed.query_pos + query_suffix.len(),
+            target_start: seed.target_pos,
+            target_end: seed.target_pos + target_consumed,
+        }),
+        None => Err(WfaError::AlignmentFailed(
+            "affine alignment abandoned: max edit distance exceeded".to_string(),
+        )),
+    }
+}
+
 /// Score alignments by normalized edit distance and filter alternatives.
 pub fn score_alignments(alignments: &[Alignment], query_len: usize) -> ScoredAlignments {
     if alignments.is_empty() {

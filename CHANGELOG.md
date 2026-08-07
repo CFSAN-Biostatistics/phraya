@@ -7,6 +7,10 @@ Phraya uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Protein-space alignment** (ADR-0013): `phraya plan --alphabet {auto|dna|protein}` — auto-detects amino-acid input from content (presence of E/F/I/L/P/Q, letters with no IUPAC nucleotide meaning) and switches minimizer seeding to non-canonical (protein has no reverse strand, so no canonicalization and no reverse-complement search) at protein-scale k=6/w=5 defaults. WFA/Myers extension is unchanged — both were already alphabet-blind byte comparators. DNA behavior and performance are unaffected (same code path; protein does strictly less work per query, since it skips the dual-strand search DNA always performs).
+- **Gap-affine scoring, defaulted in `sensitive`** (ADR-0014): a gap-affine WFA extension (separate M/I/D wavefronts, `gap_open + L*gap_extend` per L-base gap) that consolidates a real multi-base indel into one CIGAR gap op instead of leaving the search indifferent between one gap and several mismatch-cost-tied substitutions. `--strategy sensitive` uses it by default; `--gap-model {linear|affine}` overrides (sensitive-only — `balanced`/`fast` are Myers-primary with no affine mode and reject the flag). Reported `edit_distance` stays on the traditional mismatches+indel-bases definition regardless of gap model, so `score_alignments`'s 0.95 threshold and all downstream consumers are unaffected. Measured on a synthetic indel-enriched dataset: Indel Event Concordance improved from 0.34 (linear) to 0.54 (affine) under `sensitive`.
+
 ### Changed
 - **Breaking**: Filter presets renamed: `conservative` → `strict`, `sensitive` → `tolerant` (ADR-0010). Threshold values unchanged; this is a pure rename to avoid overloading "sensitive" with the alignment strategy layer.
 

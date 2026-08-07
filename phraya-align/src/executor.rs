@@ -3,8 +3,8 @@ use crate::seeding::{
 };
 use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{
-    reverse_complement, sketch_sequence_default, MinimizerSketch, Sequence, Strand,
-    VariantObservation,
+    reverse_complement, sketch_sequence_default, sketch_sequence_default_for, Alphabet,
+    MinimizerSketch, Sequence, Strand, VariantObservation,
 };
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::{read_content_hash, PhrayaPlan};
@@ -82,6 +82,30 @@ impl Default for Strategy {
     }
 }
 
+/// Gap cost model for WFA extension (ADR-0014). Only meaningful for
+/// `Strategy::Sensitive` — `Balanced`/`Fast` are Myers-primary and stay `Linear`
+/// unconditionally regardless of this setting, since Myers has no affine mode (and
+/// their WFA fallback for long queries exists only to mirror Myers cheaply, not to
+/// introduce a different cost model at that tier).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapModel {
+    /// Uniform per-base cost (the historical default): a mismatch and each indel base
+    /// cost 1 unit, so a k-base indel costs the same as k independent substitutions.
+    Linear,
+    /// `gap_open + L * gap_extend` per L-base gap (`wfa_simd::AffineCosts::default()`):
+    /// consolidates a real multi-base indel into one gap rather than leaving the search
+    /// indifferent between one gap and several mismatch-cost-tied substitutions.
+    Affine,
+}
+
+impl Default for GapModel {
+    /// `Sensitive`'s default (ADR-0014) — the more biologically faithful model, for the
+    /// tier whose users already opted into the slower, most-complete alignment path.
+    fn default() -> Self {
+        GapModel::Affine
+    }
+}
+
 /// Configuration for alignment execution, controlling coverage window size.
 #[derive(Debug, Clone, Copy)]
 pub struct AlignConfig {
@@ -89,6 +113,8 @@ pub struct AlignConfig {
     pub strategy: Strategy,
     /// Coverage window radius in base pairs
     pub coverage_window_radius: usize,
+    /// Gap cost model (ADR-0014) — consulted only when `strategy == Sensitive`.
+    pub gap_model: GapModel,
 }
 
 impl AlignConfig {
@@ -103,6 +129,7 @@ impl AlignConfig {
         AlignConfig {
             strategy,
             coverage_window_radius,
+            gap_model: GapModel::default(),
         }
     }
 
@@ -126,6 +153,14 @@ impl AlignConfig {
     /// of the per-variant local-coverage annotation.
     pub fn with_coverage_window_radius(mut self, radius: usize) -> Self {
         self.coverage_window_radius = radius;
+        self
+    }
+
+    /// Override the gap cost model independently of the strategy preset (ADR-0014).
+    /// Meaningful only when `strategy == Sensitive` — `Balanced`/`Fast` ignore this and
+    /// stay `Linear` unconditionally (Myers has no affine mode).
+    pub fn with_gap_model(mut self, gap_model: GapModel) -> Self {
+        self.gap_model = gap_model;
         self
     }
 }
@@ -326,23 +361,38 @@ fn anchors_from_chains(chains: &[crate::chaining::Chain], k: usize) -> Vec<SeedA
         .collect()
 }
 
-/// Extend a single anchor with the engine selected by `strategy`.
+/// Extend a single anchor with the engine selected by `strategy` (and, for `Sensitive`,
+/// `gap_model` — ADR-0014).
 ///
-/// - `Sensitive`: canonical seeded WFA on every anchor — the reference path.
-/// - `Balanced` / `Fast`: Myers fitting for short reads (identical results to WFA, but
-///   faster), falling back to WFA for reads longer than [`MYERS_MAX_QUERY_LEN`].
+/// - `Sensitive`: canonical seeded WFA on every anchor — the reference path. Gap-affine
+///   by default (`GapModel::Affine`); `GapModel::Linear` opts back into the old
+///   uniform-cost path.
+/// - `Balanced` / `Fast`: Myers fitting for short reads (identical results to linear
+///   WFA, but faster), falling back to **linear** WFA for reads longer than
+///   [`MYERS_MAX_QUERY_LEN`] — `gap_model` is never consulted here; Myers has no affine
+///   mode, and this fallback exists only to mirror Myers cheaply at length, not to
+///   introduce a different cost model at this tier.
 ///
 /// Fast and Balanced differ from Sensitive in *which* anchors they extend (K=1 and K=2
 /// vs K=50) and Fast adds a post-hoc divergence cutoff, handled by the caller
 /// — not the extension engine.
 fn extend_anchor(
     strategy: Strategy,
+    gap_model: GapModel,
     query: &[u8],
     target_window: &[u8],
     anchor: SeedAnchor,
 ) -> crate::WfaResult {
     match strategy {
-        Strategy::Sensitive => wfa_extend(query, target_window, anchor),
+        Strategy::Sensitive => match gap_model {
+            GapModel::Affine => crate::wfa_extend_affine(
+                query,
+                target_window,
+                anchor,
+                crate::wfa_simd::AffineCosts::default(),
+            ),
+            GapModel::Linear => wfa_extend(query, target_window, anchor),
+        },
         Strategy::Balanced | Strategy::Fast => {
             if query.len() <= MYERS_MAX_QUERY_LEN {
                 myers_extend(query, target_window, anchor)
@@ -381,7 +431,7 @@ impl<'a> TargetContext<'a> {
     pub fn build(target: &'a Sequence, plan: &PhrayaPlan, strategy: Strategy) -> Self {
         // Get the effective sketch for this strategy (filters dense to w=11 if needed)
         let sketch = get_effective_sketch(target.id(), plan, strategy)
-            .unwrap_or_else(|| sketch_sequence_default(target));
+            .unwrap_or_else(|| sketch_sequence_default_for(target, plan.alphabet));
         let minimizer_index = build_minimizer_index(&sketch);
         // Repeat-masking cap from the index's own occurrence distribution. Floor 256 keeps
         // it a no-op on clean/moderately-repetitive genomes (nothing occurs that often), so
@@ -477,6 +527,7 @@ fn seed_and_chain(
 /// found implausible.
 fn extend_chains(
     strategy: Strategy,
+    gap_model: GapModel,
     ctx: &TargetContext<'_>,
     query_bytes: &[u8],
     chains: &[crate::chaining::Chain],
@@ -502,7 +553,7 @@ fn extend_chains(
         let margin = query_len * 2;
         let window_end = (anchor.target_pos + margin).min(target.bases().len());
         let target_window = &target.bases()[..window_end];
-        match extend_anchor(strategy, query_bytes, target_window, anchor) {
+        match extend_anchor(strategy, gap_model, query_bytes, target_window, anchor) {
             Ok(aln) => alignments.push(aln),
             Err(e) => log::warn!("alignment failed for anchor {:?}: {:?}", anchor, e),
         }
@@ -567,20 +618,31 @@ pub fn align_read(
             (stored.clone(), true)
         } else {
             let fallback = get_effective_sketch(query.id(), plan, config.strategy)
-                .unwrap_or_else(|| sketch_sequence_default(query));
+                .unwrap_or_else(|| sketch_sequence_default_for(query, plan.alphabet));
             (fallback, false)
         }
     };
     let (fwd_seeds, fwd_chains) = seed_and_chain(ctx, &fwd_sketch);
 
-    // Compute reverse complement bytes for potential use below.
-    let rc_bases = reverse_complement(query.bases());
+    // Protein has no reverse strand (ADR-0013) — the dual-strand search below is a DNA
+    // concept only. `rc_bases` stays empty and unread for Protein (rev_seeds/rev_chains
+    // are forced empty, so no match arm below ever indexes into it); `reverse_complement`
+    // itself must not run on protein bytes — its A↔T/C↔G table would silently corrupt
+    // any amino-acid byte that happens to collide with a DNA letter (e.g. Ala 'A' → 'T').
+    let is_dna = plan.alphabet == Alphabet::Dna;
+    let rc_bases = if is_dna {
+        reverse_complement(query.bases())
+    } else {
+        Vec::new()
+    };
 
     // If the forward sketch itself is empty and that caused zero seeds, skip the
     // expensive reverse orientation entirely.
     // Canonical minimizers are strand-invariant, so if the forward has no match due to an empty
     // sketch, the reverse is very unlikely to match either.
-    let (rev_seeds, rev_chains) = if fwd_seeds == 0 && fwd_sketch.minimizers.is_empty() {
+    let (rev_seeds, rev_chains) = if !is_dna {
+        (0, vec![])
+    } else if fwd_seeds == 0 && fwd_sketch.minimizers.is_empty() {
         (0, vec![])
     } else {
         let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
@@ -620,18 +682,18 @@ pub fn align_read(
     // noise in either orientation, see issue #146), extend both, exactly as before.
     let (fwd, rev) = if !fwd_chains.is_empty() && rev_chains.is_empty() {
         (
-            extend_chains(config.strategy, ctx, query.bases(), &fwd_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains),
             None,
         )
     } else if fwd_chains.is_empty() && !rev_chains.is_empty() {
         (
             None,
-            extend_chains(config.strategy, ctx, &rc_bases, &rev_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, &rc_bases, &rev_chains),
         )
     } else {
         (
-            extend_chains(config.strategy, ctx, query.bases(), &fwd_chains),
-            extend_chains(config.strategy, ctx, &rc_bases, &rev_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, &rc_bases, &rev_chains),
         )
     };
 
@@ -1880,5 +1942,87 @@ mod tests {
             "result must be from a real alignment (extracted variants or coverage), \
              not from a spurious abandoned fallback"
         );
+    }
+
+    /// Deterministic diverse amino-acid sequence (LCG), mirroring `diverse_dna` but over
+    /// the 20 canonical residues — for protein-alphabet tests below.
+    fn diverse_protein(len: usize, seed: u64) -> Vec<u8> {
+        const AA: &[u8; 20] = b"ACDEFGHIKLMNPQRSTVWY";
+        let mut x = seed;
+        (0..len)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                AA[((x >> 33) % 20) as usize]
+            })
+            .collect()
+    }
+
+    /// ADR-0013: protein alignment must never attempt reverse-strand search — protein has
+    /// no biological reverse strand, and `reverse_complement` would silently corrupt any
+    /// residue byte that happens to collide with a DNA letter (e.g. Ala 'A' -> 'T') if it
+    /// ran on protein bytes at all. Every variant `align_read` reports for a protein query
+    /// must therefore be `Strand::Forward`, even though nothing in the query content itself
+    /// rules out a spurious reverse-orientation "match" the way it would for DNA.
+    #[test]
+    fn protein_alignment_never_attempts_reverse_strand() {
+        let target_bytes = diverse_protein(300, 11);
+        let mut region = target_bytes[100..200].to_vec();
+        // One substitution so extract_variants_from_cigar reports at least one variant.
+        let orig = region[50];
+        region[50] = if orig == b'A' { b'C' } else { b'A' };
+
+        let target = Sequence::new(target_bytes, None, "target".to_string(), None);
+        let query = Sequence::new(region, None, "query".to_string(), None);
+
+        let mut plan = make_plan();
+        plan.alphabet = Alphabet::Protein;
+        let ctx = TargetContext::build(&target, &plan, Strategy::Sensitive);
+        let cfg = AlignConfig::sensitive();
+
+        let result = align_read(&ctx, &query, &plan, &cfg, None)
+            .expect("protein query with one substitution against its source region must align");
+        assert!(!result.variants.is_empty(), "expected at least one reported substitution");
+        for variant in &result.variants {
+            assert_eq!(
+                variant.strand(),
+                Strand::Forward,
+                "protein alignment must never report Strand::Reverse — no reverse-strand search exists for protein (ADR-0013)"
+            );
+        }
+    }
+
+    /// ADR-0013: WFA and Myers are already alphabet-blind byte comparators (confirmed by
+    /// reading the kernels — Myers' Peq table is `[[0u64; 256]; num_blocks]`, not a 4-symbol
+    /// table; WFA's match-extension is a raw byte compare). This differential-tests that
+    /// claim directly on protein-alphabet bytes: both engines must agree on edit distance
+    /// across a spread of divergence levels, exactly as they already do for DNA.
+    #[test]
+    fn protein_wfa_myers_edit_distance_agree() {
+        for seed in 0..20u64 {
+            let query = diverse_protein(120, seed * 97 + 1);
+            let mut target = query.clone();
+            // Sprinkle substitutions at a seed-dependent rate (0%..~15%).
+            let rate = seed % 5; // 0,1,2,3,4 -> 0%,3.75%,7.5%,11.25%,15%
+            const AA: &[u8; 20] = b"ACDEFGHIKLMNPQRSTVWY";
+            let mut x = seed.wrapping_add(12345);
+            for b in target.iter_mut() {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                if (x >> 40) % 100 < rate as u64 * 15 {
+                    x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    *b = AA[((x >> 33) % 20) as usize];
+                }
+            }
+            let seed_anchor = SeedAnchor { query_pos: 0, target_pos: 0 };
+            let wfa = wfa_extend(&query, &target, seed_anchor.clone())
+                .unwrap_or_else(|e| panic!("wfa_extend failed for seed {seed}: {e:?}"));
+            let myers = myers_extend(&query, &target, seed_anchor)
+                .unwrap_or_else(|e| panic!("myers_extend failed for seed {seed}: {e:?}"));
+            assert_eq!(
+                wfa.edit_distance, myers.edit_distance,
+                "WFA/Myers edit distance disagreement on protein bytes (seed={seed}, rate={rate})"
+            );
+        }
     }
 }
