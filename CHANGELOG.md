@@ -14,6 +14,9 @@ Phraya uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - **Breaking**: Filter presets renamed: `conservative` → `strict`, `sensitive` → `tolerant` (ADR-0010). Threshold values unchanged; this is a pure rename to avoid overloading "sensitive" with the alignment strategy layer.
 
+### Fixed
+- **`--reference` no longer truncates a multi-record FASTA to its first sequence** (#233). `phraya plan`, `phraya align --reference` (ADR-0011 palette mode), and `phraya plan`'s Case-2/4 task generation now treat every record in a `--reference` file as its own content-hashed reference space, aligning against all of them (N×M for N reads/contigs × M reference records) instead of silently dropping every contig after the first. A multi-contig or multi-chromosome reference (draft assemblies, genomes with plasmids) is the normal case, not the edge case. Batch mode (`--worker`/`--ensure`), whose per-worker output is single-target, now hard-errors on a multi-record reference/centroid file instead of silently aligning against only the first record — use `--reference` mode for multi-contig references.
+
 ## [v0.1.0] - 2026-06-06
 
 ### Added

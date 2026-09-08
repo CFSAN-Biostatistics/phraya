@@ -511,14 +511,25 @@ fn run_align_worker_with_plan(
         worker_id, start_idx, end_idx
     );
 
-    // Read target sequence (reference or centroid)
-    // For now, assume target is first sequence in first file
-    let mut target_seq: Option<Sequence> = None;
-    let mut parser = SequenceParser::from_path(&plan.input_files[0])?;
-    if let Some(result) = parser.next() {
-        target_seq = Some(result?);
+    // Read target sequence (reference or centroid). Batch mode's per-worker output is a
+    // single-target `.phraya` (one reference_length, one coverage track) — it has no way
+    // to represent N reference spaces. A single-record reference/centroid file is exactly
+    // what batch mode supports; a multi-record reference must use `phraya align --reference`
+    // (ADR-0011 palette mode), which aligns against every record as its own space.
+    let mut ref_parser = SequenceParser::from_path(&plan.input_files[0])?;
+    let target = ref_parser
+        .next()
+        .ok_or("No target sequence found")??;
+    if ref_parser.next().is_some() {
+        return Err(format!(
+            "batch mode does not support a multi-record reference/centroid file ({}); \
+             it would silently align against only the first record. Use \
+             `phraya align --reference <file>...` (repeatable) instead, which aligns \
+             every record as its own reference space.",
+            plan.input_files[0]
+        )
+        .into());
     }
-    let target = target_seq.ok_or("No target sequence found")?;
 
     // Build the shared target context once, then align every read in the chunk against
     // it. This hoists the per-target minimizer index and tandem-repeat detection out of
@@ -704,20 +715,24 @@ fn run_align_reference(
     let mut refs: Vec<PresentedRef> = Vec::new();
     for ref_path in reference_paths {
         let (sequences, _) = parse_sequences_from_file(ref_path)?;
-        let seq = sequences
-            .into_iter()
-            .next()
-            .ok_or_else(|| format!("reference file has no sequences: {}", ref_path.display()))?;
-        let hash = content_hash_for_sequence(&seq);
-        // Prefer the palette's name for the label (hit); fall back to the hash prefix (miss).
-        let name = plan.get_reference_space(&hash).and_then(|s| s.name.clone());
-        let label = reference_space_label(&name, &hash);
-        refs.push(PresentedRef {
-            seq,
-            hash,
-            label,
-            path: ref_path.display().to_string(),
-        });
+        if sequences.is_empty() {
+            return Err(format!("reference file has no sequences: {}", ref_path.display()).into());
+        }
+        // Every record in the file is its own reference space (AGENTS.md: reference
+        // spaces are content-hashed and mechanical — a multi-contig/multi-chromosome
+        // reference is N spaces, not one).
+        for seq in sequences {
+            let hash = content_hash_for_sequence(&seq);
+            // Prefer the palette's name for the label (hit); fall back to the hash prefix (miss).
+            let name = plan.get_reference_space(&hash).and_then(|s| s.name.clone());
+            let label = reference_space_label(&name, &hash);
+            refs.push(PresentedRef {
+                seq,
+                hash,
+                label,
+                path: ref_path.display().to_string(),
+            });
+        }
     }
 
     // Read pool: every sequence in the plan's inputs that is not a reference — neither one
@@ -1092,7 +1107,7 @@ fn run_plan(
     let mut all_sequences: Vec<(Sequence, String)> = Vec::new();
     let mut sequence_to_file_index: Vec<usize> = Vec::new(); // Track which input file each sequence came from
     let mut input_file_list = Vec::new();
-    let mut ref_seq_index: Option<usize> = None;
+    let mut num_ref_seqs: usize = 0;
     let mut all_mate_info: HashMap<String, phraya_core::types::MateInfo> = HashMap::new();
 
     // First, read all references if provided
@@ -1100,7 +1115,7 @@ fn run_plan(
     for ref_path in reference_paths {
         let (sequences, _mate_info) = parse_sequences_from_file(ref_path)?;
 
-        if let Some(seq) = sequences.into_iter().next() {
+        for seq in sequences {
             // Resolve alphabet from the first reference sequence's content if not
             // already overridden/detected — see detect_alphabet's doc for the
             // detection rule and its known short-peptide-in-ACGT-letters ambiguity.
@@ -1124,7 +1139,10 @@ fn run_plan(
         }
     }
 
-    // For now, use the first reference (if any) for task generation (backward compatible)
+    // For now, use the first reference file (if any) for task generation (backward
+    // compatible). Every record within that file becomes its own target — a multi-contig
+    // reference (draft assembly, chromosome + plasmids) is N reference spaces, not one
+    // (AGENTS.md: reference spaces are content-hashed and mechanical, one per space).
     let first_reference_path = reference_paths.first().map(|p| p.as_path());
 
     if let Some(ref_path) = first_reference_path {
@@ -1132,10 +1150,10 @@ fn run_plan(
         input_file_list.push(ref_path_str.clone());
 
         let (sequences, mate_info) = parse_sequences_from_file(ref_path)?;
-        if let Some(seq) = sequences.into_iter().next() {
-            ref_seq_index = Some(all_sequences.len());
+        for seq in sequences {
             all_sequences.push((seq, ref_path_str.clone()));
             sequence_to_file_index.push(0); // File index 0 for reference
+            num_ref_seqs += 1;
         }
         all_mate_info.extend(mate_info);
     }
@@ -1148,8 +1166,7 @@ fn run_plan(
         let (sequences, mate_info) = parse_sequences_from_file(input_path)?;
         for seq in sequences {
             all_sequences.push((seq, input_path_str.clone()));
-            // File indices: 1+ for input files (offset by 1 if there's a reference)
-            let file_index = if ref_seq_index.is_some() {
+            let file_index = if num_ref_seqs > 0 {
                 file_idx + 1
             } else {
                 file_idx
@@ -1177,7 +1194,7 @@ fn run_plan(
 
     // Detect use case
     let use_case = detect_use_case(
-        first_reference_path.is_some(),
+        num_ref_seqs,
         input_paths.len(),
         &sketches,
         &all_sequences,
@@ -1199,10 +1216,9 @@ fn run_plan(
     let task_list = generate_task_list(
         &use_case,
         input_paths.len(),
-        first_reference_path.is_some(),
+        num_ref_seqs,
         &sketches,
         &sequence_to_file_index,
-        ref_seq_index,
     );
 
     // Build HashMap kmer_index keyed by sequence ID for reuse during alignment
@@ -1248,7 +1264,7 @@ fn run_plan(
     // Skip the reference if present; read_sketches are for reads only.
     // Also record insertion order for v7 chunk partitioning.
     for (idx, ((seq, _), sketch)) in all_sequences.iter().zip(sketches.iter()).enumerate() {
-        if Some(idx) != ref_seq_index {
+        if idx >= num_ref_seqs {
             let content_hash = read_content_hash(seq.bases());
             plan.read_sketches.insert(content_hash, sketch.clone());
             plan.read_hash_order.push(content_hash);
@@ -1453,19 +1469,20 @@ fn plan_tasks(plan_file: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Detect the use case from input characteristics
 fn detect_use_case(
-    has_reference: bool,
+    num_ref_seqs: usize,
     num_input_files: usize,
     _sketches: &[MinimizerSketch],
     all_sequences: &[(Sequence, String)],
 ) -> UseCase {
-    // Count sequences from input files only (exclude reference if provided)
-    let num_input_sequences = all_sequences.len() - if has_reference { 1 } else { 0 };
+    // Count sequences from input files only (exclude reference records, however many).
+    let num_input_sequences = all_sequences.len() - num_ref_seqs;
 
-    if has_reference {
-        // Reference is stored first; check whether the remaining inputs are contigs (≥5kb).
+    if num_ref_seqs > 0 {
+        // Reference record(s) are stored first; check whether the remaining inputs are
+        // contigs (≥5kb).
         let inputs_are_contigs = all_sequences
             .iter()
-            .skip(1) // skip reference
+            .skip(num_ref_seqs)
             .all(|(seq, _)| seq.len() >= 5000);
 
         if inputs_are_contigs && num_input_sequences > 0 {
@@ -1493,23 +1510,29 @@ fn detect_use_case(
     }
 }
 
-/// Generate task list based on use case and input characteristics
+/// Generate task list based on use case and input characteristics.
+///
+/// A reference file with N records is N reference spaces (AGENTS.md: reference spaces
+/// are content-hashed and mechanical, never collapsed to "whatever sat at index 0").
+/// Case 2 / Case 4-with-reference therefore generate the full read/contig × reference-space
+/// cross product, matching the align-time superposition semantics (ADR-0011): every query is
+/// tasked against every reference record, not just the first.
 fn generate_task_list(
     use_case: &UseCase,
     _num_input_files: usize,
-    has_reference: bool,
+    num_ref_seqs: usize,
     sketches: &[MinimizerSketch],
     sequence_to_file_index: &[usize],
-    ref_seq_index: Option<usize>,
 ) -> Vec<(u32, u32)> {
     match use_case {
         UseCase::ReadsWithRef => {
-            // Case 2: N reads + 1 reference
-            // Tasks: (query_id, target_id) where target is always 0 (reference)
+            // Case 2: N reads + M reference records (M ≥ 1). Tasks: every read against
+            // every reference record (reference indices are always 0..num_ref_seqs).
             let mut tasks = Vec::new();
-            let num_reads = sketches.len() - 1; // All sequences except reference
-            for read_id in 1..=num_reads {
-                tasks.push((read_id as u32, 0));
+            for read_id in num_ref_seqs..sketches.len() {
+                for ref_id in 0..num_ref_seqs {
+                    tasks.push((read_id as u32, ref_id as u32));
+                }
             }
             tasks
         }
@@ -1519,7 +1542,7 @@ fn generate_task_list(
             let mut tasks = Vec::new();
 
             // Determine contig indices (all sequences from the first input file)
-            let first_input_file_index = if ref_seq_index.is_some() { 1 } else { 0 };
+            let first_input_file_index = if num_ref_seqs > 0 { 1 } else { 0 };
             let contig_indices: Vec<usize> = sequence_to_file_index
                 .iter()
                 .enumerate()
@@ -1552,10 +1575,13 @@ fn generate_task_list(
         }
         UseCase::ContigsOnly => {
             let mut tasks = Vec::new();
-            if has_reference {
-                // Case 4 with reference: reference is at index 0, contigs at 1..M
-                for contig_id in 1..sketches.len() {
-                    tasks.push((contig_id as u32, 0));
+            if num_ref_seqs > 0 {
+                // Case 4 with reference: reference record(s) at 0..num_ref_seqs, contigs
+                // after. Every contig is tasked against every reference record.
+                for contig_id in num_ref_seqs..sketches.len() {
+                    for ref_id in 0..num_ref_seqs {
+                        tasks.push((contig_id as u32, ref_id as u32));
+                    }
                 }
             } else {
                 // Case 4 MSA: all-vs-all pairs

@@ -43,9 +43,9 @@ phraya filter → VCF | TSV | filtered .phraya
 
 ### Use Cases (detected by `phraya plan`)
 
-1. **Case 2**: N reads + reference → N alignments (BWA-like, main use case)
+1. **Case 2**: N reads + M reference records → N×M alignments (BWA-like, main use case)
 2. **Case 3**: M contigs + N reads, no ref → centroid selection + M+N-1 alignments (key innovation)
-3. **Case 4**: M contigs ± reference → M or M×(M-1)/2 alignments (minimap2-like)
+3. **Case 4**: M contigs ± K reference records → M×K or M×(M-1)/2 alignments (minimap2-like)
 
 **Not supported**: reads-only with no reference and no contigs. All-vs-all short-read pairwise is de novo assembly (PRD §Won't Have). Phraya requires a coordinate space — provide a reference or mix in contigs and Case 3 auto-selects a centroid.
 
@@ -84,6 +84,7 @@ Each preset selects an algorithm **and** a default coverage-window radius; `--co
 - `phraya plan --chunks N` physically pre-splits read sketches into N chunk frames; default N=1 (single chunk)
 - `read_plan()` loads all chunks (non-batch path); `read_plan_worker(path, id, count)` loads shared + one chunk (batch path)
 - Fallback: N=1 plan with `--worker K/N` filters the single chunk in-memory by positional range
+- Batch mode (`--worker`/`--ensure`) is single-target per worker (one `reference_length`, one coverage track per output file) — it hard-errors if the reference/centroid file has more than one FASTA record. A multi-contig reference must use `phraya align --reference` (palette mode) instead, which aligns every record as its own space.
 - PHRAYAPLAN_VERSION = 7; non-v7 files (no "PHR7" magic) hard-rejected with version mismatch error
 - CLI tool: `phraya plan-tasks` dumps task list for GNU Parallel/xargs/WDL/Nextflow
 
@@ -107,6 +108,7 @@ Each preset selects an algorithm **and** a default coverage-window radius; `--co
 ### Reference-palette alignment mode (`phraya align --reference`, ADR-0011)
 - New mode, mutually exclusive with traditional (`QUERY_ID`/`TARGET_ID`), `--worker`, and `--ensure`. `--output` is a **directory**.
 - Aligns the plan's read pool against each repeatable `--reference` space independently → one `<output>/<label>.phraya` per space (label = palette name or content-hash prefix) plus one `cross_space.phraya.queries`.
+- A `--reference` FASTA with multiple records (draft assembly, chromosome + plasmids) expands to one reference space per record — never truncated to the first (issue #233). `phraya plan --reference` likewise folds every record into the palette.
 - Each reference resolves by content hash against the plan's palette: **hit** reuses the planned sketch (`TargetContext::build_with_sketch`, no recompute); **miss** warns + sketches on the fly (tolerant default) or hard-errors under `--sealed` ("sealed" = fail-fast on unplanned reference; distinct from filter "strict").
 - Read pool excludes every sequence whose hash is in the plan's palette (not just the presented subset), which makes the pool invocation-independent → composable: `align({A,B}) = align({A}) ∪ align({B})` (per-space `.phraya` byte-identical alone vs combined).
 
