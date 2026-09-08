@@ -1,3 +1,4 @@
+use phraya_core::cigar::CigarStats;
 use phraya_core::types::VariantObservation;
 use phraya_io::queries::QueryIndex;
 
@@ -6,6 +7,41 @@ pub mod tsv;
 pub mod vcf;
 
 pub use extractors::{extract_allele_frequency, extract_cigar_ops, extract_multi_map_fraction};
+
+/// Window widths (bp) for SNP-density annotation, matching CFSAN's convention.
+pub const SNP_DENSITY_WINDOWS: [u32; 3] = [15, 125, 1000];
+
+/// Annotate each observation with the number of OTHER distinct variant positions within
+/// each window centred on it (windows: [`SNP_DENSITY_WINDOWS`]). Counts distinct
+/// positions, not observations, so the value is independent of depth: merge keeps one
+/// observation per read at a position, and multiple alleles can share a position, but
+/// neither should inflate density.
+///
+/// Never called automatically on read — `run_filter` calls this once, immediately after
+/// loading a `.phraya` file and before any filter is applied, so it is correct even for a
+/// freshly-merged file (`snp_density` is never serialized; see
+/// [`phraya_core::types::VariantObservation::snp_density`]).
+pub fn annotate_snp_density(observations: &mut [VariantObservation]) {
+    let mut positions: Vec<u32> = observations.iter().map(|o| o.position()).collect();
+    positions.sort_unstable();
+    positions.dedup();
+
+    for obs in observations.iter_mut() {
+        let pos = obs.position();
+        let mut density = [0u32; 3];
+        for (i, &window) in SNP_DENSITY_WINDOWS.iter().enumerate() {
+            let half = window / 2;
+            let lo = pos.saturating_sub(half);
+            let hi = pos.saturating_add(half);
+            let lo_idx = positions.partition_point(|&p| p < lo);
+            let hi_idx = positions.partition_point(|&p| p <= hi);
+            // Subtract 1 for the variant's own position, which is always present exactly
+            // once in the deduplicated list and always falls within [lo, hi].
+            density[i] = (hi_idx - lo_idx).saturating_sub(1) as u32;
+        }
+        obs.set_snp_density(density);
+    }
+}
 
 /// Named filter presets.
 ///
@@ -58,6 +94,13 @@ pub struct ThresholdFilter {
     max_insert_size: Option<i32>,
     require_both_mates_mapped: bool,
     insert_distribution: Option<phraya_io::plan::InsertSizeDistribution>,
+    min_identity: Option<f64>,
+    min_match_fraction: Option<f64>,
+    min_aligned_length: Option<u32>,
+    max_snp_density_15: Option<u32>,
+    max_snp_density_125: Option<u32>,
+    max_snp_density_1000: Option<u32>,
+    min_edge_distance: Option<u32>,
 }
 
 /// Backward-compatible alias. Prefer `ThresholdFilter` directly.
@@ -81,6 +124,13 @@ impl ThresholdFilter {
             max_insert_size: None,
             require_both_mates_mapped: false,
             insert_distribution: None,
+            min_identity: None,
+            min_match_fraction: None,
+            min_aligned_length: None,
+            max_snp_density_15: None,
+            max_snp_density_125: None,
+            max_snp_density_1000: None,
+            min_edge_distance: None,
         }
     }
 
@@ -161,6 +211,41 @@ impl ThresholdFilter {
 
     pub fn with_insert_distribution(mut self, dist: phraya_io::plan::InsertSizeDistribution) -> Self {
         self.insert_distribution = Some(dist);
+        self
+    }
+
+    pub fn min_identity(mut self, threshold: f64) -> Self {
+        self.min_identity = Some(threshold);
+        self
+    }
+
+    pub fn min_match_fraction(mut self, threshold: f64) -> Self {
+        self.min_match_fraction = Some(threshold);
+        self
+    }
+
+    pub fn min_aligned_length(mut self, threshold: u32) -> Self {
+        self.min_aligned_length = Some(threshold);
+        self
+    }
+
+    pub fn max_snp_density_15(mut self, threshold: u32) -> Self {
+        self.max_snp_density_15 = Some(threshold);
+        self
+    }
+
+    pub fn max_snp_density_125(mut self, threshold: u32) -> Self {
+        self.max_snp_density_125 = Some(threshold);
+        self
+    }
+
+    pub fn max_snp_density_1000(mut self, threshold: u32) -> Self {
+        self.max_snp_density_1000 = Some(threshold);
+        self
+    }
+
+    pub fn min_edge_distance(mut self, threshold: u32) -> Self {
+        self.min_edge_distance = Some(threshold);
         self
     }
 }
@@ -291,6 +376,52 @@ impl ThresholdFilter {
             }
         } else if self.require_both_mates_mapped {
             return false;
+        }
+
+        // Identity / match fraction / aligned length: one CIGAR walk shared by all three,
+        // computed only when at least one threshold is set.
+        if self.min_identity.is_some() || self.min_match_fraction.is_some() || self.min_aligned_length.is_some() {
+            let stats = CigarStats::parse(obs.cigar());
+            if let Some(min) = self.min_identity {
+                if stats.identity(obs.edit_distance()) < min {
+                    return false;
+                }
+            }
+            if let Some(min) = self.min_match_fraction {
+                if stats.match_fraction() < min {
+                    return false;
+                }
+            }
+            if let Some(min) = self.min_aligned_length {
+                if stats.alignment_columns() < min {
+                    return false;
+                }
+            }
+        }
+
+        // SNP density: relies on obs.snp_density() being pre-annotated by
+        // annotate_snp_density before filtering — [0, 0, 0] (the un-annotated default)
+        // would otherwise silently pass every max_snp_density_* threshold.
+        if let Some(max) = self.max_snp_density_15 {
+            if obs.snp_density()[0] > max {
+                return false;
+            }
+        }
+        if let Some(max) = self.max_snp_density_125 {
+            if obs.snp_density()[1] > max {
+                return false;
+            }
+        }
+        if let Some(max) = self.max_snp_density_1000 {
+            if obs.snp_density()[2] > max {
+                return false;
+            }
+        }
+
+        if let Some(min) = self.min_edge_distance {
+            if edge_distance(obs) < min {
+                return false;
+            }
         }
 
         true
@@ -1069,6 +1200,48 @@ mod tests {
         let obs_fail = obs_with_insert_stats(2000, 2, 2);
         assert!(!filter.apply(&obs_fail), "mean=1000 exceeds 3σ=550 post-merge");
     }
+
+    #[test]
+    fn annotate_snp_density_counts_distinct_positions_not_observations() {
+        // Two observations share position 100 (simulating two reads/alleles surviving a
+        // merge at the same site) — they must not double-count each other, nor inflate a
+        // neighbour's density beyond the number of distinct OTHER positions nearby.
+        let obs_a = VariantObservation::new(
+            100, b'A', HashMap::from([(b'T', 1)]), 0.9, "1X".to_string(), 60, 1, vec![10], 35.0,
+            "sample1:read1".to_string(),
+        );
+        let obs_b = VariantObservation::new(
+            100, b'A', HashMap::from([(b'C', 1)]), 0.9, "1X".to_string(), 60, 1, vec![10], 35.0,
+            "sample2:read1".to_string(),
+        );
+        // Within the 15bp window of position 100 (half-width 7: [93, 107]).
+        let obs_c = VariantObservation::new(
+            105, b'A', HashMap::from([(b'G', 1)]), 0.9, "1X".to_string(), 60, 1, vec![10], 35.0,
+            "sample1:read2".to_string(),
+        );
+        // Far outside every window.
+        let obs_d = VariantObservation::new(
+            500, b'A', HashMap::from([(b'T', 1)]), 0.9, "1X".to_string(), 60, 1, vec![10], 35.0,
+            "sample1:read3".to_string(),
+        );
+
+        let mut observations = vec![obs_a, obs_b, obs_c, obs_d];
+        annotate_snp_density(&mut observations);
+
+        // obs_a and obs_b (same position) each see exactly ONE other distinct position
+        // (105) within 15bp — not two, even though there are two observations at 100.
+        assert_eq!(observations[0].snp_density()[0], 1, "obs_a: one neighbouring position");
+        assert_eq!(observations[1].snp_density()[0], 1, "obs_b: one neighbouring position");
+        // obs_c sees position 100 as its one other distinct neighbour — a buggy
+        // observation-counting implementation would report 2 here (obs_a AND obs_b).
+        assert_eq!(
+            observations[2].snp_density()[0],
+            1,
+            "obs_c: position 100 counts once despite two observations there"
+        );
+        // obs_d is isolated: only its own position is nearby, which is excluded.
+        assert_eq!(observations[3].snp_density()[0], 0, "obs_d: no neighbours, own position excluded");
+    }
 }
 
 /// Internal AST representation for expression filters.
@@ -1094,15 +1267,33 @@ enum CompOp {
     NotEqual,
 }
 
+/// Every field name `ExprFilter` accepts. `Parser::parse_field` validates against this
+/// list and `extract_field` has a matching arm for each — `expr_fields_all_resolve`
+/// (in `expr_filter_tests`) guards the pair against drift.
+pub const EXPR_FIELDS: &[&str] = &[
+    "coverage",
+    "mapq",
+    "allele_frequency",
+    "base_quality",
+    "confidence",
+    "kmer_uniqueness",
+    "edit_distance",
+    "in_tandem_repeat",
+    "identity",
+    "match_fraction",
+    "aligned_length",
+    "snp_density_15",
+    "snp_density_125",
+    "snp_density_1000",
+    "edge_distance",
+];
+
 /// Expression-based filter for VariantObservations.
 ///
 /// Parses and evaluates boolean expressions over VariantObservation fields.
 /// Example: `"coverage >= 10 && mapq > 30"`
 ///
-/// Supported fields: coverage, mapq, allele_frequency, base_quality, confidence,
-/// kmer_uniqueness, edit_distance, in_tandem_repeat
-///
-/// Supported operators: >=, >, <=, <, ==, !=, &&, ||, !, parentheses
+/// Supported fields: see [`EXPR_FIELDS`].
 #[derive(Debug, Clone)]
 pub struct ExprFilter {
     ast: Expr,
@@ -1161,6 +1352,24 @@ impl std::fmt::Display for ExprParseError {
 
 impl std::error::Error for ExprParseError {}
 
+/// Distance from the variant to the nearest end of its query (read or contig), in bases.
+///
+/// `0` when the query length is unknown (a zero-length alignment) — this is
+/// indistinguishable from a genuine at-the-edge variant, but a zero-length alignment
+/// cannot occur for a stored variant in practice.
+///
+/// Files written before `query_position` existed read it back as `0` via
+/// `#[serde(default)]`, which this function cannot distinguish from a genuine offset-0
+/// variant — deliberate; see the plan note on `VariantObservation::query_position`.
+fn edge_distance(obs: &VariantObservation) -> u32 {
+    let qlen = CigarStats::parse(obs.cigar()).query_aligned_len();
+    if qlen == 0 {
+        return 0;
+    }
+    let qp = obs.query_position().min(qlen - 1);
+    qp.min((qlen - 1) - qp)
+}
+
 /// Extract a field value from a VariantObservation
 fn extract_field(field: &str, obs: &VariantObservation) -> Result<f64, ExprParseError> {
     match field {
@@ -1186,6 +1395,13 @@ fn extract_field(field: &str, obs: &VariantObservation) -> Result<f64, ExprParse
         "kmer_uniqueness" => Ok(obs.kmer_uniqueness()),
         "edit_distance" => Ok(obs.edit_distance() as f64),
         "in_tandem_repeat" => Ok(if obs.in_tandem_repeat() { 1.0 } else { 0.0 }),
+        "identity" => Ok(CigarStats::parse(obs.cigar()).identity(obs.edit_distance())),
+        "match_fraction" => Ok(CigarStats::parse(obs.cigar()).match_fraction()),
+        "aligned_length" => Ok(CigarStats::parse(obs.cigar()).alignment_columns() as f64),
+        "snp_density_15" => Ok(obs.snp_density()[0] as f64),
+        "snp_density_125" => Ok(obs.snp_density()[1] as f64),
+        "snp_density_1000" => Ok(obs.snp_density()[2] as f64),
+        "edge_distance" => Ok(edge_distance(obs) as f64),
         _ => Err(ExprParseError::UnknownField(field.to_string())),
     }
 }
@@ -1313,11 +1529,11 @@ impl Parser {
         }
         let field: String = self.input[start..self.pos].iter().collect();
 
-        // Validate field name
-        match field.as_str() {
-            "coverage" | "mapq" | "allele_frequency" | "base_quality" | "confidence" |
-            "kmer_uniqueness" | "edit_distance" | "in_tandem_repeat" => Ok(field),
-            _ => Err(ExprParseError::UnknownField(field)),
+        // Validate field name against the single allowlist shared with extract_field.
+        if EXPR_FIELDS.contains(&field.as_str()) {
+            Ok(field)
+        } else {
+            Err(ExprParseError::UnknownField(field))
         }
     }
 
@@ -1431,6 +1647,27 @@ mod expr_filter_tests {
         }
 
         obs
+    }
+
+    /// Drift guard: every name in `EXPR_FIELDS` must parse AND evaluate without
+    /// `UnknownField` — catches `parse_field`'s allowlist and `extract_field`'s match
+    /// arms drifting apart (they were duplicated by hand before this test existed).
+    #[test]
+    fn expr_fields_all_resolve() {
+        let obs = create_obs(100, 60, 15, 35.0, 0.95, 0, false);
+        for name in EXPR_FIELDS {
+            let expr = format!("{name} >= 0");
+            let filter = ExprFilter::new(&expr)
+                .unwrap_or_else(|e| panic!("EXPR_FIELDS entry '{name}' failed to parse: {e}"));
+            // Evaluating must not panic and must not silently treat the field as unknown;
+            // extract_field's `_ => Err(UnknownField)` arm would make every comparison
+            // evaluate to `false` via evaluate_expr's `Err(_) => false` fallback, which
+            // `>= 0` can't distinguish from a real failing comparison — so also assert
+            // extract_field resolves the field directly.
+            extract_field(name, &obs)
+                .unwrap_or_else(|e| panic!("EXPR_FIELDS entry '{name}' has no extract_field arm: {e}"));
+            let _ = filter.apply(&obs);
+        }
     }
 
     /// Issue #150: Single coverage comparison

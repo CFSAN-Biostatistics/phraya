@@ -28,6 +28,14 @@ pub struct PhrayaHeader {
     pub sample_id: String,
     pub timestamp: String,
     pub observation_count: usize,
+    /// Count of positions with raw depth >= 1x, from `coverage_breadth`. `None` when not
+    /// computed (files predating this field) or not recoverable (a merged file: merge sums
+    /// already-quantized tracks, so union breadth of the inputs cannot be reconstructed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_positions: Option<u32>,
+    /// Count of positions with raw depth >= 10x. Same absence rules as `covered_positions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_positions_10x: Option<u32>,
 }
 
 /// Phraya file: alignment results for a single sample
@@ -54,6 +62,8 @@ impl PhrayaFile {
             sample_id,
             timestamp,
             observation_count,
+            covered_positions: None,
+            covered_positions_10x: None,
         };
 
         PhrayaFile {
@@ -61,6 +71,16 @@ impl PhrayaFile {
             observations,
             coverage_track,
         }
+    }
+
+    /// Set coverage-breadth counters on the header. Computed from the raw depth vector by
+    /// the caller (see `phraya_core::types::coverage_breadth`) — never from the already-
+    /// quantized `coverage_track`, which cannot represent depth 1-2 (see that function's
+    /// doc comment).
+    pub fn with_coverage_breadth(mut self, covered: u32, covered_10x: u32) -> Self {
+        self.header.covered_positions = Some(covered);
+        self.header.covered_positions_10x = Some(covered_10x);
+        self
     }
 }
 
@@ -175,20 +195,10 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
             let depth = *obs_count.get(&obs.position()).unwrap_or(&1);
             let (total_paired, proper_paired) = pair_totals.get(&obs.position()).copied().unwrap_or((0, 0));
             let (ins_sum, ins_count) = insert_totals.get(&obs.position()).copied().unwrap_or((0, 0));
-            phraya_core::types::VariantObservation::new(
-                obs.position(),
-                obs.ref_base(),
-                obs.all_alleles().clone(),
-                obs.confidence(),
-                obs.cigar().to_string(),
-                obs.mapq(),
-                obs.edit_distance(),
-                vec![depth],
-                obs.avg_base_quality(),
-                obs.provenance().to_string(),
-            )
-            .with_pair_counts(total_paired, proper_paired)
-            .with_insert_stats(ins_sum, ins_count)
+            obs.with_local_coverage(vec![depth])
+                .with_coverage_window_offset(0)
+                .with_pair_counts(total_paired, proper_paired)
+                .with_insert_stats(ins_sum, ins_count)
         })
         .collect();
 
@@ -210,6 +220,10 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
         sample_id: format!("merged_{}", files.len()),
         timestamp: chrono::Local::now().to_rfc3339(),
         observation_count: observations.len(),
+        // Merge sums already-quantized coverage tracks, so the union breadth of the
+        // inputs cannot be reconstructed — left absent rather than computed wrong.
+        covered_positions: None,
+        covered_positions_10x: None,
     };
 
     Ok(PhrayaFile {
@@ -279,6 +293,84 @@ mod tests {
         assert_eq!(read_file.observations.len(), 1);
         assert_eq!(read_file.observations[0].position(), 100);
         assert_eq!(read_file.observations[0].mapq(), 60);
+    }
+
+    #[test]
+    fn round_trip_query_position_with_mate_info_none() {
+        // Regression: query_position (a plain #[serde(default)] field) must be declared
+        // BEFORE mate_info (which uses skip_serializing_if) in VariantObservation, or the
+        // MessagePack array shrinks by one slot whenever mate_info is None (the common
+        // case) and query_position's value gets misread as mate_info, failing with
+        // "invalid type: integer `N`, expected struct MateInfo".
+        let obs = VariantObservation::new(
+            100,
+            b'A',
+            HashMap::from([(b'T', 1)]),
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample1:read1".to_string(),
+        )
+        .with_query_position(42);
+        assert!(obs.mate_info().is_none(), "test setup: mate_info must be None");
+
+        let coverage = CoverageTrack::new(vec![10; 200]);
+        let file = PhrayaFile::new(
+            200,
+            "sample1".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs],
+            coverage,
+        );
+
+        let temp = NamedTempFile::new().unwrap();
+        write_phraya(temp.path(), &file).unwrap();
+        let read_file = read_phraya(temp.path()).unwrap();
+
+        assert_eq!(read_file.observations[0].query_position(), 42);
+        assert!(read_file.observations[0].mate_info().is_none());
+    }
+
+    #[test]
+    fn round_trip_query_position_with_mate_info_some() {
+        use phraya_core::types::MateInfo;
+
+        let obs = VariantObservation::new(
+            100,
+            b'A',
+            HashMap::from([(b'T', 1)]),
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample1:read1".to_string(),
+        )
+        .with_query_position(7)
+        .with_mate_info(MateInfo::new("read1/2".to_string(), true, 400, true, false, true));
+
+        let coverage = CoverageTrack::new(vec![10; 200]);
+        let file = PhrayaFile::new(
+            200,
+            "sample1".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs],
+            coverage,
+        );
+
+        let temp = NamedTempFile::new().unwrap();
+        write_phraya(temp.path(), &file).unwrap();
+        let read_file = read_phraya(temp.path()).unwrap();
+
+        let read_obs = &read_file.observations[0];
+        assert_eq!(read_obs.query_position(), 7);
+        let mate = read_obs.mate_info().expect("mate_info should round-trip");
+        assert_eq!(mate.mate_id, "read1/2");
+        assert_eq!(mate.insert_size, 400);
     }
 
     #[test]
@@ -595,6 +687,64 @@ mod tests {
         // Verify positions are sorted
         assert_eq!(merged.observations[0].position(), 25);
         assert_eq!(merged.observations[1].position(), 75);
+    }
+
+    #[test]
+    fn merge_preserves_qc_fields() {
+        use phraya_core::types::{Strand, VariantType};
+
+        let mut alleles = HashMap::new();
+        alleles.insert(b'A', 10);
+
+        let obs = VariantObservation::new(
+            50,
+            b'A',
+            alleles,
+            0.95,
+            "10M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "sample1:read1".to_string(),
+        )
+        .with_tandem_repeat(true)
+        .with_variant_type(VariantType::Deletion)
+        .with_kmer_uniqueness(0.0)
+        .with_strand(Strand::Reverse);
+
+        let coverage = CoverageTrack::new(vec![10; 100]);
+        let file = PhrayaFile::new(
+            100,
+            "sample1".to_string(),
+            "2026-05-31T12:00:00Z".to_string(),
+            vec![obs],
+            coverage,
+        );
+
+        let temp = NamedTempFile::new().unwrap();
+        write_phraya(temp.path(), &file).unwrap();
+
+        let merged = merge_phraya_files(&[temp.path()]).unwrap();
+        assert_eq!(merged.observations.len(), 1);
+        let merged_obs = &merged.observations[0];
+        assert!(merged_obs.in_tandem_repeat(), "tandem-repeat flag lost across merge");
+        assert_eq!(
+            merged_obs.variant_type(),
+            VariantType::Deletion,
+            "variant type lost across merge"
+        );
+        assert_eq!(merged_obs.kmer_uniqueness(), 0.0, "kmer uniqueness lost across merge");
+        assert_eq!(merged_obs.strand(), Strand::Reverse, "strand lost across merge");
+
+        // The check that would have caught the original bug: strict preset must actually
+        // reject a tandem-repeat observation post-merge, not silently pass it through
+        // (VariantObservation::new used to reset in_tandem_repeat to false on every merge).
+        let strict = phraya_filter::FilterPreset::Strict.builder().build();
+        assert!(
+            !strict.apply(merged_obs),
+            "strict preset failed to reject a tandem-repeat variant post-merge"
+        );
     }
 
     #[test]

@@ -149,20 +149,36 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 ## Filter Operations
 
 ### Supported Styles (all chainable)
-1. **Threshold-based**: `--min-coverage 10 --min-mapq 30 --max-multi-map-fraction 0.3`
-2. **Expression-based**: `--expr "coverage >= 10 && mapq > 30"` [Phase 2+]
+1. **Threshold-based**: `--min-coverage 10 --min-mapq 30 --min-identity 0.98 --min-match-fraction 0.98 --min-aligned-length 50 --min-edge-distance 20 --max-snp-density-15/-125/-1000 N`
+2. **Expression-based**: `--expr "identity >= 0.98 && coverage >= 10"` — wired into the CLI, applied as a conjunctive predicate alongside any threshold flags/preset. Field set: see `phraya_filter::EXPR_FIELDS`.
 3. **Named presets**: `--preset strict|tolerant`
 
 ### Output Formats
 - Filtered `.phraya` (subset of records, same format for chaining)
 - VCF (standard variant calling output)
 - TSV/CSV (arbitrary column selection)
+- `phraya qc <file>...`: one TSV row per `.phraya` file — variant count, coverage breadth at
+  1x/10x. A summary report, not a per-variant filter; breadth is a whole-alignment property.
+  Breadth is `NA` for merged files (merge sums already-quantized coverage tracks, so union
+  breadth of the inputs can't be recovered) and for files written before this field existed.
 
 ### Feature Space (available for filtering)
-- Alignment: coverage, mapq, CIGAR complexity, edit_distance, multi_map_fraction, score_ratio_gap
-- Context: edge_distance, local_gc, k-mer_uniqueness, in_homopolymer, in_tandem_repeat, snp_density (15bp/125bp/1000bp windows)
-- Alleles: allele_frequency, ref_base, alt_bases
-- Quality: avg_base_quality, confidence
+- Alignment: `coverage`, `mapq`, `edit_distance`, `identity` (`1 - edit_distance/query_aligned_len`,
+  same quantity as the `.phraya.queries` sidecar's absolute identity), `match_fraction`
+  (`M/(M+X+I+D)`, BLAST/MUMmer convention), `aligned_length` (`M+X+I+D`)
+- Context: `edge_distance` (bases to the nearest end of the producing read/contig — requires
+  `.phraya` written by this version or later), `in_tandem_repeat`, `kmer_uniqueness`,
+  `snp_density_15`/`snp_density_125`/`snp_density_1000` (count of other distinct variant
+  positions within a 15/125/1000bp window)
+- Alleles: `allele_frequency`, `ref_base`, `alt_bases`
+- Quality: `base_quality`, `confidence`
+
+Not exposed as filter fields: `multi_map_fraction` and `score_ratio_gap` (extractors exist
+in `phraya-filter::extractors`, but `run_filter` never loads the `.queries` sidecar they
+need); `local_gc`, `in_homopolymer` (no annotation exists anywhere in the codebase). A
+cross-sample pairwise distance matrix and real contig MAPQ (currently hardcoded `60` for
+FASTA contigs) are deliberately out of scope — see the QC-layer plan's "Deliberately
+excluded" note.
 
 ## Phase 1 MVP (Shipped 2026-06-06)
 
@@ -175,11 +191,15 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 - Real local coverage (±50bp window from alignment, not stubbed)
 - mapq, avg_base_quality, confidence derived from input data (BAM records / alignment score)
 - Tandem repeat detection wired end-to-end: annotation on variants, `exclude_tandem_repeats` filter option
-- `phraya filter` threshold-based + named presets (strict / tolerant), outputs VCF/TSV/phraya
+- `phraya filter` threshold-based + named presets (strict / tolerant) + expression filters
+  (`--expr`, conjunctive with threshold flags/preset), outputs VCF/TSV/phraya
 - `phraya-filter` crate library API with feature extractors (cigar_ops, allele_frequency, multi_map_fraction)
+- QC-layer filter fields: `identity`/`match_fraction`/`aligned_length` (derived from CIGAR,
+  `phraya_core::cigar::CigarStats`), `edge_distance` (distance to nearest read/contig end),
+  `snp_density_15`/`_125`/`_1000`; `phraya qc` coverage-breadth report; merge no longer
+  silently discards `in_tandem_repeat`/`variant_type`/`kmer_uniqueness`/`strand`/`mate_info`
 
 **Deferred to Phase 2+:**
-- Expression-based filters (`--expr`)
 - Variation hotspot estimation in plan
 - Two-tier evidence (k-mer → alignment refinement)
 - Python bindings / R integration

@@ -4,8 +4,8 @@ use phraya_align::executor::{
     align_read, align_task_with_config, AlignConfig, Strategy, TargetContext,
 };
 use phraya_core::types::{
-    compute_kmer_uniqueness, detect_hotspot_intervals, select_centroid, sketch_sequence_default,
-    CoverageTrack, MinimizerSketch, Sequence,
+    compute_kmer_uniqueness, coverage_breadth, detect_hotspot_intervals, select_centroid,
+    sketch_sequence_default, CoverageTrack, MinimizerSketch, Sequence,
 };
 use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
@@ -222,6 +222,48 @@ enum Commands {
         /// Require both mates mapped
         #[arg(long)]
         require_both_mates_mapped: bool,
+
+        /// Minimum alignment identity (0.0-1.0), 1 - edit_distance / query_aligned_len
+        #[arg(long, value_name = "F")]
+        min_identity: Option<f64>,
+
+        /// Minimum fraction of alignment columns that are exact matches (M / (M+X+I+D))
+        #[arg(long, value_name = "F")]
+        min_match_fraction: Option<f64>,
+
+        /// Minimum alignment length in columns (M+X+I+D)
+        #[arg(long, value_name = "N")]
+        min_aligned_length: Option<u32>,
+
+        /// Maximum SNP density within a 15bp window centred on the variant (count of
+        /// OTHER distinct variant positions in-window)
+        #[arg(long, value_name = "N")]
+        max_snp_density_15: Option<u32>,
+
+        /// Maximum SNP density within a 125bp window centred on the variant
+        #[arg(long, value_name = "N")]
+        max_snp_density_125: Option<u32>,
+
+        /// Maximum SNP density within a 1000bp window centred on the variant
+        #[arg(long, value_name = "N")]
+        max_snp_density_1000: Option<u32>,
+
+        /// Minimum distance to the query's nearest end (requires .phraya written by this
+        /// version or later — earlier files have no query-position data and read as 0)
+        #[arg(long, value_name = "N")]
+        min_edge_distance: Option<u32>,
+
+        /// Additional filter expression, applied as a conjunctive predicate alongside any
+        /// threshold flags and preset, e.g. "identity >= 0.98 && coverage >= 10"
+        #[arg(long, value_name = "EXPR")]
+        expr: Option<String>,
+    },
+    /// Report per-comparison QC (variant count, coverage breadth) for one or more
+    /// .phraya files, one TSV row per file
+    Qc {
+        /// Input .phraya files
+        #[arg(value_name = "FILE", required = true)]
+        inputs: Vec<PathBuf>,
     },
 }
 
@@ -362,6 +404,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             min_insert_size,
             max_insert_size,
             require_both_mates_mapped,
+            min_identity,
+            min_match_fraction,
+            min_aligned_length,
+            max_snp_density_15,
+            max_snp_density_125,
+            max_snp_density_1000,
+            min_edge_distance,
+            expr,
         } => {
             run_filter(
                 &input,
@@ -379,7 +429,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 min_insert_size,
                 max_insert_size,
                 require_both_mates_mapped,
+                min_identity,
+                min_match_fraction,
+                min_aligned_length,
+                max_snp_density_15,
+                max_snp_density_125,
+                max_snp_density_1000,
+                min_edge_distance,
+                expr.as_deref(),
             )?;
+        }
+        Commands::Qc { inputs } => {
+            run_qc(&inputs)?;
         }
     }
 
@@ -420,6 +481,7 @@ fn run_align(
     // Build .phraya file (single-read path: merge each alignment's window into a full-length
     // track). Windows can overlap (e.g. a nearby alternate), so accumulate with +=.
     let mut full_coverage = vec![0u32; target.len()];
+    let mut full_coverage_raw = vec![0u32; target.len()];
     for w in &result.coverage {
         for (j, &c) in w.counts.iter().enumerate() {
             let pos = w.start + j;
@@ -428,14 +490,24 @@ fn run_align(
             }
         }
     }
+    for w in &result.raw_coverage {
+        for (j, &c) in w.counts.iter().enumerate() {
+            let pos = w.start + j;
+            if pos < full_coverage_raw.len() {
+                full_coverage_raw[pos] += c;
+            }
+        }
+    }
     let coverage = CoverageTrack::new(full_coverage.iter().map(|&v| v as usize).collect());
+    let (covered, covered_10x) = coverage_breadth(&full_coverage_raw);
     let phraya_file = phraya::PhrayaFile::new(
         target.len() as u32,
         query_id.to_string(),
         output_timestamp(),
         result.variants,
         coverage,
-    );
+    )
+    .with_coverage_breadth(covered, covered_10x);
     phraya::write_phraya(output_path, &phraya_file)?;
 
     // Build .phraya.queries sidecar
@@ -541,6 +613,7 @@ fn run_align_worker_with_plan(
     let mut all_variants = Vec::new();
     let mut all_query_positions = HashMap::new();
     let mut coverage_track = vec![0u32; target.len()];
+    let mut raw_coverage_track = vec![0u32; target.len()];
 
     // Per-read outcome tally (issue #194): where are reads lost — seeding, extension, or the
     // divergence cutoff? Shared across rayon tasks (atomic), reported in the completion line.
@@ -567,10 +640,17 @@ fn run_align_worker_with_plan(
     let merge_result = |all_variants: &mut Vec<_>,
                         all_query_positions: &mut HashMap<_, _>,
                         coverage_track: &mut Vec<u32>,
+                        raw_coverage_track: &mut Vec<u32>,
                         query_id: String,
                         result: phraya_align::executor::AlignmentResult| {
-        all_variants.extend(result.variants);
-        all_query_positions.insert(query_id, result.query_positions);
+        for cov in &result.raw_coverage {
+            for (j, &c) in cov.counts.iter().enumerate() {
+                let pos = cov.start + j;
+                if pos < raw_coverage_track.len() {
+                    raw_coverage_track[pos] += c;
+                }
+            }
+        }
         for cov in &result.coverage {
             for (j, &c) in cov.counts.iter().enumerate() {
                 let pos = cov.start + j;
@@ -579,6 +659,8 @@ fn run_align_worker_with_plan(
                 }
             }
         }
+        all_variants.extend(result.variants);
+        all_query_positions.insert(query_id, result.query_positions);
     };
 
     if !has_byte_offsets {
@@ -605,6 +687,7 @@ fn run_align_worker_with_plan(
                     &mut all_variants,
                     &mut all_query_positions,
                     &mut coverage_track,
+                    &mut raw_coverage_track,
                     query_id,
                     result,
                 );
@@ -631,6 +714,7 @@ fn run_align_worker_with_plan(
                     &mut all_variants,
                     &mut all_query_positions,
                     &mut coverage_track,
+                    &mut raw_coverage_track,
                     query_id,
                     result,
                 );
@@ -640,13 +724,15 @@ fn run_align_worker_with_plan(
 
     // Write output
     let coverage = CoverageTrack::new(coverage_track.iter().map(|&v| v as usize).collect());
+    let (covered, covered_10x) = coverage_breadth(&raw_coverage_track);
     let phraya_file = phraya::PhrayaFile::new(
         target.len() as u32,
         format!("worker_{}", worker_id),
         output_timestamp(),
         all_variants,
         coverage,
-    );
+    )
+    .with_coverage_breadth(covered, covered_10x);
     phraya::write_phraya(std::path::Path::new(output_path), &phraya_file)?;
 
     // Write queries sidecar
@@ -808,6 +894,7 @@ fn run_align_reference(
         // collecting per-read placements. Identity stored in the sidecar is absolute
         // (1 - edit/len), already what query_positions carries.
         let mut full_coverage = vec![0u32; r.seq.len()];
+        let mut full_coverage_raw = vec![0u32; r.seq.len()];
         let mut variants = Vec::new();
         for read in &reads {
             let result = match align_read(&ctx, read, &plan, &config, None) {
@@ -819,6 +906,14 @@ fn run_align_reference(
                     let pos = w.start + j;
                     if pos < full_coverage.len() {
                         full_coverage[pos] += c;
+                    }
+                }
+            }
+            for w in &result.raw_coverage {
+                for (j, &c) in w.counts.iter().enumerate() {
+                    let pos = w.start + j;
+                    if pos < full_coverage_raw.len() {
+                        full_coverage_raw[pos] += c;
                     }
                 }
             }
@@ -836,13 +931,15 @@ fn run_align_reference(
         }
 
         let coverage = CoverageTrack::new(full_coverage.iter().map(|&v| v as usize).collect());
+        let (covered, covered_10x) = coverage_breadth(&full_coverage_raw);
         let phraya_file = phraya::PhrayaFile::new(
             r.seq.len() as u32,
             r.seq.id().to_string(),
             output_timestamp(),
             variants,
             coverage,
-        );
+        )
+        .with_coverage_breadth(covered, covered_10x);
         let out_path = out_dir.join(format!("{}.phraya", r.label));
         phraya::write_phraya(&out_path, &phraya_file)?;
         eprintln!("Wrote {}", out_path.display());
@@ -1663,6 +1760,55 @@ fn run_merge(
     Ok(())
 }
 
+fn run_qc(input_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
+    if input_paths.is_empty() {
+        return Err("No input files specified".into());
+    }
+
+    println!(
+        "sample_id\treference_length\tvariant_count\tcovered_positions\tbreadth\tcovered_positions_10x\tbreadth_10x"
+    );
+
+    for path in input_paths {
+        let file = phraya::read_phraya(path)?;
+        let ref_len = file.header.reference_length;
+
+        // Absent counters (pre-breadth files, or a merged file — merge sums already-
+        // quantized tracks and can't recover breadth) print NA rather than a wrong number
+        // computed from the quantized coverage_track.
+        let (covered_str, breadth_str, covered_10x_str, breadth_10x_str) =
+            match (file.header.covered_positions, file.header.covered_positions_10x) {
+                (Some(covered), Some(covered_10x)) => {
+                    let breadth = if ref_len == 0 {
+                        "NA".to_string()
+                    } else {
+                        format!("{:.6}", covered as f64 / ref_len as f64)
+                    };
+                    let breadth_10x = if ref_len == 0 {
+                        "NA".to_string()
+                    } else {
+                        format!("{:.6}", covered_10x as f64 / ref_len as f64)
+                    };
+                    (covered.to_string(), breadth, covered_10x.to_string(), breadth_10x)
+                }
+                _ => ("NA".to_string(), "NA".to_string(), "NA".to_string(), "NA".to_string()),
+            };
+
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            file.header.sample_id,
+            ref_len,
+            file.observations.len(),
+            covered_str,
+            breadth_str,
+            covered_10x_str,
+            breadth_10x_str,
+        );
+    }
+
+    Ok(())
+}
+
 fn run_filter(
     input_path: &PathBuf,
     min_coverage: Option<u32>,
@@ -1679,6 +1825,14 @@ fn run_filter(
     min_insert_size: Option<i32>,
     max_insert_size: Option<i32>,
     require_both_mates_mapped: bool,
+    min_identity: Option<f64>,
+    min_match_fraction: Option<f64>,
+    min_aligned_length: Option<u32>,
+    max_snp_density_15: Option<u32>,
+    max_snp_density_125: Option<u32>,
+    max_snp_density_1000: Option<u32>,
+    min_edge_distance: Option<u32>,
+    expr: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate format
     if !["vcf", "tsv", "phraya"].contains(&format) {
@@ -1689,8 +1843,11 @@ fn run_filter(
         .into());
     }
 
-    // Read the .phraya file
-    let phraya_file = phraya::read_phraya(input_path)?;
+    // Read the .phraya file. Mutable: SNP density is annotated in place below, before any
+    // filter runs, so --format tsv and --expr see populated values regardless of which
+    // flags were passed.
+    let mut phraya_file = phraya::read_phraya(input_path)?;
+    phraya_filter::annotate_snp_density(&mut phraya_file.observations);
 
     let initial_count = phraya_file.observations.len();
 
@@ -1749,11 +1906,41 @@ fn run_filter(
     if require_both_mates_mapped {
         filter_builder = filter_builder.require_both_mates_mapped(true);
     }
+    if let Some(min) = min_identity {
+        filter_builder = filter_builder.min_identity(min);
+    }
+    if let Some(min) = min_match_fraction {
+        filter_builder = filter_builder.min_match_fraction(min);
+    }
+    if let Some(min) = min_aligned_length {
+        filter_builder = filter_builder.min_aligned_length(min);
+    }
+    if let Some(max) = max_snp_density_15 {
+        filter_builder = filter_builder.max_snp_density_15(max);
+    }
+    if let Some(max) = max_snp_density_125 {
+        filter_builder = filter_builder.max_snp_density_125(max);
+    }
+    if let Some(max) = max_snp_density_1000 {
+        filter_builder = filter_builder.max_snp_density_1000(max);
+    }
+    if let Some(min) = min_edge_distance {
+        filter_builder = filter_builder.min_edge_distance(min);
+    }
 
     let filter = filter_builder.build();
 
+    // --expr is a conjunctive predicate on top of the threshold filter/preset, not a
+    // replacement for it — both must pass.
+    let expr_filter = expr.map(phraya_filter::ExprFilter::new).transpose()?;
+
     // Apply filter to observations
-    let filtered_observations: Vec<_> = filter.filter(&phraya_file.observations).cloned().collect();
+    let filtered_observations: Vec<_> = phraya_file
+        .observations
+        .iter()
+        .filter(|obs| filter.apply(obs) && expr_filter.as_ref().map_or(true, |e| e.apply(obs)))
+        .cloned()
+        .collect();
 
     let final_count = filtered_observations.len();
     eprintln!("Filtered {} → {} observations", initial_count, final_count);
@@ -1773,13 +1960,21 @@ fn run_filter(
         }
         "phraya" => {
             if let Some(out_path) = output_path {
-                let filtered_file = phraya::PhrayaFile::new(
+                let mut filtered_file = phraya::PhrayaFile::new(
                     phraya_file.header.reference_length,
                     phraya_file.header.sample_id.clone(),
                     phraya_file.header.timestamp.clone(),
                     filtered_observations,
                     phraya_file.coverage_track.clone(),
                 );
+                // Filtering variants doesn't change coverage — propagate breadth unchanged
+                // (both absent on a merged input, since merge can't recover it either).
+                if let (Some(covered), Some(covered_10x)) = (
+                    phraya_file.header.covered_positions,
+                    phraya_file.header.covered_positions_10x,
+                ) {
+                    filtered_file = filtered_file.with_coverage_breadth(covered, covered_10x);
+                }
                 phraya::write_phraya(out_path, &filtered_file)?;
             } else {
                 return Err("--output is required when format is 'phraya'".into());

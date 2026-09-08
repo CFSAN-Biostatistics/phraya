@@ -229,6 +229,12 @@ pub struct AlignmentResult {
     /// multi-mapped reads on repeat-rich genomes don't materialize a near-genome-length
     /// buffer. Merge each window into a genome accumulator at `.start` independently.
     pub coverage: Vec<WindowedCoverage>,
+    /// Same windows as `coverage`, but un-quantized raw per-position depth. Coverage
+    /// breadth (`phraya_core::types::coverage_breadth`) needs this: quantizing to the
+    /// nearest 5 maps depth 1-2 to 0, making "covered by one read" indistinguishable from
+    /// "never covered" (see that function's doc comment). Not used for anything else —
+    /// `local_coverage` windows and the merged `CoverageTrack` still come from `coverage`.
+    pub raw_coverage: Vec<WindowedCoverage>,
     /// Query index: (target_position, normalized_score) for primary + alternatives
     pub query_positions: Vec<(u32, f64)>,
 }
@@ -783,6 +789,7 @@ pub fn align_read(
     Some(AlignmentResult {
         variants,
         coverage,
+        raw_coverage,
         query_positions,
     })
 }
@@ -839,7 +846,7 @@ fn extract_variants_from_cigar(
     let cigar_arc: Arc<str> = Arc::from(cigar.to_string());
     let provenance_arc: Arc<str> = Arc::from(provenance);
 
-    let ops = parse_cigar(cigar);
+    let ops = phraya_core::cigar::parse_ops(cigar);
     for (count, op) in ops {
         match op {
             'M' => {
@@ -892,7 +899,8 @@ fn extract_variants_from_cigar(
                         .with_tandem_repeat(in_repeat)
                         .with_kmer_uniqueness(kmer_uniqueness)
                         .with_coverage_window_offset(variant_offset)
-                        .with_strand(strand);
+                        .with_strand(strand)
+                        .with_query_position(qp as u32);
 
                         if let Some(mi) = mate_info {
                             obs = obs
@@ -960,7 +968,8 @@ fn extract_variants_from_cigar(
                     .with_variant_type(phraya_core::types::VariantType::Deletion)
                     .with_kmer_uniqueness(kmer_uniqueness)
                     .with_coverage_window_offset(variant_offset)
-                    .with_strand(strand);
+                    .with_strand(strand)
+                    .with_query_position(q_pos as u32);
 
                     if let Some(mi) = mate_info {
                         obs = obs
@@ -1021,7 +1030,8 @@ fn extract_variants_from_cigar(
                     .with_variant_type(phraya_core::types::VariantType::Insertion)
                     .with_kmer_uniqueness(kmer_uniqueness)
                     .with_coverage_window_offset(variant_offset)
-                    .with_strand(strand);
+                    .with_strand(strand)
+                    .with_query_position(q_pos as u32);
 
                     if let Some(mi) = mate_info {
                         obs = obs
@@ -1041,21 +1051,6 @@ fn extract_variants_from_cigar(
     }
 
     variants
-}
-
-fn parse_cigar(cigar: &str) -> Vec<(usize, char)> {
-    let mut ops = Vec::new();
-    let mut count_str = String::new();
-    for ch in cigar.chars() {
-        if ch.is_ascii_digit() {
-            count_str.push(ch);
-        } else {
-            let count: usize = count_str.parse().unwrap_or(1);
-            count_str.clear();
-            ops.push((count, ch));
-        }
-    }
-    ops
 }
 
 /// Raw per-read coverage, one small window per alignment (primary first, then each

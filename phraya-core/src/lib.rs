@@ -1,4 +1,5 @@
 // Module declarations
+pub mod cigar;
 pub mod types;
 mod hotspot_tests;
 

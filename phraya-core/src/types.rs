@@ -274,12 +274,35 @@ pub struct VariantObservation {
     /// `coverage_at_variant()` uses this instead of always returning `[0]`.
     #[serde(default)]
     coverage_window_variant_offset: u32,
+    /// 0-based offset of this variant within the query (read or contig) that produced it.
+    /// Combined with the query length derived from `cigar` (`CigarStats::query_aligned_len`),
+    /// yields distance to the query's nearest end — assembly contig ends and read ends are
+    /// both error-enriched. Declared BEFORE `mate_info` deliberately: `mate_info` uses
+    /// `skip_serializing_if` to shrink the MessagePack array when absent (the common case),
+    /// and that shrink-from-the-tail trick only works when nothing else is serialized after
+    /// it — see `mate_info`'s doc comment below. Putting this field after `mate_info`
+    /// silently corrupts every `.phraya` file with `mate_info == None`: the array comes out
+    /// one slot short, so the deserializer reads this field's value into the `mate_info`
+    /// slot and fails with "invalid type: integer `N`, expected struct MateInfo".
+    /// `#[serde(default)]` reads as `0` on `.phraya` files written before this field
+    /// existed — indistinguishable from a genuine offset-0 variant; no sentinel is used
+    /// (see the QC-layer plan's edge-distance notes).
+    #[serde(default)]
+    query_position: u32,
     /// Mate relationship metadata for paired-end reads (insert size filters).
-    /// Kept as the final field so that omitting it when `None` (the common case) only
-    /// shortens the trailing end of the MessagePack array, leaving all earlier fields
-    /// correctly positioned; `#[serde(default)]` restores it to `None` on read.
+    /// Kept as the final *serialized* field so that omitting it when `None` (the common
+    /// case) only shortens the trailing end of the MessagePack array, leaving all earlier
+    /// fields correctly positioned; `#[serde(default)]` restores it to `None` on read.
+    /// `snp_density` below is `#[serde(skip)]` and occupies no wire position at all, so it
+    /// does not break this invariant despite being declared after `mate_info`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mate_info: Option<MateInfo>,
+    /// SNP density at this position for the windows in `phraya_filter::SNP_DENSITY_WINDOWS`.
+    /// Never serialized: it is a property of the whole variant set (how many other variant
+    /// positions fall within each window), recomputed by `phraya_filter::annotate_snp_density`
+    /// every time a `.phraya` file is loaded — including after merge, for free.
+    #[serde(skip)]
+    snp_density: [u32; 3],
 }
 
 impl VariantObservation {
@@ -314,6 +337,8 @@ impl VariantObservation {
             strand: Strand::default(),
             coverage_window_variant_offset: 0,
             mate_info: None,
+            snp_density: [0, 0, 0],
+            query_position: 0,
             total_paired_count: 0,
             proper_pair_count: 0,
             insert_size_sum: 0,
@@ -353,6 +378,8 @@ impl VariantObservation {
             strand: Strand::default(),
             coverage_window_variant_offset: 0,
             mate_info: None,
+            snp_density: [0, 0, 0],
+            query_position: 0,
             total_paired_count: 0,
             proper_pair_count: 0,
             insert_size_sum: 0,
@@ -410,6 +437,13 @@ impl VariantObservation {
         self
     }
 
+    /// Replace the local-coverage window. Used by merge, which substitutes per-position
+    /// merged depth for the per-read window.
+    pub fn with_local_coverage(mut self, local_coverage: Vec<u32>) -> Self {
+        self.local_coverage = local_coverage;
+        self
+    }
+
     /// Coverage at the variant position itself (not the window start).
     pub fn coverage_at_variant(&self) -> Option<u32> {
         self.local_coverage
@@ -426,6 +460,31 @@ impl VariantObservation {
     /// Get mate information.
     pub fn mate_info(&self) -> Option<&MateInfo> {
         self.mate_info.as_ref()
+    }
+
+    /// SNP density at this position for the windows in `phraya_filter::SNP_DENSITY_WINDOWS`
+    /// (currently 15/125/1000bp). `[0, 0, 0]` until annotated — never serialized, so a
+    /// freshly-deserialized observation always starts at the default and must be
+    /// re-annotated by `phraya_filter::annotate_snp_density` before this is meaningful.
+    pub fn snp_density(&self) -> [u32; 3] {
+        self.snp_density
+    }
+
+    /// Set the SNP density windows. A `&mut` setter rather than a consuming builder: callers
+    /// apply this as a bulk pass over a whole observation slice, not one observation at a time.
+    pub fn set_snp_density(&mut self, density: [u32; 3]) {
+        self.snp_density = density;
+    }
+
+    /// Set the 0-based offset of this variant within its producing query (read or contig).
+    pub fn with_query_position(mut self, pos: u32) -> Self {
+        self.query_position = pos;
+        self
+    }
+
+    /// Get the 0-based offset of this variant within its producing query.
+    pub fn query_position(&self) -> u32 {
+        self.query_position
     }
 
     /// Set aggregate pair counts (reads at this position that are paired / properly paired).
@@ -705,6 +764,18 @@ impl CoverageTrack {
         let original = self.total_length as usize * std::mem::size_of::<u8>();
         (compressed, original)
     }
+}
+
+/// Count positions with raw depth >= 1 and >= 10.
+///
+/// Must be called on the raw per-position depth vector, never on a [`CoverageTrack`]:
+/// `CoverageTrack::quantize` maps depth 1 and 2 to `0`, so a depth-1 contig alignment
+/// (the common case for a Case-4 contig-vs-reference comparison) quantizes to an all-zero
+/// track and its breadth becomes unrecoverable once stored that way.
+pub fn coverage_breadth(raw: &[u32]) -> (u32, u32) {
+    let covered = raw.iter().filter(|&&d| d >= 1).count() as u32;
+    let covered_10x = raw.iter().filter(|&&d| d >= 10).count() as u32;
+    (covered, covered_10x)
 }
 
 /// Parse errors for FASTA, FASTQ, and other input formats
@@ -1356,6 +1427,15 @@ mod tests {
             serde_json::from_str(&json).expect("deserialization failed");
 
         assert_eq!(track, deserialized);
+    }
+
+    #[test]
+    fn coverage_breadth_counts_raw_depth_not_quantized() {
+        // Depths 1 and 2 both quantize to 0 via CoverageTrack::quantize — this must be
+        // computed from the raw vector, or a depth-1 contig alignment (the common Case-4
+        // shape) would report zero breadth.
+        let raw = vec![0u32, 1, 2, 10, 10];
+        assert_eq!(coverage_breadth(&raw), (4, 2));
     }
 
     // ===== Error type tests =====
