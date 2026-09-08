@@ -565,18 +565,20 @@ fn issue_58_variant_observation_has_all_alleles() {
 }
 
 // ============================================================================
-// SECTION E: Coverage Tracks (Quantized to 5, RLE-compressed)
+// SECTION E: Coverage Tracks (exact below 5, quantized to nearest 5 above, RLE-compressed)
 // ============================================================================
 
-/// Test: CoverageTrack quantizes to nearest 5
+/// Test: CoverageTrack keeps depths below 5 exact, quantizes 5 and above to nearest 5
 #[test]
 fn issue_58_coverage_track_quantizes_to_5() {
     use phraya_core::types::CoverageTrack;
 
-    // Test boundary cases
-    assert_eq!(CoverageTrack::quantize(0), 0, "0 should quantize to 0");
-    assert_eq!(CoverageTrack::quantize(2), 0, "2 should quantize to 0");
-    assert_eq!(CoverageTrack::quantize(3), 5, "3 should quantize to 5");
+    // Below 5: exact
+    assert_eq!(CoverageTrack::quantize(0), 0, "0 should stay exact");
+    assert_eq!(CoverageTrack::quantize(2), 2, "2 should stay exact");
+    assert_eq!(CoverageTrack::quantize(4), 4, "4 should stay exact");
+    // 5 and above: nearest multiple of 5
+    assert_eq!(CoverageTrack::quantize(5), 5, "5 should quantize to 5");
     assert_eq!(CoverageTrack::quantize(7), 5, "7 should quantize to 5");
     assert_eq!(CoverageTrack::quantize(8), 10, "8 should quantize to 10");
     assert_eq!(CoverageTrack::quantize(12), 10, "12 should quantize to 10");

@@ -90,7 +90,7 @@ Each preset selects an algorithm **and** a default coverage-window radius; `--co
 
 ### `.phraya` (position index, binary MessagePack + zstd)
 - **VariantObservation** fields: position, ref_base, all_alleles (with counts), confidence, CIGAR, mapq, edit_distance, local_coverage (±50bp window), avg_base_quality, provenance
-- **Coverage track**: quantized to nearest 5, RLE-compressed, full reference length
+- **Coverage track**: depths below 5 exact, 5 and above quantized to nearest 5, RLE-compressed, full reference length
 - **Mergeable**: combine multiple samples via position-centric merge (order-independent)
 
 ### `.phraya.queries` (query index, sidecar)

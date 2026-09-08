@@ -671,7 +671,8 @@ impl EvidenceLayer {
     }
 }
 
-/// Coverage track with RLE compression and quantization to nearest 5.
+/// Coverage track with RLE compression. Depths below 5 are stored exact; 5 and above
+/// round to the nearest multiple of 5. See [`CoverageTrack::quantize`].
 /// Stores (value, length) pairs for efficient representation of coverage across reference.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CoverageTrack {
@@ -681,7 +682,7 @@ pub struct CoverageTrack {
 
 impl CoverageTrack {
     /// Create a CoverageTrack from an array of coverage values.
-    /// Values are quantized to nearest 5 (0, 5, 10, 15, ..., 255).
+    /// See [`CoverageTrack::quantize`] for the exact/rounded split.
     pub fn new(coverage: Vec<usize>) -> Self {
         let total_length = coverage.len() as u32;
         let quantized: Vec<u8> = coverage.iter().map(|&c| Self::quantize(c)).collect();
@@ -709,11 +710,18 @@ impl CoverageTrack {
         CoverageTrack { runs, total_length }
     }
 
-    /// Quantize a coverage value to the nearest multiple of 5.
-    /// 0-2 → 0, 3-7 → 5, 8-12 → 10, etc.
+    /// Quantize a coverage value: depths below 5 are kept exact (0, 1, 2, 3, 4); depths of
+    /// 5 and above round to the nearest multiple of 5 (5-7 → 5, 8-12 → 10, etc.), capped at
+    /// 255. Keeping low depths exact matters most: coverage breadth thresholds and
+    /// per-variant coverage filters both care most about the boundary between "uncovered"
+    /// and "covered by 1-4 reads", which the old always-round scheme collapsed into 0.
     pub fn quantize(value: usize) -> u8 {
-        let rounded = ((value + 2) / 5) * 5;
-        (rounded.min(255)) as u8
+        if value < 5 {
+            value as u8
+        } else {
+            let rounded = ((value + 2) / 5) * 5;
+            rounded.min(255) as u8
+        }
     }
 
     /// Get coverage at a specific position via binary search on runs.
@@ -769,9 +777,9 @@ impl CoverageTrack {
 /// Count positions with raw depth >= 1 and >= 10.
 ///
 /// Must be called on the raw per-position depth vector, never on a [`CoverageTrack`]:
-/// `CoverageTrack::quantize` maps depth 1 and 2 to `0`, so a depth-1 contig alignment
-/// (the common case for a Case-4 contig-vs-reference comparison) quantizes to an all-zero
-/// track and its breadth becomes unrecoverable once stored that way.
+/// depths below 5 are stored exact, but 5 and above round to the nearest multiple of 5, so
+/// a quantized depth of 8 or 9 rounds *up* to 10 — reading `>= 10` off a [`CoverageTrack`]
+/// would overcount 10x breadth for positions that are actually only 8x or 9x covered.
 pub fn coverage_breadth(raw: &[u32]) -> (u32, u32) {
     let covered = raw.iter().filter(|&&d| d >= 1).count() as u32;
     let covered_10x = raw.iter().filter(|&&d| d >= 10).count() as u32;
@@ -1264,16 +1272,16 @@ mod tests {
     // ===== CoverageTrack type tests =====
 
     #[test]
-    fn coverage_track_quantization_zeros() {
+    fn coverage_track_quantization_exact_below_five() {
         assert_eq!(CoverageTrack::quantize(0), 0);
-        assert_eq!(CoverageTrack::quantize(1), 0);
-        assert_eq!(CoverageTrack::quantize(2), 0);
+        assert_eq!(CoverageTrack::quantize(1), 1);
+        assert_eq!(CoverageTrack::quantize(2), 2);
+        assert_eq!(CoverageTrack::quantize(3), 3);
+        assert_eq!(CoverageTrack::quantize(4), 4);
     }
 
     #[test]
     fn coverage_track_quantization_fives() {
-        assert_eq!(CoverageTrack::quantize(3), 5);
-        assert_eq!(CoverageTrack::quantize(4), 5);
         assert_eq!(CoverageTrack::quantize(5), 5);
         assert_eq!(CoverageTrack::quantize(6), 5);
         assert_eq!(CoverageTrack::quantize(7), 5);
@@ -1431,11 +1439,11 @@ mod tests {
 
     #[test]
     fn coverage_breadth_counts_raw_depth_not_quantized() {
-        // Depths 1 and 2 both quantize to 0 via CoverageTrack::quantize — this must be
-        // computed from the raw vector, or a depth-1 contig alignment (the common Case-4
-        // shape) would report zero breadth.
-        let raw = vec![0u32, 1, 2, 10, 10];
-        assert_eq!(coverage_breadth(&raw), (4, 2));
+        // Depths 8 and 9 both round UP to 10 via CoverageTrack::quantize (nearest multiple
+        // of 5) — >=10x breadth must be computed from the raw vector, or positions
+        // actually covered at 8x/9x would be miscounted as 10x-covered.
+        let raw = vec![0u32, 1, 2, 8, 9, 10];
+        assert_eq!(coverage_breadth(&raw), (5, 1));
     }
 
     // ===== Error type tests =====

@@ -73,7 +73,7 @@ workflow for protein alignment.
 - **Multi-mapping storage**: Tracks alternative alignment positions (score ratio ≥ 0.95). Filter ambiguous variants post-hoc.
 - **Evidence-informed**: K-mer uniqueness and variation hotspots computed before alignment.
 - **Rich metadata**: Every variant observation includes CIGAR, mapping quality, edit distance, local coverage (±50bp), all alleles, provenance.
-- **Coverage tracks**: Quantized to nearest 5, RLE-compressed, full reference length.
+- **Coverage tracks**: Depths below 5 stored exact; 5 and above quantized to nearest 5. RLE-compressed, full reference length.
 - **Mergeable format**: Combine samples with order-independent merge preserving provenance.
 - **Library-first filtering**: `phraya-filter` crate exposes public API for custom tools.
 - **Parallel-ready**: Plan files emit task lists for GNU Parallel, SLURM, WDL, Nextflow.
@@ -190,7 +190,7 @@ We use canonical minimizers with default parameters k=21, w=11 (appropriate for 
 - **K-mer parameters**: k=21, w=11 (canonical minimizers, standard for bacterial genomes). l = w+k-1 = 31 satisfies the odd-l canonicality requirement of simd-minimizers. Protein alphabet: k=6, w=5, non-canonical.
 - **Alphabet auto-detection**: content is classified `Protein` iff it contains any of E/F/I/L/P/Q — one-letter amino-acid codes with no IUPAC nucleotide meaning (every other amino-acid letter doubles as a valid DNA base or ambiguity code). `--alphabet {dna|protein}` overrides detection for the one genuine ambiguity: a short peptide spelled entirely in residues that are also valid nucleotide letters (e.g. only A/C/G/T-coding residues) is indistinguishable from DNA by content alone.
 - **Gap-affine scoring in `sensitive`** (ADR-0014): `gap_open=4, gap_extend=1, mismatch=2` (hard-coded). `gap_open+gap_extend=5 > mismatch` keeps an isolated SNP cheaper than opening any gap; `gap_extend=1` makes a run of ≥2 gap bases cheaper than the equivalent run of mismatches once a gap is open, so real multi-base indels consolidate into one CIGAR op instead of scattering across cost-tied mismatches. The affine cost only steers *which* alignment the search picks — reported `edit_distance` stays the traditional mismatches+indel-bases count either way. `balanced`/`fast` are unaffected (Myers-primary, no affine mode); `--gap-model linear` opts `sensitive` back into the old uniform-cost path.
-- **Coverage quantization**: Nearest 5. Enables RLE compression, negligible precision loss for variant calling decisions.
+- **Coverage quantization**: Depths below 5 stored exact (the boundary that matters most for coverage-breadth thresholds); 5 and above round to nearest 5. Enables RLE compression with negligible precision loss for variant calling decisions.
 - **Sketch reuse**: Plan-time sketches stored in `.phrayaplan` (v2) keyed by sequence ID; alignment reuses them rather than recomputing.
 
 ## Inspired By

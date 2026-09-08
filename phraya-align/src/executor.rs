@@ -224,16 +224,18 @@ fn get_abs_multi(windows: &[WindowedCoverage], abs_pos: usize) -> u32 {
 pub struct AlignmentResult {
     /// Variant observations at polymorphic sites
     pub variants: Vec<VariantObservation>,
-    /// Coverage over each alignment's own span (quantized to nearest 5) — one small window
-    /// per alignment (primary + alternatives), not a single buffer spanning all of them, so
+    /// Coverage over each alignment's own span (quantized: depths below 5 exact, 5 and
+    /// above rounded to the nearest multiple of 5) — one small window per alignment
+    /// (primary + alternatives), not a single buffer spanning all of them, so
     /// multi-mapped reads on repeat-rich genomes don't materialize a near-genome-length
     /// buffer. Merge each window into a genome accumulator at `.start` independently.
     pub coverage: Vec<WindowedCoverage>,
     /// Same windows as `coverage`, but un-quantized raw per-position depth. Coverage
-    /// breadth (`phraya_core::types::coverage_breadth`) needs this: quantizing to the
-    /// nearest 5 maps depth 1-2 to 0, making "covered by one read" indistinguishable from
-    /// "never covered" (see that function's doc comment). Not used for anything else —
-    /// `local_coverage` windows and the merged `CoverageTrack` still come from `coverage`.
+    /// breadth (`phraya_core::types::coverage_breadth`) needs this: `coverage`'s
+    /// depth-1-4 values are exact, but 5-and-above are still rounded to the nearest 5
+    /// (e.g. depth 8 or 9 rounds *up* to 10), which would overcount 10x breadth (see that
+    /// function's doc comment). Not used for anything else — `local_coverage` windows and
+    /// the merged `CoverageTrack` still come from `coverage`.
     pub raw_coverage: Vec<WindowedCoverage>,
     /// Query index: (target_position, normalized_score) for primary + alternatives
     pub query_positions: Vec<(u32, f64)>,
@@ -1086,7 +1088,7 @@ fn compute_windowed_coverage(
 
 fn quantize_coverage(raw: &[u32]) -> Vec<u32> {
     raw.iter()
-        .map(|&v| (((v as usize + 2) / 5) * 5) as u32)
+        .map(|&v| phraya_core::types::CoverageTrack::quantize(v as usize) as u32)
         .collect()
 }
 

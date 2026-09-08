@@ -75,8 +75,8 @@ impl PhrayaFile {
 
     /// Set coverage-breadth counters on the header. Computed from the raw depth vector by
     /// the caller (see `phraya_core::types::coverage_breadth`) — never from the already-
-    /// quantized `coverage_track`, which cannot represent depth 1-2 (see that function's
-    /// doc comment).
+    /// quantized `coverage_track`, whose depths of 5 and above round to the nearest
+    /// multiple of 5 (e.g. depth 8 or 9 rounds up to 10; see that function's doc comment).
     pub fn with_coverage_breadth(mut self, covered: u32, covered_10x: u32) -> Self {
         self.header.covered_positions = Some(covered);
         self.header.covered_positions_10x = Some(covered_10x);
