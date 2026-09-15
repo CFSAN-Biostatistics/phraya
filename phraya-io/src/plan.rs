@@ -528,7 +528,16 @@ fn partition_read_data(plan: &PhrayaPlan, num_chunks: usize) -> Vec<ChunkFrame> 
     } else {
         plan.read_hash_order.len()
     };
-    let chunk_size = if total_reads == 0 {
+    // Must match `run_align_worker_with_plan`'s read-time chunk_size formula exactly
+    // (phraya-cli/src/main.rs): when `--batch-by N` set an explicit reads-per-chunk,
+    // that value - not a fresh `total_reads / num_chunks` division - determines chunk
+    // boundaries on both the write and read side. The two independently recomputing
+    // different chunk sizes desyncs which reads a worker's chunk actually contains from
+    // which byte-offset range that worker asks for, corrupting every chunk after the
+    // first.
+    let chunk_size = if let Some(reads_per) = plan.batch_reads_per_chunk {
+        reads_per
+    } else if total_reads == 0 {
         0
     } else {
         (total_reads + num_chunks - 1) / num_chunks

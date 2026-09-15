@@ -561,7 +561,7 @@ fn run_align_worker(
     let toc = plan::read_plan_toc(plan_path)?;
     let worker_count = (toc.num_chunks as usize).max(1);
     let plan = plan::read_plan_worker(plan_path, worker_id, worker_count)?;
-    run_align_worker_with_plan(worker_id, &plan, config)
+    run_align_worker_with_plan(worker_id, &plan, config, true)
 }
 
 /// Align worker chunk with borrowed plan (for parallel execution)
@@ -569,6 +569,13 @@ fn run_align_worker_with_plan(
     worker_id: usize,
     plan: &PhrayaPlan,
     config: AlignConfig,
+    // `true` when `plan` was loaded via `plan::read_plan_worker`, which already narrows
+    // `read_byte_offsets` down to exactly this worker's own reads (positions [0, chunk
+    // len) *local* to the chunk, not [start_idx, end_idx) *global* to the full read
+    // pool). `false` when `plan` is the full, unsliced plan shared across every worker
+    // (`run_align_ensure`'s `Arc<PhrayaPlan>`), whose `read_byte_offsets` still spans
+    // every read and needs this worker's own global slice cut from it here.
+    plan_already_sliced: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate worker ID
     let num_chunks = plan
@@ -604,6 +611,20 @@ fn run_align_worker_with_plan(
     };
     let start_idx = worker_id * chunk_size;
     let end_idx = std::cmp::min(start_idx + chunk_size, query_read_count);
+
+    // `read_byte_offsets`-based reads (the non-gzip path below) live at *global*
+    // positions [start_idx, end_idx) when `plan` is the full, unsliced plan, but at
+    // *local* positions [0, end_idx - start_idx) when `read_plan_worker` already cut
+    // this worker's own chunk out of `read_byte_offsets` before we got here — indexing
+    // an already-chunk-sliced array with the global range double-slices and panics
+    // (issue: batch-mode `align --worker N` without `--ensure`, out-of-bounds on
+    // read_byte_offsets). The gzip fallback path always re-parses every input file
+    // fresh regardless of how `plan` was loaded, so it always needs the global range.
+    let (byte_offset_start, byte_offset_end) = if plan_already_sliced {
+        (0, end_idx - start_idx)
+    } else {
+        (start_idx, end_idx)
+    };
 
     eprintln!(
         "Worker {} processing reads [{}, {})",
@@ -721,8 +742,8 @@ fn run_align_worker_with_plan(
             }
         }
     } else {
-        for batch_start in (start_idx..end_idx).step_by(BATCH_SIZE) {
-            let batch_end = (batch_start + BATCH_SIZE).min(end_idx);
+        for batch_start in (byte_offset_start..byte_offset_end).step_by(BATCH_SIZE) {
+            let batch_end = (batch_start + BATCH_SIZE).min(byte_offset_end);
             let batch: Result<Vec<_>, _> = (batch_start..batch_end)
                 .map(|global_idx| {
                     let (file_idx, local_idx) = map_global_to_local(plan_ref, global_idx)?;
@@ -1043,7 +1064,7 @@ fn run_align_ensure(
     let results: Vec<_> = missing_chunks
         .par_iter()
         .map(|&worker_id| {
-            let result = run_align_worker_with_plan(worker_id, &*plan, config);
+            let result = run_align_worker_with_plan(worker_id, &*plan, config, false);
             (worker_id, result.map_err(|e| e.to_string()))
         })
         .collect();
