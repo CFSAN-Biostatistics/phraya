@@ -96,8 +96,29 @@ struct SharedFrame {
     // only safe as a strictly *trailing* group with nothing non-skipped following
     // them — `insert_size_distribution`/`dense_kmer_index`/`w11_membership`/
     // `sparse_mode` below are exactly that group; `alphabet` cannot join it.
+    //
+    // The same hazard applies *within* that trailing group: it is only safe when
+    // every member skips or writes as a unit for a given instance. `sequence_ids`
+    // (below, CSP2 spike finding B2) is non-empty on essentially every real `plan`
+    // run while `sparse_mode`/`dense_kmer_index`/`w11_membership` are typically
+    // skipped (false/empty) in that same run — a later group member present while
+    // an earlier one is skipped desyncs the positional array exactly like the
+    // `alphabet` hazard above (reproduced as a real bug: `sequence_ids`'s bytes
+    // landed in `insert_size_distribution`'s slot, "wrong msgpack marker FixStr").
+    // `sequence_ids` therefore joins `alphabet` in the head block instead.
     #[serde(default)]
     pub alphabet: Alphabet,
+    /// Ordered list of sequence IDs, positionally matching the index space
+    /// `task_list`'s `(query_id, target_id)` pairs and `kmer_index`'s sketch order
+    /// were built from at plan time (reference record(s) first if present, then each
+    /// input file's records in file/within-file order). `plan-tasks` resolves task
+    /// indices through this table to the sequence IDs `align` looks up by — without
+    /// it, `plan_tasks`'s numeric output cannot be mapped back to a real sequence.
+    /// Always serialized (see the head-block note above) rather than trailing-skip:
+    /// non-empty on essentially every real plan, which made it an unsafe fit for
+    /// the conditionally-skipped trailing group.
+    #[serde(default)]
+    pub sequence_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insert_size_distribution: Option<InsertSizeDistribution>,
     #[serde(
@@ -353,6 +374,13 @@ pub struct PhrayaPlan {
     /// in the monolithic format — reconstructed on read from chunk frame ordering.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_hash_order: Vec<u64>,
+    /// Ordered list of sequence IDs, positionally matching the index space
+    /// `task_list`'s `(query_id, target_id)` pairs index into. See the field doc
+    /// on `SharedFrame::sequence_ids` for the exact ordering contract. `PhrayaPlan`
+    /// itself is never directly wire-serialized (only `SharedFrame`/`ChunkFrame`
+    /// are), so no skip attribute is needed here — this is a plain in-memory field.
+    #[serde(default)]
+    pub sequence_ids: Vec<String>,
 }
 
 impl PhrayaPlan {
@@ -390,6 +418,7 @@ impl PhrayaPlan {
             reference_space: Vec::new(),
             read_hash_order: Vec::new(),
             alphabet: Alphabet::default(),
+            sequence_ids: Vec::new(),
         }
     }
 
@@ -595,6 +624,7 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
         w11_membership: plan.w11_membership.clone(),
         sparse_mode: plan.sparse_mode,
         alphabet: plan.alphabet,
+        sequence_ids: plan.sequence_ids.clone(),
     };
 
     let shared_bytes = rmp_serde::to_vec(&shared)
@@ -773,6 +803,7 @@ fn assemble_plan(shared: SharedFrame, chunks: Vec<ChunkFrame>) -> PhrayaPlan {
         sparse_mode: shared.sparse_mode,
         alphabet: shared.alphabet,
         read_hash_order,
+        sequence_ids: shared.sequence_ids,
     }
 }
 
@@ -937,6 +968,7 @@ mod tests {
                 batch_reads_per_chunk: None,
                 batch_output_paths: vec![],
                 alphabet,
+                sequence_ids: Vec::new(),
                 // The skippable tail — every one of these deliberately triggers
                 // its skip (None / empty / false), the exact scenario that broke.
                 insert_size_distribution: None,
@@ -953,6 +985,54 @@ mod tests {
             assert!(back.insert_size_distribution.is_none());
             assert!(!back.sparse_mode);
         }
+    }
+
+    /// Regression test for CSP2 spike finding B2's fallout: `sequence_ids` (head
+    /// block, always serialized) non-empty while the *entire* trailing skip group
+    /// (`insert_size_distribution`/`dense_kmer_index`/`w11_membership`/
+    /// `sparse_mode`) skips — the exact real-world shape of every ordinary `phraya
+    /// plan` run (real sequence IDs, no BAM insert-size data, no dense sketches,
+    /// not sparse mode). Before `sequence_ids` moved out of the trailing group,
+    /// this combination desynced the positional array: `sequence_ids`'s bytes were
+    /// read into `insert_size_distribution`'s slot, producing a msgpack marker
+    /// error rather than a wrong value — reproduced verbatim against real `phraya
+    /// plan` output in `phraya-cli/tests/findings_b1_use_case_classification.rs`
+    /// and `integration_test_case4.rs`.
+    #[test]
+    fn shared_frame_roundtrips_with_nonempty_head_field_and_fully_skipped_tail() {
+        let shared = SharedFrame {
+            version: PHRAYAPLAN_VERSION,
+            use_case: UseCase::ContigsOnly,
+            reference_space: Vec::new(),
+            input_files: vec!["ref.fa".to_string(), "contigs.fa".to_string()],
+            timestamp: "t".to_string(),
+            kmer_index: HashMap::new(),
+            kmer_uniqueness: HashMap::new(),
+            task_list: vec![(1, 0), (2, 0)],
+            hotspot_intervals: vec![],
+            reads_per_file: vec![],
+            total_read_count: 0,
+            kmer_params: KmerParams::default(),
+            batch_num_chunks: None,
+            batch_reads_per_chunk: None,
+            batch_output_paths: vec![],
+            alphabet: phraya_core::types::Alphabet::Dna,
+            // Non-empty — the realistic case that broke.
+            sequence_ids: vec!["ref".to_string(), "ctg1".to_string(), "ctg2".to_string()],
+            // The entire trailing group skips, as in every ordinary plan run.
+            insert_size_distribution: None,
+            dense_kmer_index: HashMap::new(),
+            w11_membership: HashMap::new(),
+            sparse_mode: false,
+        };
+        let bytes = rmp_serde::to_vec(&shared).unwrap();
+        let back: SharedFrame = rmp_serde::from_slice(&bytes)
+            .unwrap_or_else(|e| panic!("roundtrip failed: {e}"));
+        assert_eq!(back.sequence_ids, shared.sequence_ids);
+        assert_eq!(back.task_list, shared.task_list);
+        assert_eq!(back.use_case, shared.use_case);
+        assert!(back.insert_size_distribution.is_none());
+        assert!(!back.sparse_mode);
     }
 
     /// Generate a deterministic DNA sequence of given length, unique per seed.

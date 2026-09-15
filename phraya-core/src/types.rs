@@ -1988,7 +1988,11 @@ pub fn sketch_sequence_default_for(seq: &Sequence, alphabet: Alphabet) -> Minimi
     }
 }
 
-fn jaccard_similarity(a: &MinimizerSketch, b: &MinimizerSketch) -> f64 {
+/// Jaccard similarity between two minimizer sketches' hash sets: |A∩B| / |A∪B|.
+/// Two empty sketches are defined as fully similar (1.0) so centroid selection and
+/// homology gating terminate cleanly on degenerate all-empty input rather than
+/// treating "no minimizers on either side" as "no similarity".
+pub fn jaccard_similarity(a: &MinimizerSketch, b: &MinimizerSketch) -> f64 {
     let set_a: HashSet<u64> = a.minimizers.iter().map(|&(val, _)| val).collect();
     let set_b: HashSet<u64> = b.minimizers.iter().map(|&(val, _)| val).collect();
     if set_a.is_empty() && set_b.is_empty() {

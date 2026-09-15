@@ -205,12 +205,22 @@ pub fn wfa_extend_naive_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
     // Fitting alignment: query must be fully consumed, target end is free.
     // This is the correct mode for aligning reads against a longer reference window.
     // Global alignment inflates edit distance by the length gap (target extras become deletions).
-    let (cigar, edit_distance, target_consumed) = match fill_wfa_fitting(query_suffix, target_suffix) {
-        Some(result) => result,
-        None => return Err(WfaError::AlignmentFailed(
-            "alignment abandoned: max edit distance exceeded".to_string(),
-        )),
-    };
+    //
+    // Capped via default_max_s_cap (CSP2 spike finding B4), not the uncapped
+    // `fill_wfa_fitting`: this is the production entry point (`wfa_extend`), reached
+    // whenever a query exceeds `MYERS_MAX_QUERY_LEN` — always true for contig-scale
+    // Case 4 comparisons, where query and target are comparable length and therefore
+    // always take fill_wfa_fitting_impl's "global" branch. An unrelated or highly
+    // divergent pair there must abandon within a bounded memory budget, not explore
+    // up to `s = qn + tn` wavefront phases.
+    let cap = default_max_s_cap(query_len, target_len);
+    let (cigar, edit_distance, target_consumed) =
+        match fill_wfa_fitting_impl(query_suffix, target_suffix, Some(cap)) {
+            Some(result) => result,
+            None => return Err(WfaError::AlignmentFailed(
+                "alignment abandoned: max edit distance exceeded".to_string(),
+            )),
+        };
 
     Ok(Alignment {
         cigar,
@@ -222,13 +232,63 @@ pub fn wfa_extend_naive_impl(query: &[u8], target: &[u8], seed: SeedAnchor) -> W
     })
 }
 
+/// Absolute backstop on wavefront-history memory for production alignment entry
+/// points that don't have a caller-supplied cap (CSP2 spike finding B4). Bounds
+/// `default_max_s_cap` so a pair's wavefront-history memory can't exceed this
+/// regardless of length or divergence: ~15 bytes/diagonal-slot/phase (the affine
+/// path's worst case — three i32 layers + three u8 op layers for M/I/D; the linear
+/// path allocates a third of that, so this is conservative there too, not a
+/// byte-exact budget for either).
+///
+/// This cap is a no-op below roughly (qn+tn) ~ tens of thousands — small enough that
+/// existing short-read/small-sequence tests calling the production entry points
+/// directly (`wfa_extend`, `wfa_extend_affine`) never bind it; it only meaningfully
+/// restricts contig-scale (100kb+) inputs, which is Case 4's defining geometry (two
+/// *comparable-length* sequences — always routes both the linear
+/// [`fill_wfa_fitting_impl`] and affine `fill_wfa_affine_generic` engines through
+/// their "global" mode, since `tn <= qn + qn/2 + 10` always holds for equal-length
+/// inputs). At 100kb+100kb, this bounds the edit-distance search to roughly a few
+/// hundred — comfortably above realistic within-species divergence (PRD: <1000 SNPs
+/// genome-wide, so far fewer per 100kb contig) while still bounded, so a genuinely
+/// unrelated or wildly divergent pair (the input the homology gate, B3, exists to
+/// filter — but a backstop must not depend on that gate always running first)
+/// abandons within a fixed memory budget instead of exploring unboundedly.
+const MAX_WAVEFRONT_BYTES: usize = 512 * 1024 * 1024;
+
+/// Default `max_s_cap` for production alignment entry points that don't have a
+/// caller-supplied cap (CSP2 spike finding B4): unlike a short read windowed against
+/// a long reference, Case 4 (contig vs contig) always compares two *comparable-length*
+/// sequences, which both the linear (`fill_wfa_fitting_impl`) and affine
+/// (`fill_wfa_affine_generic`) engines route through their uncapped "global" mode once
+/// `tn <= qn + qn/2 + 10`. Passing `None` there lets a genuinely divergent or unrelated
+/// pair (the exact input the homology gate, ADR/issue B3, exists to filter — but a
+/// backstop must not depend on that gate always running first) explore up to
+/// `s = qn + tn` wavefront phases, each allocating an `O(qn + tn)` array retained for
+/// traceback: `O((qn + tn)^2)` memory, tens of GB at contig scale. This is the
+/// production-entry-point half of the fix; the other half is `fill_wfa` itself
+/// actually enforcing the cap during its loop instead of only checking it after the
+/// (already fully-allocated) result comes back.
+pub(crate) fn default_max_s_cap(query_len: usize, target_len: usize) -> usize {
+    let per_phase_bytes = (query_len + target_len + 1).saturating_mul(15).max(1);
+    (MAX_WAVEFRONT_BYTES / per_phase_bytes).max(1)
+}
+
 /// Wavefront Alignment (WFA) — O(s·n) where s = edit distance.
 ///
 /// For each edit distance s, maintains one i32 per active diagonal k = query_pos - target_pos,
 /// storing the furthest-reaching query position reachable on diagonal k with exactly s edits.
 /// Extend greedily (free matches); expand to s+1 via mismatch (same diagonal) or indel (±1 diagonal).
-/// Returns (cigar, edit_distance).
-fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
+///
+/// `max_s_cap` bounds the search: the loop never explores past `s = max_s_cap`, so
+/// memory stays `O(max_s_cap * (qn + tn))` regardless of how divergent (or unrelated)
+/// `q` and `t` turn out to be — this is the live enforcement `fill_wfa_fitting_impl`'s
+/// global-mode branch was missing (CSP2 spike finding B4): checking a cap only *after*
+/// this function already ran to completion doesn't prevent the allocation.
+/// `None` explores the full `s = qn + tn` upper bound (uncapped — for differential
+/// tests and callers that need an exact, guaranteed result on bounded-size input).
+///
+/// Returns `None` if the cap is exhausted before a fitting-end is found.
+fn fill_wfa(q: &[u8], t: &[u8], max_s_cap: Option<usize>) -> Option<(String, usize)> {
     let qn = q.len() as i32;
     let tn = t.len() as i32;
 
@@ -273,14 +333,16 @@ fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
     if wf_cur[target_idx] == qn {
         // Perfect match — build cigar
         let (cigar, _) = traceback_wfa(&wf_hist, q, t, 0);
-        return (cigar, 0);
+        return Some((cigar, 0));
     }
 
     wf_hist.push((wf_cur, ops_cur));
 
-    // Iterate edit distances
+    // Iterate edit distances, bounded by the cap when one is supplied.
     let max_s = qn + tn; // upper bound
-    for s in 1..=max_s {
+    let max_s_to_explore =
+        max_s_cap.map_or(max_s, |cap| (cap.min(i32::MAX as usize) as i32).min(max_s));
+    for s in 1..=max_s_to_explore {
         let prev = &wf_hist[s as usize - 1].0;
         let mut wf_next = vec![UNSET; size];
         let mut ops_next = vec![0u8; size];
@@ -334,14 +396,15 @@ fn fill_wfa(q: &[u8], t: &[u8]) -> (String, usize) {
         if t_idx < wf_next.len() && wf_next[t_idx] >= qn {
             wf_hist.push((wf_next, ops_next));
             let (cigar, _) = traceback_wfa(&wf_hist, q, t, s as usize);
-            return (cigar, s as usize);
+            return Some((cigar, s as usize));
         }
 
         wf_hist.push((wf_next, ops_next));
     }
 
-    // Fallback: should not reach here for valid inputs
-    (String::new(), 0)
+    // Cap exhausted (or, in the uncapped case, the mathematically-unreachable
+    // max_s = qn + tn boundary) without finding a fitting-end: abandoned.
+    None
 }
 
 /// Fitting alignment variant of [`fill_wfa`].
@@ -372,17 +435,12 @@ pub fn fill_wfa_fitting_impl(
     // For similar-length sequences (small indels, equal lengths) global is correct
     // and avoids spurious early termination that under-counts edits.
     if tn <= qn + qn / 2 + 10 {
-        let (cigar, edit_dist) = fill_wfa(q, t);
-        // This branch bypasses the wavefront cap loop entirely, so max_s_cap must be
-        // enforced explicitly here too -- otherwise a capped caller (ADR-0007 / #183)
-        // silently gets an uncapped alignment for any query/target pair in this length
-        // ratio, defeating the early-abandonment guarantee.
-        if let Some(cap) = max_s_cap {
-            if edit_dist > cap {
-                return None;
-            }
-        }
-        return Some((cigar, edit_dist, t.len()));
+        // The cap is now enforced *inside* fill_wfa's loop (CSP2 spike finding B4) —
+        // an exhausted cap here means genuinely abandoned, not a completed-but-
+        // over-cap result to discard after the fact. The previous post-hoc check
+        // (reject the result if `edit_dist > cap`) still ran the full uncapped
+        // search first, allocating everything it was supposed to prevent.
+        return fill_wfa(q, t, max_s_cap).map(|(cigar, edit_dist)| (cigar, edit_dist, t.len()));
     }
 
     let size = (qn + tn + 1) as usize;
@@ -410,7 +468,7 @@ pub fn fill_wfa_fitting_impl(
     let max_s = qn + tn;
 
     let max_s_to_explore = if let Some(cap) = max_s_cap {
-        (cap as i32).min(max_s)
+        (cap.min(i32::MAX as usize) as i32).min(max_s)
     } else {
         max_s
     };
@@ -481,11 +539,6 @@ pub fn fill_wfa_fitting_impl(
     None
 }
 
-/// Wavefront fitting alignment with optional cap on maximum edit distance.
-/// Returns `(cigar, edit_distance, target_consumed)` or `None` if abandoned.
-fn fill_wfa_fitting(q: &[u8], t: &[u8]) -> Option<(String, usize, usize)> {
-    fill_wfa_fitting_impl(q, t, None)
-}
 
 // ============================================================================
 // Gap-affine WFA (ADR-0014)
@@ -679,7 +732,17 @@ fn fill_wfa_affine_generic(
         let s_open = s - costs.gap_open - costs.gap_extend;
         let s_ext = s - costs.gap_extend;
 
-        for k in diag_lo..=diag_hi {
+        // Band the diagonal sweep to what's actually reachable at this phase, mirroring
+        // the linear engine's `fill_wfa` bound: reaching diagonal offset d costs at least
+        // d (one indel step per unit shift) even in the affine model — `gap_open >= 0`
+        // only ever makes affine's true reachable band a *subset* of this, never wider.
+        // Without this, every phase swept the full `-tn..=qn` range regardless of `s`,
+        // turning O(cap * s) work into O(cap * (qn + tn)) — catastrophic at contig scale
+        // where cap << qn + tn (CSP2 spike finding B4 fallout).
+        let lo = -(s.min(tn));
+        let hi = s.min(qn);
+
+        for k in lo..=hi {
             let ki = (k + tn) as usize;
 
             // ins (query-extra): open from m[s_open][k-1]+1, or extend from ins[s_ext][k-1]+1.
@@ -740,7 +803,7 @@ fn fill_wfa_affine_generic(
         let mut m = vec![AFF_UNSET; size];
         let mut m_op = vec![0u8; size];
         let s_mm = s - costs.mismatch;
-        for k in diag_lo..=diag_hi {
+        for k in lo..=hi {
             let ki = (k + tn) as usize;
             let mut best = (AFF_UNSET, 0u8);
             if s_mm >= 0 {
@@ -928,7 +991,7 @@ pub fn fill_wfa_affine_fitting_impl(
     let qn = q.len() as i32;
     let tn = t.len() as i32;
     let fitting = tn > qn + qn / 2 + 10;
-    let cap = max_s_cap.map(|c| c as i32);
+    let cap = max_s_cap.map(|c| c.min(i32::MAX as usize) as i32);
     let (cigar, _affine_score, t_end) = fill_wfa_affine_generic(q, t, costs, fitting, cap)?;
     let edit_distance = levenshtein_from_cigar(&cigar);
     Some((cigar, edit_distance, t_end))
@@ -1264,7 +1327,7 @@ impl DiagMatrix {
 /// preceding diagonals as contiguous slices, so they load straight into vectors
 /// and the result stores straight into diagonal `d`'s block (see [`DiagMatrix`]).
 ///
-/// **NOTE:** This is O(n×m) complexity. Production uses `fill_wfa_fitting` which
+/// **NOTE:** This is O(n×m) complexity. Production uses `fill_wfa_fitting_impl` which
 /// is O(s·n) where s = edit distance. This function exists for:
 /// - Differential correctness testing vs `fill_scalar`
 /// - Validating portable SIMD lowering on different architectures
@@ -2945,7 +3008,7 @@ mod wfa_algorithm_tests {
 
     #[test]
     fn perfect_match_has_zero_edits_and_all_match_cigar() {
-        let (cigar, edit_dist) = fill_wfa(b"ACGT", b"ACGT");
+        let (cigar, edit_dist) = fill_wfa(b"ACGT", b"ACGT", None).unwrap();
         assert_eq!(edit_dist, 0);
         assert_eq!(cigar, "4M");
     }
@@ -2959,7 +3022,7 @@ mod wfa_algorithm_tests {
         let t = b"AGGT";
         let dp = fill_scalar(q, t);
         let expected_edit = dp[q.len() * (t.len() + 1) + t.len()] as usize;
-        let (_, got_edit) = fill_wfa(q, t);
+        let (_, got_edit) = fill_wfa(q, t, None).unwrap();
         assert_eq!(got_edit, expected_edit, "edit distance must match scalar reference");
         assert_eq!(got_edit, 1);
     }
@@ -2973,7 +3036,7 @@ mod wfa_algorithm_tests {
         let t = b"ACGT";
         let dp = fill_scalar(q, t);
         let expected_edit = dp[q.len() * (t.len() + 1) + t.len()] as usize;
-        let (_, got_edit) = fill_wfa(q, t);
+        let (_, got_edit) = fill_wfa(q, t, None).unwrap();
         assert_eq!(got_edit, expected_edit);
         assert_eq!(got_edit, 1);
     }
@@ -2987,7 +3050,7 @@ mod wfa_algorithm_tests {
         let t = b"ACGT";
         let dp = fill_scalar(q, t);
         let expected_edit = dp[q.len() * (t.len() + 1) + t.len()] as usize;
-        let (_, got_edit) = fill_wfa(q, t);
+        let (_, got_edit) = fill_wfa(q, t, None).unwrap();
         assert_eq!(got_edit, expected_edit);
         assert_eq!(got_edit, 1);
     }
@@ -3037,7 +3100,7 @@ mod wfa_algorithm_tests {
                     let t = diverge_dna(&mut rng, &q, dv);
                     let dp = fill_scalar(&q, &t);
                     let expected = dp[q.len() * (t.len() + 1) + t.len()] as usize;
-                    let (_, got) = fill_wfa(&q, &t);
+                    let (_, got) = fill_wfa(&q, &t, None).unwrap();
                     assert_eq!(
                         got, expected,
                         "edit distance mismatch: q.len={} t.len={} div={}%",
@@ -3067,7 +3130,7 @@ mod wfa_algorithm_tests {
         let mut t = vec![b'A'; 300];
         for i in (0..t.len()).step_by(50) { t[i] = b'C'; }
         let start = Instant::now();
-        let (_, edit) = fill_wfa(&q, &t);
+        let (_, edit) = fill_wfa(&q, &t, None).unwrap();
         let elapsed = start.elapsed();
         assert!(edit > 0, "expected non-zero edits");
         assert!(
@@ -3086,7 +3149,7 @@ mod wfa_algorithm_tests {
         let q: Vec<u8> = (0..10_000).map(|i| if i % 1000 == 0 { b'C' } else { b'A' }).collect();
         let t: Vec<u8> = (0..10_000).map(|i| if i % 1001 == 0 { b'C' } else { b'A' }).collect();
         let start = Instant::now();
-        let (_, edit) = fill_wfa(&q, &t);
+        let (_, edit) = fill_wfa(&q, &t, None).unwrap();
         let elapsed = start.elapsed();
         assert!(edit > 0);
         assert!(

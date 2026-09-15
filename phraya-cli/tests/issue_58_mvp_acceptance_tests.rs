@@ -272,19 +272,17 @@ fn issue_58_use_case_case3_contigs_with_reads() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
+    // Contigs must actually be contig-length (>=5000bp) now that multi-file,
+    // no-reference classification checks per-file content, not just file count
+    // (CSP2 spike finding B1 fix).
+    let long_seq_1 = "ACGTACGTACGTACGT".repeat(320); // 5120bp
+    let mut long_seq_2 = long_seq_1.clone();
+    long_seq_2.pop();
+    long_seq_2.push('A'); // differ by one trailing base from contig1
     let contigs_path = create_fasta_file(
         temp_path,
         "contigs.fa",
-        &[
-            (
-                "contig1",
-                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT",
-            ),
-            (
-                "contig2",
-                "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGA",
-            ),
-        ],
+        &[("contig1", &long_seq_1), ("contig2", &long_seq_2)],
     );
 
     let reads_path = create_fastq_file(

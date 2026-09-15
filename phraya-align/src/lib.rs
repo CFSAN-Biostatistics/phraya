@@ -151,7 +151,14 @@ pub fn wfa_extend_affine(
     let query_suffix = &query[seed.query_pos..];
     let target_suffix = &target[seed.target_pos..];
 
-    match wfa_simd::fill_wfa_affine_fitting_impl(query_suffix, target_suffix, costs, None) {
+    // Capped via default_max_s_cap (CSP2 spike finding B4): Sensitive's default
+    // affine engine already enforces a supplied cap correctly in both its fitting
+    // and global (comparable-length, i.e. Case 4 contig-vs-contig) modes via
+    // fill_wfa_affine_generic — but nothing on this production path ever supplied
+    // one, leaving every strategy exposed to unbounded wavefront-history memory on
+    // a genuinely divergent or unrelated pair.
+    let cap = wfa_simd::default_max_s_cap(query_suffix.len(), target_suffix.len());
+    match wfa_simd::fill_wfa_affine_fitting_impl(query_suffix, target_suffix, costs, Some(cap)) {
         Some((cigar, edit_distance, target_consumed)) => Ok(Alignment {
             cigar,
             edit_distance,

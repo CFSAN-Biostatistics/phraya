@@ -40,12 +40,25 @@ fn create_fastq_file(dir: &Path, filename: &str, sequences: &[(&str, &str, &str)
     path
 }
 
-/// Helper to create a plan file programmatically using the library
+/// Helper to create a plan file programmatically using the library.
+/// Populates `sequence_ids` with placeholder `seq{N}` names covering every index
+/// referenced by `task_list`, so `plan_tasks` can resolve them (B2 fix: `plan_tasks`
+/// must print sequence IDs, not raw indices — `align` looks sequences up by ID).
 fn create_plan_file(dir: &Path, filename: &str, task_list: Vec<(u32, u32)>) -> PathBuf {
     use phraya_io::plan::{PhrayaPlan, UseCase};
     use std::collections::HashMap;
 
-    let plan = PhrayaPlan::new(
+    let max_idx = task_list
+        .iter()
+        .flat_map(|&(a, b)| [a, b])
+        .max()
+        .map(|m| m as usize);
+    let sequence_ids: Vec<String> = match max_idx {
+        Some(m) => (0..=m).map(|i| format!("seq{i}")).collect(),
+        None => Vec::new(),
+    };
+
+    let mut plan = PhrayaPlan::new(
         UseCase::ReadsWithRef,
         vec![],
         "2026-05-31T12:00:00Z".to_string(),
@@ -53,6 +66,7 @@ fn create_plan_file(dir: &Path, filename: &str, task_list: Vec<(u32, u32)>) -> P
         HashMap::new(),
         task_list,
     );
+    plan.sequence_ids = sequence_ids;
 
     let path = dir.join(filename);
     phraya_io::plan::write_plan(&path, &plan).unwrap();
@@ -150,10 +164,13 @@ fn issue_69_plan_tasks_tsv_format() {
         "each line should have exactly 2 tab-separated fields"
     );
 
-    // Verify values match input tasks
+    // Verify values match resolved sequence IDs, not raw indices (B2 fix):
+    // task (5,10) → "seq5\tseq10", task (7,10) → "seq7\tseq10".
     assert!(
-        (parts[0] == "5" && parts[1] == "10") || (parts[0] == "7" && parts[1] == "10"),
-        "data line values should match task IDs"
+        (parts[0] == "seq5" && parts[1] == "seq10")
+            || (parts[0] == "seq7" && parts[1] == "seq10"),
+        "data line values should match resolved sequence IDs, got: {:?}",
+        parts
     );
 }
 
@@ -551,9 +568,10 @@ fn issue_69_plan_tasks_header_exact_format() {
     );
 }
 
-/// Test: numeric output is plain integers (no leading zeros or extra formatting)
+/// Test: output resolves task indices to sequence IDs, not raw integers (B2 fix —
+/// `align`'s traditional mode looks sequences up by ID, so plan-tasks must emit IDs).
 #[test]
-fn issue_69_plan_tasks_numeric_format() {
+fn issue_69_plan_tasks_resolves_sequence_ids() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
@@ -577,10 +595,11 @@ fn issue_69_plan_tasks_numeric_format() {
     let lines: Vec<&str> = stdout.lines().collect();
     let data_line = lines[1].trim();
 
-    // Should be exactly "100\t50"
+    // task (100, 50) resolves through sequence_ids to "seq100\tseq50" — the fixture's
+    // index 100 is query, index 50 is target.
     assert_eq!(
-        data_line, "100\t50",
-        "numeric output should be plain integers"
+        data_line, "seq100\tseq50",
+        "output should resolve indices to sequence IDs, not print raw integers"
     );
 }
 
@@ -611,16 +630,16 @@ fn issue_69_plan_tasks_all_tasks_present() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
 
-    // Verify all tasks are present
+    // Verify all tasks are present, resolved to sequence IDs (B2 fix)
     for (i, task) in tasks.iter().enumerate() {
         let line = lines[i + 1].trim(); // skip header
         let parts: Vec<&str> = line.split('\t').collect();
-        let query_id: u32 = parts[0].parse().expect("should parse query_id");
-        let target_id: u32 = parts[1].parse().expect("should parse target_id");
+        let expected_query = format!("seq{}", task.0);
+        let expected_target = format!("seq{}", task.1);
 
         assert_eq!(
-            (query_id, target_id),
-            *task,
+            (parts[0], parts[1]),
+            (expected_query.as_str(), expected_target.as_str()),
             "task {} should match input",
             i
         );

@@ -4,8 +4,8 @@ use phraya_align::executor::{
     align_read, align_task_with_config, AlignConfig, Strategy, TargetContext,
 };
 use phraya_core::types::{
-    compute_kmer_uniqueness, coverage_breadth, detect_hotspot_intervals, select_centroid,
-    sketch_sequence_default, CoverageTrack, MinimizerSketch, Sequence,
+    compute_kmer_uniqueness, coverage_breadth, detect_hotspot_intervals, jaccard_similarity,
+    select_centroid, sketch_sequence_default, CoverageTrack, MinimizerSketch, Sequence,
 };
 use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
@@ -79,6 +79,28 @@ enum Commands {
         /// switches minimizer seeding to non-canonical at protein-scale k/w.
         #[arg(long, value_name = "MODE", default_value = "auto")]
         alphabet: String,
+
+        /// Override use-case auto-detection (CSP2 spike finding B1): auto (default),
+        /// reads-with-ref (Case 2), contigs-with-reads (Case 3, centroid selection),
+        /// or contigs-only (Case 4, direct/all-pairs contig comparison). Auto-detection
+        /// is a heuristic (contig-length majority by base count) and can misclassify
+        /// inputs it wasn't tuned for — this flag is the escape hatch.
+        #[arg(long, value_name = "MODE", default_value = "auto")]
+        use_case: String,
+
+        /// Minimum minimizer-sketch Jaccard similarity two contigs must share to
+        /// generate a Case-4 (contigs-only, no reference) all-pairs task between them
+        /// (CSP2 spike finding B3). Ignored when --no-homology-gate is set or when a
+        /// reference is provided (Case 2 / Case 4-with-reference are not gated: every
+        /// query is always tasked against every reference record).
+        #[arg(long, value_name = "F", default_value_t = 0.1)]
+        min_homology: f64,
+
+        /// Disable the Case-4 homology gate and generate the full dense all-pairs
+        /// contig task list. Useful for small inputs, debugging, or datasets where
+        /// every contig pair is expected to be compared regardless of similarity.
+        #[arg(long)]
+        no_homology_gate: bool,
     },
     /// Extract task list from a .phrayaplan file and output as TSV
     PlanTasks {
@@ -282,6 +304,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_output_pattern,
             chunks,
             alphabet,
+            use_case,
+            min_homology,
+            no_homology_gate,
         } => {
             // Validate batch flags
             if (batch_to.is_some() || batch_by.is_some()) && batch_output_pattern.is_none() {
@@ -299,6 +324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 batch_output_pattern.as_deref(),
                 chunks,
                 &alphabet,
+                &use_case,
+                if no_homology_gate { None } else { Some(min_homology) },
             )?;
         }
         Commands::PlanTasks { plan_file } => {
@@ -1187,6 +1214,8 @@ fn run_plan(
     batch_output_pattern: Option<&str>,
     chunks: Option<usize>,
     alphabet_flag: &str,
+    use_case_flag: &str,
+    min_homology: Option<f64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use phraya_core::types::{detect_alphabet, sketch_sequence_default_for, Alphabet};
 
@@ -1289,13 +1318,21 @@ fn run_plan(
         .map(|(seq, _)| sketch_sequence_default_for(seq, alphabet))
         .collect();
 
-    // Detect use case
-    let use_case = detect_use_case(
-        num_ref_seqs,
-        input_paths.len(),
-        &sketches,
-        &all_sequences,
-    );
+    // Detect use case, unless overridden (CSP2 spike finding B1: auto-detection is a
+    // heuristic and needs an escape hatch for inputs it wasn't tuned for).
+    let use_case = match use_case_flag {
+        "auto" => detect_use_case(num_ref_seqs, input_paths.len(), &sketches, &all_sequences),
+        "reads-with-ref" => UseCase::ReadsWithRef,
+        "contigs-with-reads" => UseCase::ContigsWithReads,
+        "contigs-only" => UseCase::ContigsOnly,
+        other => {
+            return Err(format!(
+                "--use-case must be auto, reads-with-ref, contigs-with-reads, or \
+                 contigs-only (got: {other})"
+            )
+            .into())
+        }
+    };
 
     eprintln!(
         "Detected Case {}: {:?}",
@@ -1316,6 +1353,7 @@ fn run_plan(
         num_ref_seqs,
         &sketches,
         &sequence_to_file_index,
+        min_homology,
     );
 
     // Build HashMap kmer_index keyed by sequence ID for reuse during alignment
@@ -1356,6 +1394,12 @@ fn run_plan(
     plan.mate_info = all_mate_info;
     plan.reference_space = reference_spaces;
     plan.alphabet = alphabet;
+    // Ordered index -> sequence ID table (B2 fix): task_list indices are positions
+    // into `all_sequences`/`sketches`, built in exactly this order above (reference
+    // record(s) first if present, then each input file's records in order).
+    // plan_tasks resolves through this table so its TSV output is directly usable
+    // as `align`'s QUERY_ID/TARGET_ID arguments.
+    plan.sequence_ids = all_sequences.iter().map(|(seq, _)| seq.id().to_string()).collect();
 
     // Populate read_sketches keyed by content hash (ADR-0011)
     // Skip the reference if present; read_sketches are for reads only.
@@ -1556,12 +1600,49 @@ fn plan_tasks(plan_file: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Output TSV header
     println!("query_id\ttarget_id");
 
-    // Output each task as a TSV line
-    for (query_id, target_id) in &plan.task_list {
+    // Resolve each task's (query_idx, target_idx) through the plan's ordered
+    // sequence_ids table (B2 fix) so the printed IDs are exactly what `align`'s
+    // traditional-mode QUERY_ID/TARGET_ID arguments expect — `align` looks
+    // sequences up by FASTA/FASTQ header ID, not by plan-internal array index.
+    for (query_idx, target_idx) in &plan.task_list {
+        let query_id = plan.sequence_ids.get(*query_idx as usize).ok_or_else(|| {
+            format!(
+                "plan is missing a sequence_ids entry for index {query_idx} \
+                 (plan may predate the sequence_ids table — re-run `phraya plan`)"
+            )
+        })?;
+        let target_id = plan.sequence_ids.get(*target_idx as usize).ok_or_else(|| {
+            format!(
+                "plan is missing a sequence_ids entry for index {target_idx} \
+                 (plan may predate the sequence_ids table — re-run `phraya plan`)"
+            )
+        })?;
         println!("{}\t{}", query_id, target_id);
     }
 
     Ok(())
+}
+
+/// Minimum record length to count as a contig, not a read.
+const CONTIG_LEN_THRESHOLD: usize = 5000;
+
+/// Fraction of total input bases that must come from contig-length records for the
+/// input as a whole to be classified as contigs. A supermajority-by-bases, not "every
+/// record" — a single short plasmid/assembly-tail contig mixed into an otherwise-contig
+/// draft assembly must not flip the whole comparison to a reads-oriented use case
+/// (CSP2 spike finding B1: the old `.all(len >= 5000)` check did exactly that).
+const CONTIG_BASE_MAJORITY: f64 = 0.9;
+
+/// Is this run of sequences "contigs" as a whole, by base-weighted majority rather
+/// than per-record unanimity? Empty input is not contigs (avoids a `0 >= 0.9*0` vacuous
+/// true skewing an otherwise-empty file toward Case 4).
+fn is_contig_like<'a>(records: impl Iterator<Item = &'a (Sequence, String)>) -> bool {
+    let (contig_bases, total_bases) = records.fold((0u64, 0u64), |(c, t), (seq, _)| {
+        let len = seq.len() as u64;
+        let contig_len = if len >= CONTIG_LEN_THRESHOLD as u64 { len } else { 0 };
+        (c + contig_len, t + len)
+    });
+    total_bases > 0 && (contig_bases as f64) >= CONTIG_BASE_MAJORITY * (total_bases as f64)
 }
 
 /// Detect the use case from input characteristics
@@ -1576,11 +1657,8 @@ fn detect_use_case(
 
     if num_ref_seqs > 0 {
         // Reference record(s) are stored first; check whether the remaining inputs are
-        // contigs (≥5kb).
-        let inputs_are_contigs = all_sequences
-            .iter()
-            .skip(num_ref_seqs)
-            .all(|(seq, _)| seq.len() >= 5000);
+        // contigs as a whole (base-weighted majority, not per-record unanimity).
+        let inputs_are_contigs = is_contig_like(all_sequences.iter().skip(num_ref_seqs));
 
         if inputs_are_contigs && num_input_sequences > 0 {
             UseCase::ContigsOnly // Case 4: contigs + reference
@@ -1588,17 +1666,50 @@ fn detect_use_case(
             UseCase::ReadsWithRef // Case 2: reads + reference
         }
     } else if num_input_files > 1 || (num_input_files == 1 && num_input_sequences > 1) {
-        // Case 3 or 4: We have multiple sequences without reference
-        // Case 3: contigs + reads (multiple sequences in input files)
-        // Case 4: contigs only (but we still treat as contigs for simplicity)
-
-        // Simple heuristic: if we have exactly one input file with multiple sequences,
-        // it's likely contigs. If multiple input files, likely contigs + reads.
-        // For now, we classify as ContigsWithReads if we have multiple files,
-        // otherwise ContigsOnly
         if num_input_files > 1 {
-            UseCase::ContigsWithReads
+            // Multiple files, no reference. Group records by source file (preserving
+            // first-seen order) and classify each file as contigs or reads
+            // independently, rather than assuming "multiple files ⇒ contigs + reads"
+            // (CSP2 spike finding B1: two draft assemblies passed as plain positional
+            // inputs — neither flagged `--reference` — is CSP2's actual invocation
+            // shape, and the old file-count-only heuristic always routed it to Case
+            // 3's centroid logic instead of the direct pairwise Case 4 comparison it
+            // should be).
+            let mut file_order: Vec<&str> = Vec::new();
+            for (_, path) in all_sequences {
+                if !file_order.contains(&path.as_str()) {
+                    file_order.push(path.as_str());
+                }
+            }
+            let mut num_contig_files = 0usize;
+            for &path in &file_order {
+                let file_records = all_sequences.iter().filter(|(_, p)| p.as_str() == path);
+                if is_contig_like(file_records) {
+                    num_contig_files += 1;
+                }
+            }
+
+            if num_contig_files == file_order.len() {
+                // Every input file is contigs as a whole — direct pairwise comparison.
+                UseCase::ContigsOnly
+            } else if num_contig_files >= 1 {
+                // A mix of contig files and read files — centroid + reads (Case 3).
+                // generate_task_list's Case 3 branch still assumes the *first* input
+                // file holds the contigs (an existing, narrower assumption this fix
+                // does not change); inputs ordered contigs-file-then-reads-file(s)
+                // match it.
+                UseCase::ContigsWithReads
+            } else {
+                // No file looks like contigs — nothing to build a coordinate system
+                // from (reads-only, no reference, is not supported).
+                UseCase::ReadsOnly
+            }
         } else {
+            // Single file, multiple sequences, no reference: Case 4 MSA
+            // (contigs-only). Unlike the multi-file branch above, this path is not
+            // part of B1's misclassification — a single multi-record file with no
+            // reference has always meant "compare these sequences to each other",
+            // regardless of record length, and existing tests rely on that.
             UseCase::ContigsOnly
         }
     } else {
@@ -1620,6 +1731,7 @@ fn generate_task_list(
     num_ref_seqs: usize,
     sketches: &[MinimizerSketch],
     sequence_to_file_index: &[usize],
+    min_homology: Option<f64>,
 ) -> Vec<(u32, u32)> {
     match use_case {
         UseCase::ReadsWithRef => {
@@ -1681,10 +1793,25 @@ fn generate_task_list(
                     }
                 }
             } else {
-                // Case 4 MSA: all-vs-all pairs
+                // Case 4 MSA: gated all-pairs (CSP2 spike finding B3). Two draft
+                // assemblies with a few hundred contigs each produce O(n·m) pairs if
+                // ungated, almost all between contigs that share no real homology
+                // (unrelated regions, host contamination, distinct plasmids). Gate by
+                // minimizer-sketch Jaccard similarity — already computed at plan time,
+                // so this costs one set-intersection per candidate pair, not new
+                // sketching. `--no-homology-gate` (min_homology = None) restores the
+                // full dense all-pairs list.
                 for i in 0..sketches.len() {
                     for j in (i + 1)..sketches.len() {
-                        tasks.push((i as u32, j as u32));
+                        let above_threshold = match min_homology {
+                            Some(threshold) => {
+                                jaccard_similarity(&sketches[i], &sketches[j]) >= threshold
+                            }
+                            None => true,
+                        };
+                        if above_threshold {
+                            tasks.push((i as u32, j as u32));
+                        }
                     }
                 }
             }
