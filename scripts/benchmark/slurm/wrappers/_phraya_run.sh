@@ -32,14 +32,19 @@ echo "Reference: $REF"
 echo "Reads: $READS_1, $READS_2"
 echo "Threads: $THREADS"
 
+# Reference palette mode (ADR-0011), not batch mode: batch mode (--worker/
+# --batch-to) hard-errors on a multi-record reference/centroid file (it would
+# silently align against only the first record — see phraya-align's B1 fix,
+# CHANGELOG "Fixed"). Several benchmark targets are multi-chromosome genomes
+# (P. falciparum, C. albicans, G. gallus) so this path must handle N-record
+# references uniformly; --reference mode does, producing one <space>.phraya
+# per reference record plus a cross_space.phraya.queries union sidecar.
 PLAN_FILE="$OUT_DIR/plan.phrayaplan"
 "$PHRAYA" plan \
     --inputs "$READS_1" \
     --inputs "$READS_2" \
     --reference "$REF" \
-    --output "$PLAN_FILE" \
-    --batch-to 1 \
-    --batch-output-pattern "$OUT_DIR/alignment.phraya"
+    --output "$PLAN_FILE"
 
 [[ -f "$PLAN_FILE" ]] || { echo "ERROR: Plan file not created" >&2; exit 1; }
 
@@ -51,7 +56,7 @@ START_SECS=$SECONDS
 # measure_rss.py polls /proc/PID/status for peak RSS; phraya stdout+stderr → align.log
 PYTHON="${PYTHON3_BIN:-python3}"
 MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
-ALIGN_ARGS=(align --strategy "$STRATEGY" --worker 0 "$PLAN_FILE")
+ALIGN_ARGS=(align --strategy "$STRATEGY" --reference "$REF" --output "$OUT_DIR" "$PLAN_FILE")
 [[ -n "$GAP_MODEL" ]] && ALIGN_ARGS+=(--gap-model "$GAP_MODEL")
 "$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
     bash -c "RAYON_NUM_THREADS=$THREADS \"$PHRAYA\" ${ALIGN_ARGS[*]@Q} >\"$OUT_DIR/align.log\" 2>&1"
@@ -71,7 +76,7 @@ PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")
 
 # Count aligned reads: observations in .phraya are per-position not per-read;
 # use .phraya.queries which has one key per query/read that placed ≥1 alignment
-QUERIES_FILE="$OUT_DIR/alignment.phraya.queries"
+QUERIES_FILE="$OUT_DIR/cross_space.phraya.queries"
 if [[ -f "$QUERIES_FILE" ]]; then
     PYTHON="${PYTHON3_BIN:-python3}"
     N_ALIGNED=$("$PYTHON" "$SCRIPT_DIR/utils/count_phraya_aligned.py" "$QUERIES_FILE" 2>/dev/null || echo 0)
