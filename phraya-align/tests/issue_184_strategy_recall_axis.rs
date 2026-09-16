@@ -196,16 +196,23 @@ fn issue_184_balanced_strategy_preserves_multimapping_at_k5() {
 /// On a very repetitive target with many possible alignments, balanced caps at 2 chains.
 #[test]
 fn issue_184_balanced_strategy_caps_at_k5() {
-    // Create a highly repetitive read: 50bp of a single k-mer unit.
-    let unit = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"; // ~56bp repeating pattern
-    let query = Sequence::new(unit.to_vec(), None, "read1".to_string(), None);
+    // The repeat unit must be high-complexity, not a low-period motif like `ACGTACGT...`.
+    // A period-4 motif collapses to a *single* distinct minimizer value, which then occurs
+    // ~1000x in a 20-copy target and is masked outright by the `seed_max_occ` repeat cap
+    // (issue #194) — leaving the query with no seed at all. Such a query lies entirely
+    // within a hyper-repeat and is documented as genuinely unmappable; it used to "place"
+    // only because the `(0,0)` fallback anchor happened to align it against the copy sitting
+    // at offset 0. This fixture instead gives every locus real, chainable seeds, which is
+    // what makes the K=2 reporting cap the thing under test.
+    let unit = random_dna(0x5EED_184A, 80);
+    let query = Sequence::new(unit.clone(), None, "read1".to_string(), None);
 
-    // Create a target with many repeat copies: 20 tandem repeats of the unit.
-    // This creates >20 possible seed anchors (which chaining collapses toward one
-    // chain per genuine repeat copy), but balanced should cap reporting at 5 chains.
+    // Create a target with many repeat copies: 20 tandem copies of the unit. Each copy is a
+    // genuine candidate locus (chaining collapses the repeat family toward one chain per
+    // copy), but balanced must cap reporting at 2.
     let mut target_bases = Vec::new();
     for _ in 0..20 {
-        target_bases.extend_from_slice(unit);
+        target_bases.extend_from_slice(&unit);
     }
     target_bases.extend_from_slice(&random_dna(0x9999, 100));
     let target = Sequence::new(target_bases, None, "ref".to_string(), None);

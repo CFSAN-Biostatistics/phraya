@@ -38,7 +38,7 @@ fn create_phraya_file_with_observations(
         })
         .collect();
 
-    let coverage = CoverageTrack::new(vec![10; reference_length as usize]);
+    let coverage = CoverageTrack::new(&vec![10; reference_length as usize]);
     let file = PhrayaFile::new(
         reference_length,
         "test_sample".to_string(),

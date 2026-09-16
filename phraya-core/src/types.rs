@@ -681,17 +681,24 @@ pub struct CoverageTrack {
 }
 
 impl CoverageTrack {
-    /// Create a CoverageTrack from an array of coverage values.
+    /// Create a CoverageTrack from per-position raw depths.
     /// See [`CoverageTrack::quantize`] for the exact/rounded split.
-    pub fn new(coverage: Vec<usize>) -> Self {
+    ///
+    /// Takes `&[u32]` — the coverage type the rest of the pipeline already uses
+    /// (`coverage_breadth`, and the per-position accumulators in `phraya align`) — and
+    /// run-length encodes in a single pass. Taking `Vec<usize>` previously forced every
+    /// caller to materialize an 8-byte-per-base copy of the entire reference (1.6 GB on a
+    /// 197 Mb chromosome) solely to be quantized and dropped, on top of an intermediate
+    /// `Vec<u8>` of quantized values built here.
+    pub fn new(coverage: &[u32]) -> Self {
         let total_length = coverage.len() as u32;
-        let quantized: Vec<u8> = coverage.iter().map(|&c| Self::quantize(c)).collect();
 
         let mut runs = Vec::new();
         let mut current_val = 0u8;
         let mut current_len = 0u32;
 
-        for &val in &quantized {
+        for &raw in coverage {
+            let val = Self::quantize(raw as usize);
             if val == current_val {
                 current_len += 1;
             } else {
@@ -708,6 +715,23 @@ impl CoverageTrack {
         }
 
         CoverageTrack { runs, total_length }
+    }
+
+    /// An all-zero track of `total_length` positions, in O(1).
+    ///
+    /// Byte-identical to `new(&vec![0u32; total_length])` — `quantize(0) == 0`, so the
+    /// encoding is a single zero run — without allocating or scanning a full-length
+    /// array. Reference-palette alignment uses this for a space no read can place in,
+    /// which is the common case once a palette holds hundreds of records.
+    pub fn uncovered(total_length: u32) -> Self {
+        CoverageTrack {
+            runs: if total_length == 0 {
+                Vec::new()
+            } else {
+                vec![(0, total_length)]
+            },
+            total_length,
+        }
     }
 
     /// Quantize a coverage value: depths below 5 are kept exact (0, 1, 2, 3, 4); depths of
@@ -1297,7 +1321,7 @@ mod tests {
     #[test]
     fn coverage_track_uniform_coverage() {
         let coverage = vec![10, 10, 10, 10];
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         assert_eq!(track.total_length(), 4);
         assert_eq!(track.coverage_at(0), Some(10));
@@ -1309,7 +1333,7 @@ mod tests {
     #[test]
     fn coverage_track_alternating_coverage() {
         let coverage = vec![10, 5, 10, 5, 10];
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         assert_eq!(track.coverage_at(0), Some(10));
         assert_eq!(track.coverage_at(1), Some(5));
@@ -1321,7 +1345,7 @@ mod tests {
     #[test]
     fn coverage_track_zero_coverage() {
         let coverage = vec![0, 0, 5, 5, 0, 0];
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         assert_eq!(track.coverage_at(0), Some(0));
         assert_eq!(track.coverage_at(1), Some(0));
@@ -1333,12 +1357,12 @@ mod tests {
     #[test]
     fn coverage_track_round_trip_encoding() {
         let coverage = vec![10, 10, 20, 20, 5, 5, 15, 15];
-        let track = CoverageTrack::new(coverage.clone());
+        let track = CoverageTrack::new(&coverage);
         let decompressed = track.decompress();
 
         let quantized_expected: Vec<u8> = coverage
             .iter()
-            .map(|&c| CoverageTrack::quantize(c))
+            .map(|&c| CoverageTrack::quantize(c as usize))
             .collect();
 
         assert_eq!(decompressed, quantized_expected);
@@ -1356,7 +1380,7 @@ mod tests {
     #[test]
     fn coverage_track_iterator() {
         let coverage = vec![10, 10, 5, 5];
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         let positions_and_coverage: Vec<_> = track.iter().collect();
         assert_eq!(positions_and_coverage.len(), 4);
@@ -1369,7 +1393,7 @@ mod tests {
     #[test]
     fn coverage_track_compression_ratio() {
         let coverage = vec![10; 1000]; // 1000 positions with same coverage
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         let (compressed, original) = track.compression_ratio();
         // Should compress to 1 run of 1000 positions
@@ -1382,7 +1406,7 @@ mod tests {
         let coverage = (0..200)
             .map(|i| if i % 2 == 0 { 10 } else { 5 })
             .collect::<Vec<_>>();
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         // 200 positions, alternating between 10 and 5, creates 200 runs
         // Each run is 5 bytes (u8 + u32), so 1000 bytes compressed vs 200 bytes original
@@ -1391,10 +1415,25 @@ mod tests {
         assert!(compressed > original); // RLE expands for alternating patterns
     }
 
+    /// `uncovered` is the O(1) form of an all-zero track, and reference-palette alignment
+    /// writes it for a space no read can seed in *instead of* running the full path. If the
+    /// two ever diverge, a skipped space's `.phraya` would stop matching the one the full
+    /// path would have produced.
+    #[test]
+    fn uncovered_equals_scanning_an_all_zero_track() {
+        for len in [0usize, 1, 5, 1000] {
+            assert_eq!(
+                CoverageTrack::uncovered(len as u32),
+                CoverageTrack::new(&vec![0u32; len]),
+                "uncovered({len}) must equal new(&[0; {len}])"
+            );
+        }
+    }
+
     #[test]
     fn coverage_track_single_position() {
         let coverage = vec![15];
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         assert_eq!(track.total_length(), 1);
         assert_eq!(track.coverage_at(0), Some(15));
@@ -1404,7 +1443,7 @@ mod tests {
     #[test]
     fn coverage_track_empty() {
         let coverage = vec![];
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         assert_eq!(track.total_length(), 0);
         assert_eq!(track.coverage_at(0), None);
@@ -1428,7 +1467,7 @@ mod tests {
     #[test]
     fn coverage_track_serialization() {
         let coverage = vec![10, 10, 5, 5];
-        let track = CoverageTrack::new(coverage);
+        let track = CoverageTrack::new(&coverage);
 
         let json = serde_json::to_string(&track).expect("serialization failed");
         let deserialized: CoverageTrack =

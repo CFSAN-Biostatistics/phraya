@@ -224,3 +224,105 @@ fn palette_output_is_named_by_fasta_record_id() {
     assert!(out_dir.join("chr2.phraya").exists(), "expected chr2.phraya, found: {names:?}");
     assert!(out_dir.join("cross_space.phraya.queries").exists(), "cross-space sidecar written");
 }
+
+fn dna(len: usize, seed: u64) -> String {
+    let mut x = seed;
+    (0..len)
+        .map(|_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            b"ACGT"[((x >> 33) & 3) as usize] as char
+        })
+        .collect()
+}
+
+/// A space no read comes from must be *empty*, not full of fabricated variants.
+///
+/// Palette mode aligns every read against every space, so the `(0,0)` fallback anchor used
+/// to force a ~50-60% identity alignment of every read against every non-homologous space,
+/// each depositing ~`read_len/2` `VariantObservation`s. The cross-space sidecar filters
+/// those out at its 0.95 identity threshold, but the per-space `.phraya` does not — measured
+/// at 1.87 MB of fabricated calls per non-homologous space against 42 KB of real signal in
+/// the one space the reads actually came from.
+#[test]
+fn non_homologous_space_yields_no_variants() {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+
+    // Target/read ratio must exceed the fallback scope (10x) for the guard to engage; the
+    // shared REF_A/READ consts are deliberately tiny and comparable-length.
+    let chr_x = dna(3_000, 11);
+    let chr_y = dna(3_000, 99);
+    let flip = |c: char| match c {
+        'A' => 'C',
+        'C' => 'G',
+        'G' => 'T',
+        _ => 'A',
+    };
+    let read_records: Vec<(String, String)> = (0..5)
+        .map(|i| {
+            let off = 100 + i * 400;
+            let mut b: Vec<char> = chr_x[off..off + 150].chars().collect();
+            b[40] = flip(b[40]);
+            b[90] = flip(b[90]);
+            (format!("read_{i}"), b.into_iter().collect())
+        })
+        .collect();
+
+    let reads = write_fasta(
+        p,
+        "reads.fa",
+        &read_records
+            .iter()
+            .map(|(id, s)| (id.as_str(), s.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let two_chrom = write_fasta(
+        p,
+        "two_chrom.fa",
+        &[("chrX", chr_x.as_str()), ("chrY", chr_y.as_str())],
+    );
+    plan_with_ref(p, "plan.phrayaplan", &reads, &two_chrom);
+
+    let out_dir = p.join("out");
+    let out = run(&[
+        "align",
+        p.join("plan.phrayaplan").to_str().unwrap(),
+        "--reference",
+        two_chrom.to_str().unwrap(),
+        "--output",
+        out_dir.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "align failed: {}", String::from_utf8_lossy(&out.stderr));
+
+    let x = phraya_io::phraya::read_phraya(&out_dir.join("chrX.phraya")).unwrap();
+    let y = phraya_io::phraya::read_phraya(&out_dir.join("chrY.phraya")).unwrap();
+
+    // chrX is the control: the reads do come from here, carrying two substitutions each, so
+    // real coverage and real calls must survive. Without this the test would pass trivially
+    // if alignment stopped emitting anything at all.
+    assert!(
+        x.header.covered_positions.unwrap_or(0) > 0,
+        "reads must still place in the space they came from"
+    );
+    assert!(
+        !x.observations.is_empty(),
+        "the planted substitutions must still be called in chrX"
+    );
+
+    assert!(
+        y.observations.is_empty(),
+        "chrY shares no read; it must carry zero variant observations, got {}",
+        y.observations.len()
+    );
+    assert_eq!(
+        y.header.covered_positions,
+        Some(0),
+        "chrY must have zero covered positions"
+    );
+    assert_eq!(
+        y.header.reference_length, 3_000,
+        "a skipped space still reports its true reference length"
+    );
+}

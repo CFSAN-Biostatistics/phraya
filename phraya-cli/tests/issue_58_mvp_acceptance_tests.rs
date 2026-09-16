@@ -82,7 +82,7 @@ fn create_phraya_file(
         })
         .collect();
 
-    let coverage = CoverageTrack::new(vec![10; reference_length as usize]);
+    let coverage = CoverageTrack::new(&vec![10; reference_length as usize]);
     let file = PhrayaFile::new(
         reference_length,
         "test_sample".to_string(),
@@ -590,7 +590,7 @@ fn issue_58_coverage_track_rle_compression() {
 
     // Uniform coverage should compress to single run
     let coverage = vec![10, 10, 10, 10, 10, 10, 10, 10];
-    let track = CoverageTrack::new(coverage);
+    let track = CoverageTrack::new(&coverage);
 
     // Should decompress back to original (quantized)
     let decompressed = track.decompress();
@@ -607,7 +607,7 @@ fn issue_58_coverage_track_position_lookup() {
     use phraya_core::types::CoverageTrack;
 
     let coverage = vec![10, 10, 5, 5, 15, 15];
-    let track = CoverageTrack::new(coverage);
+    let track = CoverageTrack::new(&coverage);
 
     assert_eq!(track.coverage_at(0), Some(10));
     assert_eq!(track.coverage_at(1), Some(10));
@@ -1055,7 +1055,7 @@ fn issue_58_phraya_file_round_trip() {
         "sample:read1".to_string(),
     );
 
-    let coverage = CoverageTrack::new(vec![10; 200]);
+    let coverage = CoverageTrack::new(&vec![10; 200]);
     let file = PhrayaFile::new(
         200,
         "test_sample".to_string(),
@@ -1086,7 +1086,7 @@ fn issue_58_phraya_coverage_track_preserved() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("test.phraya");
 
-    let coverage = CoverageTrack::new(vec![10, 10, 5, 5, 15, 15]);
+    let coverage = CoverageTrack::new(&vec![10, 10, 5, 5, 15, 15]);
     let file = PhrayaFile::new(
         6,
         "test_sample".to_string(),

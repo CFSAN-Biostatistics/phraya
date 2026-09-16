@@ -118,7 +118,7 @@ fn unit_test_observations_through_file_io() {
     let observations = vec![obs1, obs2];
 
     // Write to file
-    let coverage_track = CoverageTrack::new(vec![10; 200]);
+    let coverage_track = CoverageTrack::new(&vec![10; 200]);
     let phraya_file = PhrayaFile::new(
         200,
         "test_sample".to_string(),
@@ -178,7 +178,7 @@ fn create_phraya_file(
         })
         .collect();
 
-    let coverage = CoverageTrack::new(vec![10; reference_length as usize]);
+    let coverage = CoverageTrack::new(&vec![10; reference_length as usize]);
     let file = PhrayaFile::new(
         reference_length,
         "test_sample".to_string(),

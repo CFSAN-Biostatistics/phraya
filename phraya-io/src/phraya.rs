@@ -203,15 +203,15 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
         .collect();
 
     // Merge coverage tracks
-    let mut merged_coverage_vec = vec![0usize; ref_length as usize];
+    let mut merged_coverage_vec = vec![0u32; ref_length as usize];
     for file in &files {
         let decompressed = file.coverage_track.decompress();
         for (i, &cov) in decompressed.iter().enumerate() {
-            merged_coverage_vec[i] += cov as usize;
+            merged_coverage_vec[i] += cov as u32;
         }
     }
 
-    let merged_coverage = CoverageTrack::new(merged_coverage_vec);
+    let merged_coverage = CoverageTrack::new(&merged_coverage_vec);
 
     // Create merged file header
     let merged_header = PhrayaHeader {
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn round_trip_empty_observations() {
-        let coverage = CoverageTrack::new(vec![10, 10, 5, 5]);
+        let coverage = CoverageTrack::new(&vec![10, 10, 5, 5]);
         let file = PhrayaFile::new(
             100,
             "sample1".to_string(),
@@ -277,7 +277,7 @@ mod tests {
             "sample1:read42".to_string(),
         );
 
-        let coverage = CoverageTrack::new(vec![10; 200]);
+        let coverage = CoverageTrack::new(&vec![10; 200]);
         let file = PhrayaFile::new(
             200,
             "sample1".to_string(),
@@ -317,7 +317,7 @@ mod tests {
         .with_query_position(42);
         assert!(obs.mate_info().is_none(), "test setup: mate_info must be None");
 
-        let coverage = CoverageTrack::new(vec![10; 200]);
+        let coverage = CoverageTrack::new(&vec![10; 200]);
         let file = PhrayaFile::new(
             200,
             "sample1".to_string(),
@@ -353,7 +353,7 @@ mod tests {
         .with_query_position(7)
         .with_mate_info(MateInfo::new("read1/2".to_string(), true, 400, true, false, true));
 
-        let coverage = CoverageTrack::new(vec![10; 200]);
+        let coverage = CoverageTrack::new(&vec![10; 200]);
         let file = PhrayaFile::new(
             200,
             "sample1".to_string(),
@@ -395,7 +395,7 @@ mod tests {
             observations.push(obs);
         }
 
-        let coverage = CoverageTrack::new(vec![10; 10000]);
+        let coverage = CoverageTrack::new(&vec![10; 10000]);
         let file = PhrayaFile::new(
             10000,
             "large_sample".to_string(),
@@ -431,7 +431,7 @@ mod tests {
             "sample4:read5".to_string(),
         );
 
-        let coverage = CoverageTrack::new(vec![15; 300]);
+        let coverage = CoverageTrack::new(&vec![15; 300]);
         let file = PhrayaFile::new(
             300,
             "preserve_test".to_string(),
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn version_mismatch() {
-        let coverage = CoverageTrack::new(vec![10; 100]);
+        let coverage = CoverageTrack::new(&vec![10; 100]);
         let mut file = PhrayaFile::new(
             100,
             "version_test".to_string(),
@@ -508,7 +508,7 @@ mod tests {
             observations.push(obs);
         }
 
-        let coverage = CoverageTrack::new(vec![50; 5000]);
+        let coverage = CoverageTrack::new(&vec![50; 5000]);
         let file = PhrayaFile::new(
             5000,
             "compression_test".to_string(),
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn header_consistency() {
-        let coverage = CoverageTrack::new(vec![10; 100]);
+        let coverage = CoverageTrack::new(&vec![10; 100]);
         let file = PhrayaFile::new(
             100,
             "header_test".to_string(),
@@ -595,7 +595,7 @@ mod tests {
             "sample2:read1".to_string(),
         );
 
-        let coverage1 = CoverageTrack::new(vec![10; 100]);
+        let coverage1 = CoverageTrack::new(&vec![10; 100]);
         let file1 = PhrayaFile::new(
             100,
             "sample1".to_string(),
@@ -604,7 +604,7 @@ mod tests {
             coverage1,
         );
 
-        let coverage2 = CoverageTrack::new(vec![5; 100]);
+        let coverage2 = CoverageTrack::new(&vec![5; 100]);
         let file2 = PhrayaFile::new(
             100,
             "sample2".to_string(),
@@ -658,7 +658,7 @@ mod tests {
             "sample2:read1".to_string(),
         );
 
-        let coverage1 = CoverageTrack::new(vec![10; 100]);
+        let coverage1 = CoverageTrack::new(&vec![10; 100]);
         let file1 = PhrayaFile::new(
             100,
             "sample1".to_string(),
@@ -667,7 +667,7 @@ mod tests {
             coverage1,
         );
 
-        let coverage2 = CoverageTrack::new(vec![5; 100]);
+        let coverage2 = CoverageTrack::new(&vec![5; 100]);
         let file2 = PhrayaFile::new(
             100,
             "sample2".to_string(),
@@ -713,7 +713,7 @@ mod tests {
         .with_kmer_uniqueness(0.0)
         .with_strand(Strand::Reverse);
 
-        let coverage = CoverageTrack::new(vec![10; 100]);
+        let coverage = CoverageTrack::new(&vec![10; 100]);
         let file = PhrayaFile::new(
             100,
             "sample1".to_string(),
@@ -749,7 +749,7 @@ mod tests {
 
     #[test]
     fn merge_coverage_summing() {
-        let coverage1 = CoverageTrack::new(vec![5, 5, 5, 5]);
+        let coverage1 = CoverageTrack::new(&vec![5, 5, 5, 5]);
         let file1 = PhrayaFile::new(
             4,
             "sample1".to_string(),
@@ -758,7 +758,7 @@ mod tests {
             coverage1,
         );
 
-        let coverage2 = CoverageTrack::new(vec![10, 10, 10, 10]);
+        let coverage2 = CoverageTrack::new(&vec![10, 10, 10, 10]);
         let file2 = PhrayaFile::new(
             4,
             "sample2".to_string(),
@@ -799,7 +799,7 @@ mod tests {
             "sample:read".to_string(),
         );
 
-        let coverage = CoverageTrack::new(vec![10; 100]);
+        let coverage = CoverageTrack::new(&vec![10; 100]);
         let file = PhrayaFile::new(
             100,
             "test".to_string(),
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn merge_empty_files() {
-        let coverage = CoverageTrack::new(vec![10; 100]);
+        let coverage = CoverageTrack::new(&vec![10; 100]);
         let file = PhrayaFile::new(
             100,
             "empty".to_string(),
@@ -859,7 +859,7 @@ mod tests {
             "sample:read".to_string(),
         );
 
-        let coverage = CoverageTrack::new(vec![10; 100]);
+        let coverage = CoverageTrack::new(&vec![10; 100]);
         let file = PhrayaFile::new(
             100,
             "single".to_string(),
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn merge_mismatched_reference_length_error() {
-        let coverage1 = CoverageTrack::new(vec![10; 100]);
+        let coverage1 = CoverageTrack::new(&vec![10; 100]);
         let file1 = PhrayaFile::new(
             100,
             "sample1".to_string(),
@@ -888,7 +888,7 @@ mod tests {
             coverage1,
         );
 
-        let coverage2 = CoverageTrack::new(vec![5; 200]);
+        let coverage2 = CoverageTrack::new(&vec![5; 200]);
         let file2 = PhrayaFile::new(
             200,
             "sample2".to_string(),

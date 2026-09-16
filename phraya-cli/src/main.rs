@@ -502,8 +502,36 @@ fn run_align(
 
     eprintln!("Aligning {query_id} to {target_id}");
 
-    let result = align_task_with_config(query, target, &plan, &config)
-        .ok_or_else(|| format!("alignment failed for {query_id} vs {target_id}"))?;
+    // A pair that does not align is a legitimate outcome, not a failure: Case 3/4 plans
+    // enumerate every query x target pair precisely because homology is unknown up front, so
+    // most pairs in a multi-contig plan are expected to produce nothing. Emit an empty
+    // `.phraya` (no variants, zero coverage) and an empty sidecar entry, matching what
+    // reference-palette mode writes for a space no read can seed in. This used to "succeed"
+    // only because the `(0,0)` fallback anchor fabricated a ~50%-identity alignment for every
+    // pair; with that scoped to comparable-length sequences, the honest answer is an empty
+    // result. A genuine error (unknown query/target id) is still reported above.
+    let Some(result) = align_task_with_config(query, target, &plan, &config) else {
+        eprintln!("No alignment: {query_id} does not align to {target_id}");
+        let phraya_file = phraya::PhrayaFile::new(
+            target.len() as u32,
+            query_id.to_string(),
+            output_timestamp(),
+            Vec::new(),
+            CoverageTrack::uncovered(target.len() as u32),
+        )
+        .with_coverage_breadth(0, 0);
+        phraya::write_phraya(output_path, &phraya_file)?;
+
+        let mut index = queries::QueryIndex::new();
+        index.insert(query_id.to_string(), Vec::new());
+        let queries_path = {
+            let mut p = output_path.as_os_str().to_owned();
+            p.push(".queries");
+            std::path::PathBuf::from(p)
+        };
+        queries::write_queries(&queries_path, &index)?;
+        return Ok(());
+    };
 
     // Build .phraya file (single-read path: merge each alignment's window into a full-length
     // track). Windows can overlap (e.g. a nearby alternate), so accumulate with +=.
@@ -525,7 +553,7 @@ fn run_align(
             }
         }
     }
-    let coverage = CoverageTrack::new(full_coverage.iter().map(|&v| v as usize).collect());
+    let coverage = CoverageTrack::new(&full_coverage);
     let (covered, covered_10x) = coverage_breadth(&full_coverage_raw);
     let phraya_file = phraya::PhrayaFile::new(
         target.len() as u32,
@@ -771,7 +799,7 @@ fn run_align_worker_with_plan(
     }
 
     // Write output
-    let coverage = CoverageTrack::new(coverage_track.iter().map(|&v| v as usize).collect());
+    let coverage = CoverageTrack::new(&coverage_track);
     let (covered, covered_10x) = coverage_breadth(&raw_coverage_track);
     let phraya_file = phraya::PhrayaFile::new(
         target.len() as u32,
@@ -941,43 +969,80 @@ fn run_align_reference(
     // Cross-space sidecar (issue #198): query -> [(space, pos, identity)] across the palette.
     let mut cross_space: queries::CrossSpaceQueryIndex = HashMap::new();
 
+    // A space whose sketch shares no minimizer value with any read cannot yield a single
+    // seed, hence no chain — and where the `(0,0)` fallback anchor does not apply either
+    // (`fallback_anchor_applies`), that means provably no placement and no variant. Such a
+    // space's output is exactly an empty track, which `CoverageTrack::uncovered` builds in
+    // O(1), so the whole per-space O(target) build is skippable: the minimizer index
+    // (~0.15 s/Mb) and, via the deferred `TargetContext::repeat_regions`, the tandem-repeat
+    // scan (~0.11 s/Mb). On a 214-record vertebrate palette only ~23 records ever receive a
+    // placement, so this is where nearly all of the per-space cost went.
+    //
+    // Exact rather than heuristic: sharing a minimizer is a *necessary* condition for a
+    // seed, so a skipped space could not have produced output. It stays per-space, so
+    // composability holds — the decision reads only (reads, this space).
+    let read_minimizers: std::collections::HashSet<u64> =
+        prepared.iter().flat_map(|p| p.minimizer_values()).collect();
+    let max_read_len = reads.iter().map(|r| r.len()).max().unwrap_or(0);
+
     for r in &refs {
         // Resolve by content hash: hit reuses the planned sketch, miss warns/errors.
-        let ctx = match plan.get_reference_space(&r.hash) {
-            Some(space) => {
-                let sketch = space.sketches.get(r.seq.id()).cloned().or_else(|| {
-                    // Space is in the palette but keyed under a different sequence id;
-                    // take whatever single sketch it holds.
-                    space.sketches.values().next().cloned()
-                });
-                match sketch {
-                    Some(sketch) => {
+        let resolved: Option<phraya_core::types::MinimizerSketch> =
+            match plan.get_reference_space(&r.hash) {
+                Some(space) => {
+                    let sketch = space.sketches.get(r.seq.id()).cloned().or_else(|| {
+                        // Space is in the palette but keyed under a different sequence id;
+                        // take whatever single sketch it holds.
+                        space.sketches.values().next().cloned()
+                    });
+                    if sketch.is_some() {
                         eprintln!("Reference '{}' (hash {}): palette hit — reusing planned sketch", r.label, &r.hash[..16.min(r.hash.len())]);
-                        TargetContext::build_with_sketch(&r.seq, &sketch, config.strategy)
                     }
-                    None => TargetContext::build(&r.seq, &plan, config.strategy),
+                    sketch
                 }
-            }
-            None => {
-                if sealed {
-                    return Err(format!(
-                        "sealed: reference '{}' (content hash {}) is not in the plan's palette; \
-                         it was not planned",
-                        r.path, r.hash
-                    )
-                    .into());
+                None => {
+                    if sealed {
+                        return Err(format!(
+                            "sealed: reference '{}' (content hash {}) is not in the plan's palette; \
+                             it was not planned",
+                            r.path, r.hash
+                        )
+                        .into());
+                    }
+                    eprintln!(
+                        "warning: reference '{}' (content hash {}) is not in the plan's palette; \
+                         sketching on the fly (tolerant default; pass --sealed to fail instead)",
+                        r.label, r.hash
+                    );
+                    Some(sketch_sequence_default(&r.seq))
                 }
-                eprintln!(
-                    "warning: reference '{}' (content hash {}) is not in the plan's palette; \
-                     sketching on the fly (tolerant default; pass --sealed to fail instead)",
-                    r.label, r.hash
-                );
-                TargetContext::build_with_sketch(
-                    &r.seq,
-                    &sketch_sequence_default(&r.seq),
-                    config.strategy,
-                )
-            }
+            };
+
+        let unreachable_space = resolved.as_ref().is_some_and(|sketch| {
+            !phraya_align::executor::fallback_anchor_applies(max_read_len, r.seq.len())
+                && !sketch
+                    .minimizers
+                    .iter()
+                    .any(|&(val, _)| read_minimizers.contains(&val))
+        });
+        if unreachable_space {
+            let out_path = out_dir.join(format!("{}.phraya", r.label));
+            let phraya_file = phraya::PhrayaFile::new(
+                r.seq.len() as u32,
+                r.seq.id().to_string(),
+                output_timestamp(),
+                Vec::new(),
+                CoverageTrack::uncovered(r.seq.len() as u32),
+            )
+            .with_coverage_breadth(0, 0);
+            phraya::write_phraya(&out_path, &phraya_file)?;
+            eprintln!("Wrote {} (no read can seed here — skipped)", out_path.display());
+            continue;
+        }
+
+        let ctx = match &resolved {
+            Some(sketch) => TargetContext::build_with_sketch(&r.seq, sketch, config.strategy),
+            None => TargetContext::build(&r.seq, &plan, config.strategy),
         };
 
         // Align every read against this space, building a full-length coverage track and
@@ -1031,7 +1096,7 @@ fn run_align_reference(
             }
         }
 
-        let coverage = CoverageTrack::new(full_coverage.iter().map(|&v| v as usize).collect());
+        let coverage = CoverageTrack::new(&full_coverage);
         let (covered, covered_10x) = coverage_breadth(&full_coverage_raw);
         let phraya_file = phraya::PhrayaFile::new(
             r.seq.len() as u32,

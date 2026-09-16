@@ -34,7 +34,7 @@ fn create_phraya_file(
         observations.push(obs);
     }
 
-    let coverage = phraya_core::types::CoverageTrack::new(vec![10; reference_length as usize]);
+    let coverage = phraya_core::types::CoverageTrack::new(&vec![10; reference_length as usize]);
     let phraya_file = phraya_io::phraya::PhrayaFile::new(
         reference_length,
         sample_id.to_string(),
@@ -196,7 +196,7 @@ fn issue_80_merge_coverage_summing() {
 
     // Create files with specific coverage patterns
     let path1 = temp_path.join("sample1.phraya");
-    let coverage1 = phraya_core::types::CoverageTrack::new(vec![5, 5, 5, 5]);
+    let coverage1 = phraya_core::types::CoverageTrack::new(&vec![5, 5, 5, 5]);
     let file1 = phraya_io::phraya::PhrayaFile::new(
         4,
         "sample1".to_string(),
@@ -207,7 +207,7 @@ fn issue_80_merge_coverage_summing() {
     phraya_io::phraya::write_phraya(&path1, &file1).unwrap();
 
     let path2 = temp_path.join("sample2.phraya");
-    let coverage2 = phraya_core::types::CoverageTrack::new(vec![10, 10, 10, 10]);
+    let coverage2 = phraya_core::types::CoverageTrack::new(&vec![10, 10, 10, 10]);
     let file2 = phraya_io::phraya::PhrayaFile::new(
         4,
         "sample2".to_string(),
@@ -259,7 +259,7 @@ fn issue_80_merge_mismatched_reference_length_error() {
     let temp_path = temp_dir.path();
 
     let path1 = temp_path.join("sample1.phraya");
-    let coverage1 = phraya_core::types::CoverageTrack::new(vec![10; 100]);
+    let coverage1 = phraya_core::types::CoverageTrack::new(&vec![10; 100]);
     let file1 = phraya_io::phraya::PhrayaFile::new(
         100,
         "sample1".to_string(),
@@ -270,7 +270,7 @@ fn issue_80_merge_mismatched_reference_length_error() {
     phraya_io::phraya::write_phraya(&path1, &file1).unwrap();
 
     let path2 = temp_path.join("sample2.phraya");
-    let coverage2 = phraya_core::types::CoverageTrack::new(vec![10; 200]);
+    let coverage2 = phraya_core::types::CoverageTrack::new(&vec![10; 200]);
     let file2 = phraya_io::phraya::PhrayaFile::new(
         200,
         "sample2".to_string(),
@@ -463,7 +463,7 @@ fn issue_80_merge_deduplicates_observations() {
         "shared:read1".to_string(),
     );
 
-    let coverage = phraya_core::types::CoverageTrack::new(vec![10; 100]);
+    let coverage = phraya_core::types::CoverageTrack::new(&vec![10; 100]);
 
     let file1 = phraya_io::phraya::PhrayaFile::new(
         100,

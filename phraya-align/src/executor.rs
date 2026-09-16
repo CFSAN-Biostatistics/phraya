@@ -343,30 +343,67 @@ fn chain_cap(strategy: Strategy) -> usize {
     }
 }
 
-/// Build the list of WFA/Myers anchors from chained seeds, one anchor per surviving
-/// chain (up to `k`), each anchor's `target_pos` taken from [`crate::chaining::Chain::target_start`].
+/// Choose the WFA/Myers anchors to extend, in descending order of evidence.
 ///
-/// When chains are present, uses only chain-derived anchors (no fallback). When no
-/// chains survive, falls back to `(0,0)` — the safety net for low-complexity/repetitive
-/// backgrounds where chaining can't distinguish signal from noise (issue #146). The
-/// unconditional `(0,0)` was removed because on large genomes it extends from position 0
-/// against a multi-hundred-Mb target window, producing a guaranteed-losing alignment at
-/// high cost.
-fn anchors_from_chains(chains: &[crate::chaining::Chain], k: usize) -> Vec<SeedAnchor> {
-    if chains.is_empty() {
+/// 1. **Chains present** — one anchor per surviving chain (up to `k`), `target_pos` from
+///    [`crate::chaining::Chain::target_start`]. The normal path.
+/// 2. **Seeds but no chain** — anchor on the seeds themselves, deduplicated by diagonal and
+///    capped at `k`. The query shares exact k-mers with this target, so it is a genuine
+///    candidate; chaining routinely fails to find anything co-linear on repetitive or
+///    low-complexity queries (issue #146), and a tandem-repeat query that occurs verbatim
+///    dozens of times in the target is the standard example. Anchoring at the seed is what
+///    makes this recoverable — the old `(0,0)` anchor only ever aligned `target[0..2*|q|)`,
+///    so it rescued such a query purely by luck when the match happened to sit at the start.
+/// 3. **No seeds at all** — `(0,0)`, but only where [`fallback_anchor_applies`]; otherwise no
+///    anchors, and the caller reports no alignment. A query sharing not one k-mer with a
+///    target vastly longer than itself has no candidate locus to extend from, and forcing one
+///    fabricates a ~50%-identity alignment pinned at offset 0.
+fn select_anchors(
+    chains: &[crate::chaining::Chain],
+    seeds: &[crate::Seed],
+    k: usize,
+    query_len: usize,
+    target_len: usize,
+) -> Vec<SeedAnchor> {
+    if !chains.is_empty() {
+        return chains
+            .iter()
+            .take(k)
+            .map(|c| SeedAnchor {
+                query_pos: 0,
+                target_pos: c.target_start(),
+            })
+            .collect();
+    }
+
+    if !seeds.is_empty() {
+        // Project each seed back along its diagonal to query offset 0, matching how chain
+        // anchors are expressed, then dedupe: a repeat family yields many seeds per locus.
+        let mut anchors: Vec<SeedAnchor> = Vec::with_capacity(k.min(seeds.len()));
+        for s in seeds {
+            let target_pos = (s.target_pos as usize).saturating_sub(s.query_pos as usize);
+            if anchors.iter().any(|a| a.target_pos == target_pos) {
+                continue;
+            }
+            anchors.push(SeedAnchor {
+                query_pos: 0,
+                target_pos,
+            });
+            if anchors.len() == k {
+                break;
+            }
+        }
+        return anchors;
+    }
+
+    if fallback_anchor_applies(query_len, target_len) {
         return vec![SeedAnchor {
             query_pos: 0,
             target_pos: 0,
         }];
     }
-    chains
-        .iter()
-        .take(k)
-        .map(|c| SeedAnchor {
-            query_pos: 0,
-            target_pos: c.target_start(),
-        })
-        .collect()
+
+    Vec::new()
 }
 
 /// Extend a single anchor with the engine selected by `strategy` (and, for `Sensitive`,
@@ -423,7 +460,16 @@ fn extend_anchor(
 pub struct TargetContext<'a> {
     target: &'a Sequence,
     minimizer_index: MinimizerIndex,
-    repeat_regions: Vec<phraya_core::RepeatRegion>,
+    /// Tandem-repeat regions, detected on first use.
+    ///
+    /// Only `extract_variants_from_cigar` consumes these, so a target that places no read
+    /// never needs them at all. Detection is an O(target) scan (~0.11 s/Mb measured), which
+    /// reference-palette mode otherwise pays once per space even though only a handful of
+    /// spaces in a large palette ever receive a placement. `OnceLock` rather than `OnceCell`
+    /// because `&TargetContext` is shared across rayon workers, and `OnceLock` rather than
+    /// `LazyLock` because the initializer needs per-instance runtime input (`self.target`),
+    /// which a field-level `LazyLock` initializer cannot capture.
+    repeat_regions: std::sync::OnceLock<Vec<phraya_core::RepeatRegion>>,
     /// Repeat-masking cap: minimizers occurring more than this many times in the target
     /// are skipped during seeding. Derived once from the index's occurrence distribution
     /// (issue #194 — bounds the seed explosion on repeat-dense / low-complexity genomes).
@@ -445,12 +491,10 @@ impl<'a> TargetContext<'a> {
         // it a no-op on clean/moderately-repetitive genomes (nothing occurs that often), so
         // only pathological hyper-repeats (homopolymer/microsatellite k-mers) are trimmed.
         let seed_max_occ = seed_occurrence_cap(&minimizer_index, SEED_OCC_CAP_FLOOR);
-        let target_str = String::from_utf8_lossy(target.bases());
-        let repeat_regions = detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
         TargetContext {
             target,
             minimizer_index,
-            repeat_regions,
+            repeat_regions: std::sync::OnceLock::new(),
             seed_max_occ,
             strategy,
         }
@@ -460,8 +504,8 @@ impl<'a> TargetContext<'a> {
     /// the plan's sequence-ID lookup. Used by reference-palette alignment (ADR-0011, issue
     /// #226): on a content-hash **hit** the caller passes the planned reference space's
     /// sketch (proving sketch reuse — no recompute), and on a **miss** the caller passes a
-    /// freshly computed sketch. Repeat-region detection and the occurrence cap are derived
-    /// the same way as [`build`].
+    /// freshly computed sketch. The occurrence cap is derived the same way as [`build`], and
+    /// repeat regions are deferred identically (see [`TargetContext::repeat_regions`]).
     pub fn build_with_sketch(
         target: &'a Sequence,
         sketch: &MinimizerSketch,
@@ -469,15 +513,23 @@ impl<'a> TargetContext<'a> {
     ) -> Self {
         let minimizer_index = build_minimizer_index(sketch);
         let seed_max_occ = seed_occurrence_cap(&minimizer_index, SEED_OCC_CAP_FLOOR);
-        let target_str = String::from_utf8_lossy(target.bases());
-        let repeat_regions = detect_tandem_repeats(&target_str, &RepeatDetectorConfig::default());
         TargetContext {
             target,
             minimizer_index,
-            repeat_regions,
+            repeat_regions: std::sync::OnceLock::new(),
             seed_max_occ,
             strategy,
         }
+    }
+
+    /// Tandem-repeat regions for this target, detected on the first call and cached.
+    ///
+    /// Deliberately not computed in the constructors: a space that receives no placement
+    /// never calls this, which is what makes a large reference palette cheap.
+    fn repeat_regions(&self) -> &[phraya_core::RepeatRegion] {
+        self.repeat_regions.get_or_init(|| {
+            detect_tandem_repeats(self.target.bases(), &RepeatDetectorConfig::default())
+        })
     }
 
     /// The target sequence this context was built for.
@@ -519,16 +571,40 @@ pub fn align_task_with_config(
 fn seed_and_chain(
     ctx: &TargetContext<'_>,
     query_sketch: &MinimizerSketch,
-) -> (usize, Vec<crate::chaining::Chain>) {
+) -> (Vec<crate::Seed>, Vec<crate::chaining::Chain>) {
     let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
-    let n_seeds = seeds.len();
     let chains = crate::chaining::chain_seeds(&seeds, &crate::chaining::ChainParams::default());
-    (n_seeds, chains)
+    (seeds, chains)
 }
 
-/// Extend the top `chain_cap(strategy)` chains (plus the unconditional `(0,0)` fallback,
-/// see [`anchors_from_chains`]) against the target, returning the scored alignments — or
-/// `None` if nothing extended.
+/// Whether a query with **no** chain support can still legitimately produce an alignment
+/// against a target of `target_len`, via the `(0,0)` fallback anchor in
+/// [`select_anchors`].
+///
+/// True only when the two are comparable in length — the contig-vs-contig case issue #146
+/// added the fallback for, where a real homolog can share no minimizer. When the target
+/// dwarfs the query the fallback can only ever align the query against
+/// `target[0..2*query_len)`: a guaranteed-losing alignment whose sub-threshold placement
+/// `write_cross_space_queries` discards at its 0.95 identity filter, but whose
+/// ~`query_len/2` bogus `VariantObservation`s are *not* filtered and land in the `.phraya`.
+/// Measured on a 20-record palette: 1.87 MB of garbage per non-homologous space against
+/// 42 KB of signal in the one space the reads came from, at 256us per (read, space) pair —
+/// 2.5x the cost of a real placement. Reference-palette mode makes that the common case,
+/// since every read is aligned against every space.
+///
+/// Public because reference-palette alignment relies on the same predicate to decide it can
+/// skip a space outright: zero shared minimizers means zero seeds, so if the fallback also
+/// does not apply, that space provably yields no placement and no variant. The two
+/// decisions MUST agree, hence one function rather than two copies of the ratio.
+pub fn fallback_anchor_applies(query_len: usize, target_len: usize) -> bool {
+    /// Largest target/query length ratio at which a seedless `(0,0)` alignment is still
+    /// plausible rather than guaranteed noise.
+    const FALLBACK_MAX_TARGET_RATIO: usize = 10;
+    target_len <= query_len.saturating_mul(FALLBACK_MAX_TARGET_RATIO)
+}
+
+/// Extend the anchors [`select_anchors`] picks for this orientation, returning the scored
+/// alignments — or `None` if there was nothing worth extending.
 ///
 /// The expensive half of what was [`align_oriented`] before it was split so
 /// [`align_read`] could skip this step entirely for an orientation [`seed_and_chain`]
@@ -539,10 +615,21 @@ fn extend_chains(
     ctx: &TargetContext<'_>,
     query_bytes: &[u8],
     chains: &[crate::chaining::Chain],
+    seeds: &[crate::Seed],
 ) -> Option<crate::ScoredAlignments> {
     let target = ctx.target;
-    let anchors = anchors_from_chains(chains, chain_cap(strategy));
     let query_len = query_bytes.len();
+
+    let anchors = select_anchors(
+        chains,
+        seeds,
+        chain_cap(strategy),
+        query_len,
+        target.bases().len(),
+    );
+    if anchors.is_empty() {
+        return None;
+    }
 
     // Extend every anchor with the strategy's engine, uniformly across Fast/Balanced/
     // Sensitive (ADR-0012 — chaining's structural collapse of repeat families into one
@@ -582,6 +669,18 @@ pub struct PreparedQuery {
     used_stored_sketch: bool,
     rc_bases: Vec<u8>,
     rev_sketch: Option<MinimizerSketch>,
+}
+
+impl PreparedQuery {
+    /// The query's minimizer hash values.
+    ///
+    /// Canonical minimizers are strand-invariant in *value* — only their query positions
+    /// differ between orientations (see [`seed_and_chain`]) — so the forward sketch's values
+    /// are the complete set of hashes this query can seed on, in either orientation. A
+    /// target sharing none of them cannot yield a single seed for this query.
+    pub fn minimizer_values(&self) -> impl Iterator<Item = u64> + '_ {
+        self.fwd_sketch.minimizers.iter().map(|&(val, _)| val)
+    }
 }
 
 /// Compute the space-independent part of aligning `query`: its forward sketch (reusing a
@@ -677,13 +776,13 @@ pub fn align_read_prepared(
     let (fwd_seeds, fwd_chains) = seed_and_chain(ctx, &prepared.fwd_sketch);
     let (rev_seeds, rev_chains) = match &prepared.rev_sketch {
         Some(s) => seed_and_chain(ctx, s),
-        None => (0, vec![]),
+        None => (Vec::new(), Vec::new()),
     };
 
     // Whether the read shared any minimizer with the target (in either orientation).
     // Distinguishes a seeding loss from an extension/divergence loss when classifying an
     // unplaced read.
-    let had_seeds = fwd_seeds > 0 || rev_seeds > 0;
+    let had_seeds = !fwd_seeds.is_empty() || !rev_seeds.is_empty();
 
     // Issue #200: an empty *stored* read sketch is a deliberate signal from the caller
     // that this read has no minimizers to seed with (as opposed to a short/degenerate
@@ -696,25 +795,25 @@ pub fn align_read_prepared(
 
     // Extend only the orientation(s) worth extending. If exactly one orientation has
     // chain support and the other has none, the chainless side can only ever produce a
-    // (0,0)-fallback-anchor alignment (see anchors_from_chains) — never competitive
-    // against a real chain-backed match, so skip its extension entirely. If both have
-    // chains, or neither does (both fall through to the fallback anchor — e.g. a
-    // low-complexity/repetitive background where chaining can't distinguish signal from
-    // noise in either orientation, see issue #146), extend both, exactly as before.
+    // weaker seed- or fallback-anchored alignment (see [`select_anchors`]) — never
+    // competitive against a real chain-backed match, so skip its extension entirely. If both
+    // have chains, or neither does (a low-complexity/repetitive background where chaining
+    // can't distinguish signal from noise in either orientation, see issue #146), extend
+    // both, exactly as before.
     let (fwd, rev) = if !fwd_chains.is_empty() && rev_chains.is_empty() {
         (
-            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds),
             None,
         )
     } else if fwd_chains.is_empty() && !rev_chains.is_empty() {
         (
             None,
-            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds),
         )
     } else {
         (
-            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains),
-            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds),
+            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds),
         )
     };
 
@@ -774,7 +873,7 @@ pub fn align_read_prepared(
         scored.primary.edit_distance as u32,
         query.id().to_string(),
         &raw_coverage,
-        &ctx.repeat_regions,
+        ctx.repeat_regions(),
         query_mapq,
         query_avg_bq,
         primary_score,
@@ -1193,19 +1292,72 @@ mod tests {
     }
 
     #[test]
-    fn anchors_from_chains_falls_back_to_origin_when_no_chains() {
-        let anchors = anchors_from_chains(&[], chain_cap(Strategy::Fast));
+    fn select_anchors_falls_back_to_origin_only_for_comparable_lengths() {
+        // Seedless and comparable-length: the issue #146 contig-vs-contig safety net.
         assert_eq!(
-            anchors,
+            select_anchors(&[], &[], chain_cap(Strategy::Fast), 100, 500),
             vec![SeedAnchor {
                 query_pos: 0,
                 target_pos: 0
             }]
         );
+
+        // Seedless against a target that dwarfs the query: no candidate locus exists, so
+        // there is nothing to extend and the caller must report no alignment.
+        assert!(select_anchors(&[], &[], chain_cap(Strategy::Fast), 100, 100_000).is_empty());
+    }
+
+    /// A repetitive query can share exact k-mers yet chain to nothing. Those seeds are real
+    /// candidate loci, so they must be extended — and at the seed's own diagonal, not at
+    /// `(0,0)`, which would only ever examine the first `2*query_len` bases of the target.
+    #[test]
+    fn select_anchors_uses_seed_diagonals_when_chaining_finds_nothing() {
+        let seeds = vec![
+            crate::Seed {
+                query_pos: 10,
+                target_pos: 510,
+                minimizer: 1,
+            },
+            // Same diagonal as the first (510-10 == 700-200): must dedupe to one anchor.
+            crate::Seed {
+                query_pos: 200,
+                target_pos: 700,
+                minimizer: 2,
+            },
+            crate::Seed {
+                query_pos: 0,
+                target_pos: 9_000,
+                minimizer: 3,
+            },
+        ];
+
+        // Target dwarfs the query, so the `(0,0)` fallback does not apply — these anchors
+        // exist purely because seeds do.
+        let anchors = select_anchors(&[], &seeds, chain_cap(Strategy::Balanced), 300, 100_000);
+        assert_eq!(
+            anchors,
+            vec![
+                SeedAnchor {
+                    query_pos: 0,
+                    target_pos: 500
+                },
+                SeedAnchor {
+                    query_pos: 0,
+                    target_pos: 9_000
+                },
+            ],
+            "seed diagonals, deduplicated and capped at chain_cap"
+        );
+
+        // Fast caps at one anchor.
+        assert_eq!(
+            select_anchors(&[], &seeds, chain_cap(Strategy::Fast), 300, 100_000).len(),
+            1
+        );
     }
 
     #[test]
-    fn anchors_from_chains_uses_chain_target_start_and_respects_cap() {
+    fn select_anchors_uses_chain_target_start_and_respects_cap() {
         let seeds_a = vec![crate::Seed {
             query_pos: 0,
             target_pos: 100,
@@ -1237,7 +1389,7 @@ mod tests {
         ];
         // K=1 (Fast) keeps only the first (highest-scoring) chain's target_start.
         // No (0,0) fallback when chains exist.
-        let anchors = anchors_from_chains(&chains, chain_cap(Strategy::Fast));
+        let anchors = select_anchors(&chains, &[], chain_cap(Strategy::Fast), 150, 10_000);
         assert_eq!(
             anchors,
             vec![SeedAnchor {
@@ -1247,7 +1399,7 @@ mod tests {
         );
 
         // K=2 (Balanced) keeps the top 2 chains. No (0,0) fallback when chains exist.
-        let anchors = anchors_from_chains(&chains, chain_cap(Strategy::Balanced));
+        let anchors = select_anchors(&chains, &[], chain_cap(Strategy::Balanced), 150, 10_000);
         assert_eq!(
             anchors,
             vec![
@@ -1519,7 +1671,8 @@ mod tests {
         let (rc_seeds, rc_chains) = seed_and_chain(&ctx, &rc_sketch);
 
         assert_eq!(
-            fwd_seeds, rc_seeds,
+            fwd_seeds.len(),
+            rc_seeds.len(),
             "canonical minimizers are strand-invariant: both orientations must find the \
              same raw seed count"
         );

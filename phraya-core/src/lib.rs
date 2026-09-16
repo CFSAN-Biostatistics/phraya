@@ -72,14 +72,17 @@ impl Default for RepeatDetectorConfig {
 ///
 /// ```ignore
 /// let seq = "ATATATATAT";  // AT repeated 5 times
-/// let regions = detect_tandem_repeats(seq, &RepeatDetectorConfig::default());
+/// let regions = detect_tandem_repeats(seq.as_bytes(), &RepeatDetectorConfig::default());
 /// assert_eq!(regions.len(), 1);
 /// assert_eq!(regions[0].period, 2);
 /// assert_eq!(regions[0].unit, "AT");
 /// ```
-pub fn detect_tandem_repeats(sequence: &str, config: &RepeatDetectorConfig) -> Vec<RepeatRegion> {
-    let seq_upper = sequence.to_uppercase();
-    let bytes = seq_upper.as_bytes();
+pub fn detect_tandem_repeats(sequence: &[u8], config: &RepeatDetectorConfig) -> Vec<RepeatRegion> {
+    // Compares units case-insensitively rather than uppercasing the input, which used to
+    // cost two full copies of the sequence per call (`String::from_utf8_lossy` at the call
+    // site, then `str::to_uppercase` here) — ~400 MB of transient allocation per call on a
+    // 197 Mb chromosome, for a scan that only ever reads bytes.
+    let bytes = sequence;
 
     if bytes.len() < config.min_repeat_count * 2 {
         return Vec::new();
@@ -107,7 +110,7 @@ pub fn detect_tandem_repeats(sequence: &str, config: &RepeatDetectorConfig) -> V
 
             while end_pos + period <= bytes.len() {
                 let next_unit = &bytes[end_pos..end_pos + period];
-                if unit == next_unit {
+                if unit.eq_ignore_ascii_case(next_unit) {
                     repeat_count += 1;
                     end_pos += period;
                 } else {
@@ -117,7 +120,7 @@ pub fn detect_tandem_repeats(sequence: &str, config: &RepeatDetectorConfig) -> V
 
             // Only add if meets minimum threshold
             if repeat_count >= config.min_repeat_count {
-                let unit_str = String::from_utf8_lossy(unit).into_owned();
+                let unit_str = String::from_utf8_lossy(&unit.to_ascii_uppercase()).into_owned();
                 let region = RepeatRegion::new(current_pos, end_pos - 1, period, unit_str);
                 regions.push(region);
 
@@ -145,7 +148,7 @@ mod tests {
     fn detects_dinucleotide_repeat_at() {
         let seq = "ATATATATAT"; // AT repeated 5 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].start, 0);
@@ -159,7 +162,7 @@ mod tests {
     fn detects_trinucleotide_repeat_cag() {
         let seq = "CAGCAGCAGCAG"; // CAG repeated 4 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].start, 0);
@@ -173,7 +176,7 @@ mod tests {
     fn detects_tetranucleotide_repeat_gata() {
         let seq = "GATAGATAGATA"; // GATA repeated 3 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].start, 0);
@@ -187,7 +190,7 @@ mod tests {
     fn detects_dinucleotide_repeat_gc() {
         let seq = "GCGCGCGC"; // GC repeated 4 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].period, 2);
@@ -198,7 +201,7 @@ mod tests {
     fn detects_trinucleotide_repeat_aaa() {
         let seq = "AAAAAAAAA"; // AAA repeated 3 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].period, 3);
@@ -212,7 +215,7 @@ mod tests {
     fn detects_repeat_at_sequence_start() {
         let seq = "ATATATATATTGCAAA"; // AT repeat at start
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert!(regions.iter().any(|r| r.start == 0 && r.period == 2));
     }
@@ -221,7 +224,7 @@ mod tests {
     fn detects_repeat_at_sequence_end() {
         let seq = "TGCAAATATATATAT"; // AT repeat at end
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert!(regions.iter().any(|r| r.end == 14 && r.period == 2));
     }
@@ -230,7 +233,7 @@ mod tests {
     fn detects_repeat_in_sequence_middle() {
         let seq = "TGCAATATATATACCC"; // AT repeat in middle
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert!(regions.iter().any(|r| r.period == 2 && r.unit == "AT"));
     }
@@ -239,7 +242,7 @@ mod tests {
     fn detects_exactly_three_periods() {
         let seq = "CAGCAGCAG"; // CAG repeated exactly 3 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].repeat_count(), 3);
@@ -250,7 +253,7 @@ mod tests {
     fn detects_multiple_repeats_in_sequence() {
         let seq = "ATATATATAGCGCGCATATATAT"; // AT repeat + GC repeat + AT repeat
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         // Should detect multiple regions
         assert!(regions.len() >= 2);
@@ -263,7 +266,7 @@ mod tests {
         // When two repeat regions are adjacent or separated, they should be identified
         let seq = "ATATATATAGCGCGC"; // AT repeat followed by GC repeat
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert!(regions.len() >= 2);
     }
@@ -275,7 +278,7 @@ mod tests {
         // ATGCATGATCGATCG has no tandem repeats (all substrings unique)
         let seq = "ATGCATGATCGATCG";
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 0);
     }
@@ -284,7 +287,7 @@ mod tests {
     fn returns_empty_vector_for_single_nucleotide() {
         let seq = "A";
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 0);
     }
@@ -293,7 +296,7 @@ mod tests {
     fn returns_empty_vector_for_two_nucleotides() {
         let seq = "AT";
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 0);
     }
@@ -302,7 +305,7 @@ mod tests {
     fn ignores_single_repeat_unit_when_min_is_three() {
         let seq = "ATTGCATGC"; // Single AT, not a repeat
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         // Should not detect since we need at least 3 periods
         assert!(regions.is_empty() || regions.iter().all(|r| r.repeat_count() >= 3));
@@ -312,7 +315,7 @@ mod tests {
     fn ignores_two_repeat_units_when_min_is_three() {
         let seq = "ATATATGC"; // AT repeated 2 times, below threshold
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         // Should not detect since we need at least 3 periods by default
         assert!(regions.is_empty() || regions.iter().all(|r| r.repeat_count() >= 3));
@@ -322,7 +325,7 @@ mod tests {
     fn case_insensitive_detection_lowercase() {
         let seq = "atatatatat"; // lowercase
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].period, 2);
@@ -332,7 +335,7 @@ mod tests {
     fn case_insensitive_detection_mixed_case() {
         let seq = "AtAtAtAtAt"; // mixed case
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].period, 2);
@@ -345,7 +348,7 @@ mod tests {
         // Huntington's disease marker: CAG repeat in HTT gene
         let seq = "CAGCAGCAGCAGCAGCAGCAG"; // CAG repeated 7 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].unit, "CAG");
@@ -357,7 +360,7 @@ mod tests {
         // Fragile X syndrome marker: CGG repeat
         let seq = "CGGCGGCGGCGGCGGCGG"; // CGG repeated 6 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].unit, "CGG");
@@ -369,7 +372,7 @@ mod tests {
         // Myotonic dystrophy marker: CTG repeat
         let seq = "CTGCTGCTGCTGCTG"; // CTG repeated 5 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].unit, "CTG");
@@ -381,7 +384,7 @@ mod tests {
         // D5S818 CODIS marker: AGAT tetranucleotide repeat
         let seq = "AGATAGATAGATAGATAGATAGAT"; // AGAT repeated 6 times
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].unit, "AGAT");
@@ -396,7 +399,7 @@ mod tests {
         let config = RepeatDetectorConfig {
             min_repeat_count: 2,
         };
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].repeat_count(), 2);
@@ -408,7 +411,7 @@ mod tests {
         let config = RepeatDetectorConfig {
             min_repeat_count: 4,
         };
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].repeat_count(), 4);
@@ -420,7 +423,7 @@ mod tests {
         let config = RepeatDetectorConfig {
             min_repeat_count: 3,
         };
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         // Should only detect CAG, not AT (only 2 repeats)
         assert!(regions.iter().all(|r| r.repeat_count() >= 3));
@@ -432,7 +435,7 @@ mod tests {
         let config = RepeatDetectorConfig {
             min_repeat_count: 6,
         };
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         // Only GC (7 repeats) should be detected
         assert!(regions.iter().all(|r| r.repeat_count() >= 6));
@@ -459,11 +462,9 @@ mod tests {
             seq_bytes[100 + i * 2] = b'A';
             seq_bytes[100 + i * 2 + 1] = b'T';
         }
-        let seq = String::from_utf8(seq_bytes).unwrap();
-
         let config = RepeatDetectorConfig::default();
         let start = Instant::now();
-        let regions = detect_tandem_repeats(&seq, &config);
+        let regions = detect_tandem_repeats(&seq_bytes, &config);
         let elapsed = start.elapsed();
 
         // Performance assertion: should complete in under 100ms
@@ -485,7 +486,7 @@ mod tests {
         // Should detect highest period match with 3+ repeats
         let seq = "AAAAAA";
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         // Behavior: should detect AAA x2, which meets threshold of 2 repeats minimum
         // (this test may need adjustment based on implementation priority)
@@ -497,7 +498,7 @@ mod tests {
     fn detects_mixed_repeats_no_false_positives() {
         let seq = "ATGCATGCATGC"; // Not a true repeat (period doesn't match)
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         // ATGC is period 4, so "ATGCATGCATGC" would be 3 repeats - might be detected
         // depending on implementation; ensure no false positives outside this
@@ -510,7 +511,7 @@ mod tests {
     fn empty_sequence_returns_empty_vector() {
         let seq = "";
         let config = RepeatDetectorConfig::default();
-        let regions = detect_tandem_repeats(seq, &config);
+        let regions = detect_tandem_repeats(seq.as_bytes(), &config);
 
         assert_eq!(regions.len(), 0);
     }
