@@ -400,7 +400,13 @@ def aggregate(run_dir_str: str) -> dict:
                     print(f"Computing PA (phraya-protein) for {aligner} {target_id}...", file=sys.stderr)
                     pa = compute_pa_protein(queries_file, truth_file, total_queries=total_reads)
             elif is_phraya:
-                queries_file = rep0_dir / "alignment.phraya.queries"
+                # Reference-palette mode (`align --reference`, ADR-0011) writes a
+                # union sidecar `cross_space.phraya.queries` instead of batch
+                # mode's single-target `alignment.phraya.queries`. Prefer it;
+                # fall back to the legacy name for any run still using batch mode.
+                queries_file = rep0_dir / "cross_space.phraya.queries"
+                if not queries_file.exists():
+                    queries_file = rep0_dir / "alignment.phraya.queries"
                 if queries_file.exists():
                     print(f"Computing PA (phraya) for {aligner} {target_id}...", file=sys.stderr)
                     pa = compute_pa_phraya(queries_file, total_reads=total_reads)
