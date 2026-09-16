@@ -801,15 +801,20 @@ fn run_align_worker_with_plan(
     Ok(())
 }
 
+/// Filesystem-safe mapping for a single label component: alphanumerics, `-`, `_`, `.` pass
+/// through; everything else (path separators, whitespace, etc.) becomes `_`.
+fn sanitize_label_component(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect()
+}
+
 /// Derive a filesystem-safe per-space label: the space's name if present, else a prefix of
 /// its content hash. Deterministic so that `align({A})` and `align({A,B})` write byte-for-byte
 /// the same `A.phraya` (composability).
 fn reference_space_label(name: &Option<String>, content_hash: &str) -> String {
     match name {
-        Some(n) if !n.is_empty() => n
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
-            .collect(),
+        Some(n) if !n.is_empty() => sanitize_label_component(n),
         _ => content_hash.chars().take(16).collect(),
     }
 }
@@ -832,11 +837,31 @@ fn run_align_reference(
     sealed: bool,
     config: AlignConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use phraya_align::executor::align_read;
+    use phraya_align::executor::{align_read_prepared, prepare_query};
     use phraya_io::plan::content_hash_for_sequence;
+    use rayon::prelude::*;
 
     let plan = plan::read_plan(plan_path)?;
     std::fs::create_dir_all(out_dir)?;
+
+    // Named labels can collide (two record IDs that sanitize to the same string), which
+    // hash-prefix labels never could. Derive the collision set from the plan's *whole*
+    // palette, never from this invocation's presented subset — a label that changed
+    // depending on which other references are presented would break composability
+    // (`align({A,B})` writing byte-identical `A.phraya` to `align({A})`).
+    let mut label_counts: HashMap<String, usize> = HashMap::new();
+    for space in &plan.reference_space {
+        if let Some(n) = &space.name {
+            if !n.is_empty() {
+                *label_counts.entry(sanitize_label_component(n)).or_insert(0) += 1;
+            }
+        }
+    }
+    let colliding: std::collections::HashSet<String> = label_counts
+        .into_iter()
+        .filter(|&(_, count)| count > 1)
+        .map(|(name, _)| name)
+        .collect();
 
     // Presented references, resolved to (label, sequence, hash). Needed up front so reads
     // that are themselves a presented reference are excluded from the read pool.
@@ -859,7 +884,12 @@ fn run_align_reference(
             let hash = content_hash_for_sequence(&seq);
             // Prefer the palette's name for the label (hit); fall back to the hash prefix (miss).
             let name = plan.get_reference_space(&hash).and_then(|s| s.name.clone());
-            let label = reference_space_label(&name, &hash);
+            let label = match &name {
+                Some(n) if !n.is_empty() && colliding.contains(&sanitize_label_component(n)) => {
+                    format!("{}__{}", sanitize_label_component(n), &hash[..16.min(hash.len())])
+                }
+                _ => reference_space_label(&name, &hash),
+            };
             refs.push(PresentedRef {
                 seq,
                 hash,
@@ -895,6 +925,18 @@ fn run_align_reference(
         refs.len(),
         reads.len()
     );
+
+    // Space-independent per-read work (content hash, forward/reverse-complement
+    // sketches) computed once here rather than once per (space, read) — palette mode
+    // aligns every read against every space, so this turns an O(spaces x reads) cost
+    // into O(reads). `reads` is already fully materialized above, so holding one
+    // `PreparedQuery` per read is a proportional increase to an already-resident set.
+    let prepared: Vec<phraya_align::executor::PreparedQuery> = reads
+        .par_iter()
+        .map(|r| prepare_query(r, &plan, &config))
+        .collect();
+
+    const BATCH_SIZE: usize = 4096;
 
     // Cross-space sidecar (issue #198): query -> [(space, pos, identity)] across the palette.
     let mut cross_space: queries::CrossSpaceQueryIndex = HashMap::new();
@@ -944,38 +986,49 @@ fn run_align_reference(
         let mut full_coverage = vec![0u32; r.seq.len()];
         let mut full_coverage_raw = vec![0u32; r.seq.len()];
         let mut variants = Vec::new();
-        for read in &reads {
-            let result = match align_read(&ctx, read, &plan, &config, None) {
-                Some(res) => res,
-                None => continue,
-            };
-            for w in &result.coverage {
-                for (j, &c) in w.counts.iter().enumerate() {
-                    let pos = w.start + j;
-                    if pos < full_coverage.len() {
-                        full_coverage[pos] += c;
+        for start in (0..reads.len()).step_by(BATCH_SIZE) {
+            let end = (start + BATCH_SIZE).min(reads.len());
+            // Parallel align, then serial merge: `into_par_iter().collect()` over a range
+            // preserves index order, so `variants`/`cross_space` ordering — and thus the
+            // byte-identity of the written `.phraya` file — is unchanged from the serial
+            // version this replaces.
+            let batch: Vec<(usize, phraya_align::executor::AlignmentResult)> = (start..end)
+                .into_par_iter()
+                .filter_map(|i| {
+                    align_read_prepared(&ctx, &reads[i], &prepared[i], &plan, &config, None)
+                        .map(|res| (i, res))
+                })
+                .collect();
+            for (i, result) in batch {
+                let read = &reads[i];
+                for w in &result.coverage {
+                    for (j, &c) in w.counts.iter().enumerate() {
+                        let pos = w.start + j;
+                        if pos < full_coverage.len() {
+                            full_coverage[pos] += c;
+                        }
                     }
                 }
-            }
-            for w in &result.raw_coverage {
-                for (j, &c) in w.counts.iter().enumerate() {
-                    let pos = w.start + j;
-                    if pos < full_coverage_raw.len() {
-                        full_coverage_raw[pos] += c;
+                for w in &result.raw_coverage {
+                    for (j, &c) in w.counts.iter().enumerate() {
+                        let pos = w.start + j;
+                        if pos < full_coverage_raw.len() {
+                            full_coverage_raw[pos] += c;
+                        }
                     }
                 }
+                for &(pos, identity) in &result.query_positions {
+                    cross_space
+                        .entry(read.id().to_string())
+                        .or_default()
+                        .push(queries::CrossSpacePlacement {
+                            space: r.label.clone(),
+                            pos,
+                            identity,
+                        });
+                }
+                variants.extend(result.variants);
             }
-            for &(pos, identity) in &result.query_positions {
-                cross_space
-                    .entry(read.id().to_string())
-                    .or_default()
-                    .push(queries::CrossSpacePlacement {
-                        space: r.label.clone(),
-                        pos,
-                        identity,
-                    });
-            }
-            variants.extend(result.variants);
         }
 
         let coverage = CoverageTrack::new(full_coverage.iter().map(|&v| v as usize).collect());
@@ -1275,12 +1328,12 @@ fn run_plan(
             // Create sketches for this reference space
             let mut space_sketches = std::collections::HashMap::new();
             let sketch = sketch_sequence_default_for(&seq, seq_alphabet);
-            space_sketches.insert(seq_id, sketch);
+            space_sketches.insert(seq_id.clone(), sketch);
 
             // Create and store the reference space
             reference_spaces.push(phraya_io::plan::ReferenceSpace {
                 content_hash,
-                name: None,
+                name: Some(seq_id),
                 sketches: space_sketches,
             });
         }

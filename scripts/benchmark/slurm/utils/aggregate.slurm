@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 if [[ -z "${RUN_DIR:-}" ]]; then
     echo "ERROR: RUN_DIR must be exported by orchestrator" >&2
@@ -25,7 +25,7 @@ if [[ -f "$RUN_DIR/results.json" ]]; then
     echo "Results aggregated to $RUN_DIR/results.json"
     echo
     echo "To score results:"
-    echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR/results.json"
+    echo "  python ${DATA_ROOT:-$HOME/data-commons/test/benchmarking/alignment}/score.py $RUN_DIR/results.json"
 else
     echo "ERROR: Failed to create results.json" >&2
     exit 1

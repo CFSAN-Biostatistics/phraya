@@ -574,47 +574,21 @@ fn extend_chains(
     Some(score_alignments(&alignments, query_bytes.len()))
 }
 
-/// Align a single query against the target described by `ctx`.
-///
-/// Pass `Some(&stats)` to tally the read's outcome (placed / no-seed / below-threshold /
-/// fast-cutoff / no-alignment) for issue #194 diagnostics; `None` skips accounting.
-pub fn align_read(
-    ctx: &TargetContext<'_>,
-    query: &Sequence,
-    plan: &PhrayaPlan,
-    config: &AlignConfig,
-    stats: Option<&AlignStats>,
-) -> Option<AlignmentResult> {
-    let target = ctx.target;
-    let record = |outcome: Outcome| {
-        if let Some(s) = stats {
-            s.record(outcome);
-        }
-    };
+/// Per-query work that depends only on (query, plan, strategy) — never on the target
+/// space. Hoisted out of `align_read` so reference-palette mode, which aligns every read
+/// against every space, computes it once per read instead of once per (space, read).
+pub struct PreparedQuery {
+    fwd_sketch: MinimizerSketch,
+    used_stored_sketch: bool,
+    rc_bases: Vec<u8>,
+    rev_sketch: Option<MinimizerSketch>,
+}
 
-    // Try both strands. A reverse-strand read's stored bytes are the reverse complement of
-    // the reference region it came from; seeding finds anchors either way (canonical
-    // minimizers are strand-invariant), but extension is strand-naïve, so the forward bytes
-    // of a reverse read align at ~read-length edit distance and get dropped. Aligning the
-    // reverse complement too — and keeping whichever orientation scores better — recovers
-    // those reads (issue #192). Extension against the *forward* target means the winning
-    // CIGAR and alleles are always in reference-forward orientation regardless of strand.
-    //
-    // Forward orientation reuses the plan's cached sketch if present; the reverse orientation
-    // must re-sketch the RC bytes (a forward sketch's seed query positions are in the wrong
-    // orientation). Both sketches are always computed — that part is unavoidable, since we
-    // don't know which orientation is correct until we've seeded both — but *extension* is
-    // skipped for whichever orientation has no chain support, once the other orientation has
-    // at least one (seed_and_chain / extend_chains split below). Both orientations of a real
-    // read always find the same raw seed count (canonical minimizers are strand-invariant in
-    // value), so seed count can't distinguish true orientation, but chaining can: chaining
-    // requires seed co-linearity, which reliably holds only in a read's true orientation — the
-    // wrong orientation of a genuine match chains to nothing even when seeds are plentiful.
-    //
-    // Issue #185: Both forward and reverse sketches are filtered based on strategy:
-    // - Fast/Balanced: use w=11 subset to maintain byte-identity with pre-#182
-    // - Sensitive: use full dense set for better recall in variant-dense regions
-    //
+/// Compute the space-independent part of aligning `query`: its forward sketch (reusing a
+/// stored sketch when the plan has one), its reverse complement, and — when worth
+/// computing — its reverse-complement sketch. See `align_read_prepared` for why the
+/// reverse sketch is skipped when the forward sketch is empty.
+pub fn prepare_query(query: &Sequence, plan: &PhrayaPlan, config: &AlignConfig) -> PreparedQuery {
     // Issue #200: prefer a stored read sketch (keyed by content hash, stable across
     // pipeline stages unlike sequence ID) over recomputing one. `used_stored_sketch`
     // tracks whether the forward sketch came from the plan's cache, so an empty cached
@@ -630,11 +604,9 @@ pub fn align_read(
             (fallback, false)
         }
     };
-    let (fwd_seeds, fwd_chains) = seed_and_chain(ctx, &fwd_sketch);
 
     // Protein has no reverse strand (ADR-0013) — the dual-strand search below is a DNA
-    // concept only. `rc_bases` stays empty and unread for Protein (rev_seeds/rev_chains
-    // are forced empty, so no match arm below ever indexes into it); `reverse_complement`
+    // concept only. `rc_bases` stays empty and unread for Protein; `reverse_complement`
     // itself must not run on protein bytes — its A↔T/C↔G table would silently corrupt
     // any amino-acid byte that happens to collide with a DNA letter (e.g. Ala 'A' → 'T').
     let is_dna = plan.alphabet == Alphabet::Dna;
@@ -644,39 +616,80 @@ pub fn align_read(
         Vec::new()
     };
 
-    // If the forward sketch itself is empty and that caused zero seeds, skip the
-    // expensive reverse orientation entirely.
-    // Canonical minimizers are strand-invariant, so if the forward has no match due to an empty
-    // sketch, the reverse is very unlikely to match either.
-    let (rev_seeds, rev_chains) = if !is_dna {
-        (0, vec![])
-    } else if fwd_seeds == 0 && fwd_sketch.minimizers.is_empty() {
-        (0, vec![])
+    // If the forward sketch itself is empty, seeding against it can only ever find zero
+    // seeds — the `fwd_seeds == 0 && fwd_sketch.minimizers.is_empty()` skip condition
+    // `align_read` used to check (ctx-dependent `fwd_seeds` included) simplifies to just
+    // the sketch-emptiness check, since an empty sketch trivially implies zero seeds.
+    // Canonical minimizers are strand-invariant, so an empty forward sketch means the
+    // reverse orientation is very unlikely to match either — skip its (expensive) sketch.
+    let rev_sketch = if !is_dna || fwd_sketch.minimizers.is_empty() {
+        None
     } else {
         let rc_seq = Sequence::new(rc_bases.clone(), None, query.id().to_string(), None);
         // Reverse complement must be re-sketched (positions are orientation-specific)
-        // and must use the same strategy-based filtering as the forward strand
-        let rev_sketch = {
-            // For reverse complement, we can't use the plan's stored sketch (which is for the
-            // forward orientation). So we must re-sketch. But we still apply strategy filtering:
-            // For Fast/Balanced on a dense plan, we need to compute the dense sketch of the RC
-            // and filter it to w=11. For Sensitive, we use the full dense sketch of the RC.
-            // For simplicity and correctness, we compute a default w=11 sketch here, which will
-            // be automatically dense-capable if simd-minimizers supports it, or just w=11 otherwise.
-            sketch_sequence_default(&rc_seq)
-        };
-        seed_and_chain(ctx, &rev_sketch)
+        // and must use the same strategy-based filtering as the forward strand. For
+        // simplicity and correctness this uses a default w=11 sketch, automatically
+        // dense-capable if simd-minimizers supports it, or just w=11 otherwise.
+        Some(sketch_sequence_default(&rc_seq))
     };
 
-    // Whether the read shared any minimizer with the target (in either orientation). Distinguishes
-    // a seeding loss from an extension/divergence loss when classifying an unplaced read.
+    PreparedQuery {
+        fwd_sketch,
+        used_stored_sketch,
+        rc_bases,
+        rev_sketch,
+    }
+}
+
+/// Align a single query against the target described by `ctx`, reusing a `PreparedQuery`
+/// computed once per read by `prepare_query`.
+///
+/// Try both strands. A reverse-strand read's stored bytes are the reverse complement of
+/// the reference region it came from; seeding finds anchors either way (canonical
+/// minimizers are strand-invariant), but extension is strand-naïve, so the forward bytes
+/// of a reverse read align at ~read-length edit distance and get dropped. Aligning the
+/// reverse complement too — and keeping whichever orientation scores better — recovers
+/// those reads (issue #192). Extension against the *forward* target means the winning
+/// CIGAR and alleles are always in reference-forward orientation regardless of strand.
+///
+/// Chaining (not seeding) is what decides which orientation is worth extending: both
+/// orientations of a real read find the same raw seed count (canonical minimizers are
+/// strand-invariant in value), but chaining requires seed co-linearity, which reliably
+/// holds only in a read's true orientation.
+///
+/// Pass `Some(&stats)` to tally the read's outcome (placed / no-seed / below-threshold /
+/// fast-cutoff / no-alignment) for issue #194 diagnostics; `None` skips accounting.
+pub fn align_read_prepared(
+    ctx: &TargetContext<'_>,
+    query: &Sequence,
+    prepared: &PreparedQuery,
+    plan: &PhrayaPlan,
+    config: &AlignConfig,
+    stats: Option<&AlignStats>,
+) -> Option<AlignmentResult> {
+    let target = ctx.target;
+    let record = |outcome: Outcome| {
+        if let Some(s) = stats {
+            s.record(outcome);
+        }
+    };
+
+    let (fwd_seeds, fwd_chains) = seed_and_chain(ctx, &prepared.fwd_sketch);
+    let (rev_seeds, rev_chains) = match &prepared.rev_sketch {
+        Some(s) => seed_and_chain(ctx, s),
+        None => (0, vec![]),
+    };
+
+    // Whether the read shared any minimizer with the target (in either orientation).
+    // Distinguishes a seeding loss from an extension/divergence loss when classifying an
+    // unplaced read.
     let had_seeds = fwd_seeds > 0 || rev_seeds > 0;
 
     // Issue #200: an empty *stored* read sketch is a deliberate signal from the caller
     // that this read has no minimizers to seed with (as opposed to a short/degenerate
     // read that merely recomputed to an empty sketch) — treat it as unplaceable rather
     // than falling through to the (0,0) anchor's fallback alignment.
-    if used_stored_sketch && fwd_sketch.minimizers.is_empty() && !had_seeds {
+    if prepared.used_stored_sketch && prepared.fwd_sketch.minimizers.is_empty() && !had_seeds {
         record(Outcome::NoSeed);
         return None;
     }
@@ -696,22 +709,22 @@ pub fn align_read(
     } else if fwd_chains.is_empty() && !rev_chains.is_empty() {
         (
             None,
-            extend_chains(config.strategy, config.gap_model, ctx, &rc_bases, &rev_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains),
         )
     } else {
         (
             extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains),
-            extend_chains(config.strategy, config.gap_model, ctx, &rc_bases, &rev_chains),
+            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains),
         )
     };
 
     // Keep the better-scoring orientation; ties resolve to forward deterministically.
     let (scored, query_bytes, strand): (crate::ScoredAlignments, &[u8], Strand) = match (fwd, rev) {
         (Some(f), Some(r)) if r.primary.edit_distance < f.primary.edit_distance => {
-            (r, &rc_bases[..], Strand::Reverse)
+            (r, &prepared.rc_bases[..], Strand::Reverse)
         }
         (Some(f), _) => (f, query.bases(), Strand::Forward),
-        (None, Some(r)) => (r, &rc_bases[..], Strand::Reverse),
+        (None, Some(r)) => (r, &prepared.rc_bases[..], Strand::Reverse),
         (None, None) => {
             record(Outcome::NoAlignment);
             return None;
@@ -794,6 +807,21 @@ pub fn align_read(
         raw_coverage,
         query_positions,
     })
+}
+
+/// Align a single query against the target described by `ctx`. Convenience wrapper that
+/// prepares the read's space-independent sketches on every call; aligning the same read
+/// against multiple reference spaces (e.g. reference-palette mode) should call
+/// `prepare_query` once per read and reuse `align_read_prepared` per space instead.
+pub fn align_read(
+    ctx: &TargetContext<'_>,
+    query: &Sequence,
+    plan: &PhrayaPlan,
+    config: &AlignConfig,
+    stats: Option<&AlignStats>,
+) -> Option<AlignmentResult> {
+    let prepared = prepare_query(query, plan, config);
+    align_read_prepared(ctx, query, &prepared, plan, config, stats)
 }
 
 /// Check if a position falls within any hotspot interval.

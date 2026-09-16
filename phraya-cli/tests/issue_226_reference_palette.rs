@@ -190,3 +190,37 @@ fn multi_reference_is_composable() {
         }
     }
 }
+
+/// palette-perf-and-pa-scoring plan, step 1: a reference space takes its name from the
+/// FASTA record ID at plan time, so palette output filenames are the (sanitized) record ID
+/// instead of a content-hash prefix. This is the observable contract the benchmark's PA
+/// scorer depends on to match a cross-space placement's space label to a read's true
+/// chromosome.
+#[test]
+fn palette_output_is_named_by_fasta_record_id() {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    let reads = write_fasta(p, "reads.fa", &[("read1", READ)]);
+    let two_chrom = write_fasta(p, "two_chrom.fa", &[("chr1", REF_A), ("chr2", REF_B)]);
+    plan_with_ref(p, "plan.phrayaplan", &reads, &two_chrom);
+
+    let out_dir = p.join("out");
+    let out = run(&[
+        "align",
+        p.join("plan.phrayaplan").to_str().unwrap(),
+        "--reference",
+        two_chrom.to_str().unwrap(),
+        "--output",
+        out_dir.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "align failed: {}", String::from_utf8_lossy(&out.stderr));
+
+    let names: Vec<_> = std::fs::read_dir(&out_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .collect();
+    assert!(out_dir.join("chr1.phraya").exists(), "expected chr1.phraya, found: {names:?}");
+    assert!(out_dir.join("chr2.phraya").exists(), "expected chr2.phraya, found: {names:?}");
+    assert!(out_dir.join("cross_space.phraya.queries").exists(), "cross-space sidecar written");
+}

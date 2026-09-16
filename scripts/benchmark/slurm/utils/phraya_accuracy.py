@@ -13,6 +13,21 @@ So a read is correct if its best alignment start is within <tolerance> bp of ANY
 true start: min, max, or (max - read_len + 1). This matches sam_accuracy.py exactly, so
 phraya and the SAM aligners are scored on the same basis.
 
+Two sidecar schemas are supported, detected automatically from the file's content:
+  * legacy, single-space: QueryIndex = HashMap<String, Vec<(u32, f64)>>
+    msgpack decodes each placement as [pos, score].
+  * cross-space (ADR-0011, issue #198): CrossSpaceQueryIndex =
+    HashMap<String, Vec<CrossSpacePlacement>>, msgpack decodes each placement as
+    [space, pos, identity] (phraya-io/src/queries.rs). `space` is the reference space's
+    label — its name (sanitized the same way phraya-cli sanitizes filenames), or, for a
+    sidecar written before reference spaces carried names, a bare content-hash prefix.
+    Scoring requires both the position AND the space to match the read's true chromosome;
+    with hundreds of reference spaces (e.g. a per-chromosome palette), position-only
+    scoring would credit a read placed on the wrong chromosome at a coincidentally
+    matching offset. A hash-labelled sidecar can never match by chromosome name, so this
+    script falls back to position-only scoring for such files (with a warning) rather than
+    reporting a spurious PA of 0.
+
 PA = (correctly placed reads) / (placed, parseable, non-random reads).
 
 Also reports unaligned fraction if total_reads is supplied.
@@ -47,6 +62,51 @@ def parse_fragment(read_name: str):
     return None
 
 
+def label_for_chrom(chrom: str) -> str:
+    """Mirror phraya-cli's sanitize_label_component: alnum/-/_/. pass through, else '_'."""
+    return re.sub(r"[^0-9A-Za-z._-]", "_", chrom)
+
+
+def strip_collision_suffix(space: str) -> str:
+    """Undo phraya-cli's `<label>__<16-hex>` disambiguation suffix (added only when two
+    reference space names sanitize to the same label) so a chromosome comparison isn't
+    defeated by a collision-safe label."""
+    return re.sub(r"__[0-9a-f]{16}$", "", space)
+
+
+def score_pass(data: dict, read_len: int, tolerance: int, cross_space: bool, chrom_aware: bool):
+    """One scoring pass over every read. `cross_space` selects the 3-element
+    (space, pos, identity) decoding; `chrom_aware` additionally requires the placement's
+    space to match the read's true chromosome (ignored when `cross_space` is False, since
+    a legacy single-space sidecar carries no space label to compare)."""
+    n_parseable = 0
+    n_correct = 0
+    for read_name, alignments in data.items():
+        parsed = parse_fragment(read_name)
+        if parsed is None:
+            # rand_ reads or unparseable names — skip entirely (can't evaluate)
+            continue
+        if not alignments:
+            continue  # no positions recorded — count as unmapped, skip
+        n_parseable += 1
+        chrom, frag_lo, frag_hi = parsed
+        if cross_space:
+            # Best alignment = highest identity (third element)
+            space, pos, _ = max(alignments, key=lambda p: p[2])
+            if chrom_aware and strip_collision_suffix(space) != label_for_chrom(chrom):
+                continue
+            pos = int(pos)
+        else:
+            # Best alignment = highest score (second element)
+            pos = int(max(alignments, key=lambda p: p[1])[0])
+        # Correct if near any candidate true start (covers wgsim span + dwgsim direct):
+        # frag_lo, frag_hi, or the wgsim right-end read start (frag_hi - read_len + 1).
+        candidates = (frag_lo, frag_hi, frag_hi - read_len + 1)
+        if any(abs(pos - c) <= tolerance for c in candidates):
+            n_correct += 1
+    return n_parseable, n_correct
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("queries_file")
@@ -59,30 +119,35 @@ def main():
     with open(args.queries_file, "rb") as f:
         with dctx.stream_reader(f) as reader:
             raw = reader.read()
-    # QueryIndex = HashMap<String, Vec<(u32, f64)>>
-    # msgpack decodes tuples as lists: [[pos, score], ...]
     data: dict = msgpack.unpackb(raw, raw=False)
 
     n_mapped = len(data)
-    n_parseable = 0
-    n_correct = 0
 
-    for read_name, alignments in data.items():
-        parsed = parse_fragment(read_name)
-        if parsed is None:
-            # rand_ reads or unparseable names — skip entirely (can't evaluate)
-            continue
-        if not alignments:
-            continue  # no positions recorded — count as unmapped, skip
-        n_parseable += 1
-        _, frag_lo, frag_hi = parsed
-        # Best alignment = highest score (second element)
-        best_pos = int(max(alignments, key=lambda x: x[1])[0])
-        # Correct if near any candidate true start (covers wgsim span + dwgsim direct):
-        # frag_lo, frag_hi, or the wgsim right-end read start (frag_hi - read_len + 1).
-        candidates = (frag_lo, frag_hi, frag_hi - args.read_len + 1)
-        if any(abs(best_pos - c) <= args.tolerance for c in candidates):
-            n_correct += 1
+    # Schema is uniform across one file: either every non-empty entry decodes to 3-element
+    # (space, pos, identity) triples (cross-space sidecar) or 2-element (pos, score) pairs
+    # (legacy single-space sidecar). Detect once from the first non-empty entry.
+    cross_space_schema = any(len(v[0]) == 3 for v in data.values() if v)
+
+    if cross_space_schema:
+        n_parseable, n_correct = score_pass(
+            data, args.read_len, args.tolerance, cross_space=True, chrom_aware=True
+        )
+        if n_correct == 0 and n_parseable > 0:
+            _, n_correct_position_only = score_pass(
+                data, args.read_len, args.tolerance, cross_space=True, chrom_aware=False
+            )
+            if n_correct_position_only > 0:
+                print(
+                    "warning: 0 reads matched by chromosome label — sidecar likely "
+                    "predates named reference spaces (bare content-hash labels); "
+                    "falling back to position-only scoring",
+                    file=sys.stderr,
+                )
+                n_correct = n_correct_position_only
+    else:
+        n_parseable, n_correct = score_pass(
+            data, args.read_len, args.tolerance, cross_space=False, chrom_aware=False
+        )
 
     pa = n_correct / n_parseable if n_parseable > 0 else 0.0
 
