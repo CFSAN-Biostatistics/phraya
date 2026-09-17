@@ -2,9 +2,83 @@ use phraya_core::types::MinimizerSketch;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// A minimizer index: value → target positions where it occurs. Built once from a
-/// target sketch and reused across many queries (see [`MinimizerIndex`]).
-pub type MinimizerIndex = HashMap<u64, Vec<u32>>;
+/// A minimizer index: value -> the target positions where it occurs.
+///
+/// Positions live in a single flat `Vec<u32>`, grouped by value, with `slots` mapping a
+/// value to its `(start, len)` span. This replaces a `HashMap<u64, Vec<u32>>` that
+/// allocated one `Vec` per distinct minimizer — ~18M allocations for one vertebrate
+/// chromosome, measured at 0.146-0.213 s per Mb of reference and the dominant cost of
+/// `align`'s per-space setup.
+#[derive(Debug, Default)]
+pub struct MinimizerIndex {
+    slots: HashMap<u64, (u32, u32)>,
+    positions: Vec<u32>,
+}
+
+impl MinimizerIndex {
+    /// Group `target`'s minimizers by value.
+    ///
+    /// Within a value, positions keep the order they appear in the sketch — *not* ascending
+    /// order. That is load-bearing: it is the order the old per-value `Vec` produced, so
+    /// seeds, chains and the resulting `.phraya` bytes are unchanged. Sketch positions are
+    /// not ascending to begin with (`simd-minimizers` emits them interleaved across its 8
+    /// parallel streams, and duplicate positions occur), so this cannot be reconstructed by
+    /// sorting.
+    pub fn build(target: &MinimizerSketch) -> Self {
+        // One entry per distinct value; sized for the all-distinct case to avoid rehashing.
+        let mut slots: HashMap<u64, (u32, u32)> =
+            HashMap::with_capacity(target.minimizers.len());
+
+        // Pass 1: occurrence count per value.
+        for &(val, _) in &target.minimizers {
+            slots.entry(val).or_insert((0, 0)).1 += 1;
+        }
+
+        // Prefix-sum: give each value a contiguous span of `positions`.
+        let mut cursor = 0u32;
+        for (start, len) in slots.values_mut() {
+            *start = cursor;
+            cursor += *len;
+        }
+
+        // Pass 2: place each position at its value's next free slot, walking the sketch in
+        // its original order so per-value order is preserved. `start` doubles as the write
+        // cursor here and is rewound below.
+        let mut positions = vec![0u32; cursor as usize];
+        for &(val, pos) in &target.minimizers {
+            let slot = slots.get_mut(&val).expect("counted in pass 1");
+            positions[slot.0 as usize] = pos;
+            slot.0 += 1;
+        }
+        for (start, len) in slots.values_mut() {
+            *start -= *len;
+        }
+
+        MinimizerIndex { slots, positions }
+    }
+
+    /// Target positions for `value`, or an empty slice when it does not occur.
+    pub fn positions(&self, value: u64) -> &[u32] {
+        match self.slots.get(&value) {
+            Some(&(start, len)) => &self.positions[start as usize..(start + len) as usize],
+            None => &[],
+        }
+    }
+
+    /// Occurrence count of each distinct value, in unspecified order.
+    pub fn occurrence_counts(&self) -> impl Iterator<Item = usize> + '_ {
+        self.slots.values().map(|&(_, len)| len as usize)
+    }
+
+    /// Number of distinct minimizer values.
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+}
 
 /// A seed: a shared minimizer between query and target that anchors WFA extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,22 +92,10 @@ pub struct Seed {
 ///
 /// Convenience for one-off pairs. When aligning many queries against a single
 /// target, build a [`MinimizerIndex`] from the target once with
-/// [`build_minimizer_index`] and call [`find_seeds_indexed`] per query instead —
-/// this function rebuilds the target-side hash map on every call.
+/// [`MinimizerIndex::build`] and call [`find_seeds_indexed`] per query instead —
+/// this function rebuilds the target-side index on every call.
 pub fn find_seeds(query: &MinimizerSketch, target: &MinimizerSketch) -> Vec<Seed> {
-    find_seeds_indexed(query, &build_minimizer_index(target))
-}
-
-/// Build a reusable minimizer index from a target sketch: value → target positions.
-///
-/// This is the per-target work that [`find_seeds`] otherwise repeats on every call.
-/// Hoist it out of a per-query loop and pass the result to [`find_seeds_indexed`].
-pub fn build_minimizer_index(target: &MinimizerSketch) -> MinimizerIndex {
-    let mut index: MinimizerIndex = HashMap::new();
-    for &(val, pos) in &target.minimizers {
-        index.entry(val).or_default().push(pos);
-    }
-    index
+    find_seeds_indexed(query, &MinimizerIndex::build(target))
 }
 
 /// Find shared minimizer seeds against a prebuilt target [`MinimizerIndex`],
@@ -62,17 +124,16 @@ pub fn find_seeds_indexed_capped(
 ) -> Vec<Seed> {
     let mut seeds = Vec::new();
     for &(val, qpos) in &query.minimizers {
-        if let Some(tposs) = index.get(&val) {
-            if tposs.len() > max_occ {
-                continue; // hyper-frequent minimizer: mask it
-            }
-            for &tpos in tposs {
-                seeds.push(Seed {
-                    query_pos: qpos,
-                    target_pos: tpos,
-                    minimizer: val,
-                });
-            }
+        let tposs = index.positions(val);
+        if tposs.len() > max_occ {
+            continue; // hyper-frequent minimizer: mask it
+        }
+        for &tpos in tposs {
+            seeds.push(Seed {
+                query_pos: qpos,
+                target_pos: tpos,
+                minimizer: val,
+            });
         }
     }
     seeds.sort_by_key(|s| s.query_pos);
@@ -95,7 +156,7 @@ pub fn seed_occurrence_cap(index: &MinimizerIndex, floor: usize) -> usize {
     if index.is_empty() {
         return floor;
     }
-    let mut counts: Vec<usize> = index.values().map(|v| v.len()).collect();
+    let mut counts: Vec<usize> = index.occurrence_counts().collect();
     counts.sort_unstable();
     let median = counts[counts.len() / 2];
     floor.max(median.saturating_mul(SEED_CAP_MEDIAN_MULT))
@@ -113,9 +174,8 @@ mod tests {
     #[test]
     fn capped_masks_hyperfrequent_minimizer() {
         // Minimizer value 7 occurs 5× in the target; value 9 occurs once.
-        let mut index: MinimizerIndex = HashMap::new();
-        index.insert(7, vec![10, 20, 30, 40, 50]);
-        index.insert(9, vec![100]);
+        let target = sketch(&[(7, 10), (7, 20), (7, 30), (7, 40), (7, 50), (9, 100)]);
+        let index = MinimizerIndex::build(&target);
         let query = sketch(&[(7, 0), (9, 5)]);
 
         // Uncapped: both contribute (5 + 1 = 6 seeds).
@@ -129,10 +189,8 @@ mod tests {
     #[test]
     fn cap_is_a_noop_on_a_clean_index() {
         // Every minimizer unique → percentile is 1 → cap == floor → nothing maskable.
-        let mut index: MinimizerIndex = HashMap::new();
-        for v in 0..1000u64 {
-            index.insert(v, vec![v as u32]);
-        }
+        let mins: Vec<(u64, u32)> = (0..1000u64).map(|v| (v, v as u32)).collect();
+        let index = MinimizerIndex::build(&sketch(&mins));
         assert_eq!(seed_occurrence_cap(&index, 256), 256);
     }
 
@@ -141,11 +199,9 @@ mod tests {
         // 999 unique values + one value occurring 10_000×. Median occurrence is 1, so the
         // floor (256) governs and the hyper-repeat (10_000 > 256) is maskable — the outlier
         // does not pull the cap up to shelter itself.
-        let mut index: MinimizerIndex = HashMap::new();
-        for v in 0..999u64 {
-            index.insert(v, vec![v as u32]);
-        }
-        index.insert(9999, vec![0u32; 10_000]);
+        let mut mins: Vec<(u64, u32)> = (0..999u64).map(|v| (v, v as u32)).collect();
+        mins.extend(std::iter::repeat((9999u64, 0u32)).take(10_000));
+        let index = MinimizerIndex::build(&sketch(&mins));
         let cap = seed_occurrence_cap(&index, 256);
         assert_eq!(cap, 256);
         assert!(10_000 > cap, "the hyper-repeat must exceed the cap and be maskable");
@@ -156,16 +212,28 @@ mod tests {
         // Every minimizer occurs 100× (a uniformly repetitive genome). Median is 100, so the
         // cap lifts to 8×100 = 800, above the floor — masking stays proportionate instead of
         // stripping the genome's normal signal.
-        let mut index: MinimizerIndex = HashMap::new();
+        let mut mins: Vec<(u64, u32)> = Vec::new();
         for v in 0..500u64 {
-            index.insert(v, vec![0u32; 100]);
+            mins.extend(std::iter::repeat((v, 0u32)).take(100));
         }
+        let index = MinimizerIndex::build(&sketch(&mins));
         assert_eq!(seed_occurrence_cap(&index, 256), 800);
     }
 
     #[test]
     fn empty_index_returns_floor() {
-        let index: MinimizerIndex = HashMap::new();
+        let index = MinimizerIndex::build(&sketch(&[]));
         assert_eq!(seed_occurrence_cap(&index, 256), 256);
+    }
+
+    /// Positions within a value keep sketch order, not ascending order. Seeds are emitted in
+    /// this order and then stably sorted by query position, so reordering here would change
+    /// `.phraya` bytes.
+    #[test]
+    fn build_preserves_sketch_order_within_a_value() {
+        let index = MinimizerIndex::build(&sketch(&[(7, 30), (7, 10), (9, 5), (7, 20)]));
+        assert_eq!(index.positions(7), &[30, 10, 20]);
+        assert_eq!(index.positions(9), &[5]);
+        assert!(index.positions(11).is_empty());
     }
 }

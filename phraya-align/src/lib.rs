@@ -10,8 +10,8 @@ pub use executor::{
     WindowedCoverage,
 };
 pub use seeding::{
-    build_minimizer_index, find_seeds, find_seeds_indexed, find_seeds_indexed_capped,
-    seed_occurrence_cap, MinimizerIndex, Seed,
+    find_seeds, find_seeds_indexed, find_seeds_indexed_capped, seed_occurrence_cap,
+    MinimizerIndex, Seed,
 };
 
 #[cfg(test)]

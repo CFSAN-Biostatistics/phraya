@@ -1860,6 +1860,31 @@ mod tests {
             "alleles must serialize in ascending key order"
         );
     }
+
+    /// Protein residues must be distinguished. `I` (73) and `A` (65) both pack to 0 under the
+    /// 2-bit DNA mapping `(b >> 1) & 3`, so a 2-bit path would give these two sequences the
+    /// same minimizer values — and in fact panics outright on `I`.
+    #[test]
+    fn protein_sketch_distinguishes_residues_that_collide_under_dna_packing() {
+        let a = sketch_alphabet(b"AAAAAAAAAAAA", DEFAULT_K_PROTEIN, DEFAULT_W_PROTEIN, Alphabet::Protein);
+        let i = sketch_alphabet(b"IIIIIIIIIIII", DEFAULT_K_PROTEIN, DEFAULT_W_PROTEIN, Alphabet::Protein);
+        assert!(!a.minimizers.is_empty(), "12 residues at k=6/w=5 must yield minimizers");
+        let vals = |s: &MinimizerSketch| -> Vec<u64> { s.minimizers.iter().map(|&(v, _)| v).collect() };
+        assert_ne!(vals(&a), vals(&i));
+        assert_eq!((a.k, a.w), (DEFAULT_K_PROTEIN, DEFAULT_W_PROTEIN));
+    }
+
+    /// A DNA sketch must not depend on whether BMI2 was enabled at compile time. `N` packs to
+    /// the same 2-bit code as `G`, so these two sketches are identical on a release build
+    /// today; normalising makes that true on every build instead of panicking.
+    #[test]
+    fn dna_sketch_maps_ambiguity_codes_like_the_bmi2_fast_path() {
+        let with_n = b"ACGTNNACGTACGTACGTACGTACGTACGTACGTACGT";
+        let with_g: Vec<u8> = with_n.iter().map(|&b| if b == b'N' { b'G' } else { b }).collect();
+        let a = sketch(with_n, DEFAULT_K, DEFAULT_W);
+        assert!(!a.minimizers.is_empty(), "38bp at k=21/w=11 must yield minimizers");
+        assert_eq!(a, sketch(&with_g, DEFAULT_K, DEFAULT_W));
+    }
 }
 
 // ============================================================================
@@ -1969,9 +1994,21 @@ impl MinimizerSketch {
 ///
 /// `Dna` uses canonical minimizers (reverse-complement-aware — a sequence and
 /// its RC select the same positions, which is what makes dual-strand search
-/// work). `Protein` uses plain (non-canonical) minimizers — there is no
-/// reverse complement for amino acids, so canonicalization would be meaningless.
-/// Both are SIMD-accelerated via `simd-minimizers`' generic ASCII path.
+/// work) through `packed_seq::AsciiSeq`, a 2-bit DNA representation. `Protein`
+/// uses plain (non-canonical) minimizers — there is no reverse complement for
+/// amino acids, so canonicalization would be meaningless — through
+/// `packed_seq`'s generic 8-bit `&[u8]` `Seq` impl instead: `AsciiSeq` is 2-bit
+/// DNA and panics on any byte outside `ACGTacgt` (e.g. protein residue `I`).
+/// `&[u8]::as_u64` asserts `len() <= 8`, so protein `k` must stay ≤ 8. The
+/// builder's default hasher (`NtHasher`) only accepts ≤2-bit-per-char input and
+/// asserts otherwise, so the `Protein` arm swaps in `MulHasher` — `seq_hash`'s
+/// documented hasher "for non-DNA sequences with >2-bit alphabets" — which
+/// supports the full 8 bits/char; the hasher only affects which positions are
+/// selected as minimizers, not the k-mer *value* `pos_and_values_u64` reads
+/// (via `Seq::read_kmer`), so this doesn't change the value-extraction path.
+/// `Output::pos_and_values_u64` never calls `revcomp_as_u64` (`unimplemented!()`
+/// for `&[u8]`) when computing non-canonical minimizers, so the 8-bit path is
+/// safe here and only here. Both arms are SIMD-accelerated via `simd-minimizers`.
 pub fn sketch_alphabet(sequence: &[u8], k: usize, w: usize, alphabet: Alphabet) -> MinimizerSketch {
     use packed_seq::AsciiSeq;
     let mut positions = Vec::new();
@@ -1980,16 +2017,48 @@ pub fn sketch_alphabet(sequence: &[u8], k: usize, w: usize, alphabet: Alphabet) 
     // `CANONICAL` bools, so the two arms are different types and can't unify as
     // one `output` binding — only their collected `Vec<(u64, u32)>` can.
     let minimizers: Vec<(u64, u32)> = match alphabet {
-        Alphabet::Dna => simd_minimizers::canonical_minimizers(k, w)
-            .run(AsciiSeq(sequence), &mut positions)
-            .pos_and_values_u64()
-            .map(|(pos, val)| (val, pos))
-            .collect(),
-        Alphabet::Protein => simd_minimizers::minimizers(k, w)
-            .run(AsciiSeq(sequence), &mut positions)
-            .pos_and_values_u64()
-            .map(|(pos, val)| (val, pos))
-            .collect(),
+        Alphabet::Dna => {
+            // `AsciiSeq` is 2-bit DNA: its BMI2 fast path silently packs any byte as
+            // `(b >> 1) & 3`, while its scalar fallback (`pack_char`) panics on anything
+            // outside `ACGTacgt`. Normalising here makes the sketch identical on every
+            // build instead of depending on whether BMI2 was enabled at compile time.
+            // `b"ACTG"[(b >> 1) & 3]` agrees with `pack_char` on all of ACGTacgt, so this
+            // is a no-op for real DNA and reproduces the existing release behaviour for
+            // everything else (`N` -> `G`).
+            let normalized: Option<Vec<u8>> = if sequence
+                .iter()
+                .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't'))
+            {
+                None
+            } else {
+                Some(
+                    sequence
+                        .iter()
+                        .map(|&b| b"ACTG"[((b >> 1) & 3) as usize])
+                        .collect(),
+                )
+            };
+            let dna: &[u8] = normalized.as_deref().unwrap_or(sequence);
+            simd_minimizers::canonical_minimizers(k, w)
+                .run(AsciiSeq(dna), &mut positions)
+                .pos_and_values_u64()
+                .map(|(pos, val)| (val, pos))
+                .collect()
+        }
+        // `&[u8]` is packed_seq's generic 8-bit ASCII `Seq` impl (distinct from
+        // `AsciiSeq`'s 2-bit DNA packing), so every byte — including protein-only
+        // residues like `I` — is distinguished instead of colliding under the 2-bit
+        // DNA mapping or panicking outright. `MulHasher::<false>` replaces the
+        // builder's default `NtHasher` (2-bit-only; asserts on 8-bit input).
+        Alphabet::Protein => {
+            let hasher = simd_minimizers::seq_hash::MulHasher::<false>::new(k);
+            simd_minimizers::minimizers(k, w)
+                .hasher(&hasher)
+                .run(sequence, &mut positions)
+                .pos_and_values_u64()
+                .map(|(pos, val)| (val, pos))
+                .collect()
+        }
     };
     MinimizerSketch { minimizers, k, w }
 }

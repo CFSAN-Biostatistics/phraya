@@ -1528,7 +1528,16 @@ fn run_plan(
     plan.read_byte_offsets = read_byte_offsets;
     plan.reads_per_file = reads_per_file;
     plan.total_read_count = total_read_count;
-    plan.kmer_params = phraya_io::plan::KmerParams { k: 21, w: 11 };
+    plan.kmer_params = match alphabet {
+        Alphabet::Dna => phraya_io::plan::KmerParams {
+            k: phraya_core::types::DEFAULT_K,
+            w: phraya_core::types::DEFAULT_W,
+        },
+        Alphabet::Protein => phraya_io::plan::KmerParams {
+            k: phraya_core::types::DEFAULT_K_PROTEIN,
+            w: phraya_core::types::DEFAULT_W_PROTEIN,
+        },
+    };
     plan.insert_size_distribution = insert_size_distribution;
     plan.mate_info = all_mate_info;
     plan.reference_space = reference_spaces;

@@ -1,6 +1,4 @@
-use crate::seeding::{
-    build_minimizer_index, find_seeds_indexed_capped, seed_occurrence_cap, MinimizerIndex,
-};
+use crate::seeding::{find_seeds_indexed_capped, seed_occurrence_cap, MinimizerIndex};
 use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{
     reverse_complement, sketch_sequence_default, sketch_sequence_default_for, Alphabet,
@@ -486,7 +484,7 @@ impl<'a> TargetContext<'a> {
         // Get the effective sketch for this strategy (filters dense to w=11 if needed)
         let sketch = get_effective_sketch(target.id(), plan, strategy)
             .unwrap_or_else(|| sketch_sequence_default_for(target, plan.alphabet));
-        let minimizer_index = build_minimizer_index(&sketch);
+        let minimizer_index = MinimizerIndex::build(&sketch);
         // Repeat-masking cap from the index's own occurrence distribution. Floor 256 keeps
         // it a no-op on clean/moderately-repetitive genomes (nothing occurs that often), so
         // only pathological hyper-repeats (homopolymer/microsatellite k-mers) are trimmed.
@@ -511,7 +509,7 @@ impl<'a> TargetContext<'a> {
         sketch: &MinimizerSketch,
         strategy: Strategy,
     ) -> Self {
-        let minimizer_index = build_minimizer_index(sketch);
+        let minimizer_index = MinimizerIndex::build(sketch);
         let seed_max_occ = seed_occurrence_cap(&minimizer_index, SEED_OCC_CAP_FLOOR);
         TargetContext {
             target,
