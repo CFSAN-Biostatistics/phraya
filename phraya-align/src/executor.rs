@@ -352,16 +352,18 @@ fn chain_cap(strategy: Strategy) -> usize {
 ///    dozens of times in the target is the standard example. Anchoring at the seed is what
 ///    makes this recoverable — the old `(0,0)` anchor only ever aligned `target[0..2*|q|)`,
 ///    so it rescued such a query purely by luck when the match happened to sit at the start.
-/// 3. **No seeds at all** — `(0,0)`, but only where [`fallback_anchor_applies`]; otherwise no
-///    anchors, and the caller reports no alignment. A query sharing not one k-mer with a
-///    target vastly longer than itself has no candidate locus to extend from, and forcing one
-///    fabricates a ~50%-identity alignment pinned at offset 0.
+/// 3. **No seeds at all** — `(0,0)`, but only where [`fallback_anchor_applies`] (always
+///    `false` for `Alphabet::Protein` — see its docs); otherwise no anchors, and the caller
+///    reports no alignment. A query sharing not one k-mer with a target vastly larger than
+///    itself has no candidate locus to extend from, and forcing one fabricates a ~50%-
+///    identity alignment pinned at offset 0.
 fn select_anchors(
     chains: &[crate::chaining::Chain],
     seeds: &[crate::Seed],
     k: usize,
     query_len: usize,
     target_len: usize,
+    alphabet: Alphabet,
 ) -> Vec<SeedAnchor> {
     if !chains.is_empty() {
         return chains
@@ -394,7 +396,7 @@ fn select_anchors(
         return anchors;
     }
 
-    if fallback_anchor_applies(query_len, target_len) {
+    if fallback_anchor_applies(query_len, target_len, alphabet) {
         return vec![SeedAnchor {
             query_pos: 0,
             target_pos: 0,
@@ -579,11 +581,22 @@ fn seed_and_chain(
 /// against a target of `target_len`, via the `(0,0)` fallback anchor in
 /// [`select_anchors`].
 ///
-/// True only when the two are comparable in length — the contig-vs-contig case issue #146
-/// added the fallback for, where a real homolog can share no minimizer. When the target
-/// dwarfs the query the fallback can only ever align the query against
-/// `target[0..2*query_len)`: a guaranteed-losing alignment whose sub-threshold placement
-/// `write_cross_space_queries` discards at its 0.95 identity filter, but whose
+/// **Always `false` for `Alphabet::Protein`.** The ratio rule below assumes DNA's issue
+/// #146 contig-vs-contig shape (a handful of sequences compared pairwise, where comparable
+/// length is unusual enough to be a real homology signal). Reference-palette protein
+/// search instead compares a query against a proteome — potentially thousands of candidate
+/// proteins that are *naturally* comparable in length to the query, which is the normal
+/// shape of a database, not evidence of relatedness. Applying the ratio there would force
+/// a real `(0,0)` extension attempt against every candidate with no seed (real BLASTP/
+/// DIAMOND-style seeded search never does that), and it also defeats
+/// `run_align_reference`'s per-space skip below at the cost of O(queries × proteome size)
+/// extension attempts — exactly the combinatorial blowup this alphabet gate prevents.
+///
+/// For DNA (unchanged): true only when the two are comparable in length — the contig-vs-
+/// contig case issue #146 added the fallback for, where a real homolog can share no
+/// minimizer. When the target dwarfs the query the fallback can only ever align the query
+/// against `target[0..2*query_len)`: a guaranteed-losing alignment whose sub-threshold
+/// placement `write_cross_space_queries` discards at its 0.95 identity filter, but whose
 /// ~`query_len/2` bogus `VariantObservation`s are *not* filtered and land in the `.phraya`.
 /// Measured on a 20-record palette: 1.87 MB of garbage per non-homologous space against
 /// 42 KB of signal in the one space the reads came from, at 256us per (read, space) pair —
@@ -594,7 +607,10 @@ fn seed_and_chain(
 /// skip a space outright: zero shared minimizers means zero seeds, so if the fallback also
 /// does not apply, that space provably yields no placement and no variant. The two
 /// decisions MUST agree, hence one function rather than two copies of the ratio.
-pub fn fallback_anchor_applies(query_len: usize, target_len: usize) -> bool {
+pub fn fallback_anchor_applies(query_len: usize, target_len: usize, alphabet: Alphabet) -> bool {
+    if alphabet == Alphabet::Protein {
+        return false;
+    }
     /// Largest target/query length ratio at which a seedless `(0,0)` alignment is still
     /// plausible rather than guaranteed noise.
     const FALLBACK_MAX_TARGET_RATIO: usize = 10;
@@ -614,6 +630,7 @@ fn extend_chains(
     query_bytes: &[u8],
     chains: &[crate::chaining::Chain],
     seeds: &[crate::Seed],
+    alphabet: Alphabet,
 ) -> Option<crate::ScoredAlignments> {
     let target = ctx.target;
     let query_len = query_bytes.len();
@@ -624,6 +641,7 @@ fn extend_chains(
         chain_cap(strategy),
         query_len,
         target.bases().len(),
+        alphabet,
     );
     if anchors.is_empty() {
         return None;
@@ -800,18 +818,18 @@ pub fn align_read_prepared(
     // both, exactly as before.
     let (fwd, rev) = if !fwd_chains.is_empty() && rev_chains.is_empty() {
         (
-            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds),
+            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds, plan.alphabet),
             None,
         )
     } else if fwd_chains.is_empty() && !rev_chains.is_empty() {
         (
             None,
-            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds),
+            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds, plan.alphabet),
         )
     } else {
         (
-            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds),
-            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds),
+            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds, plan.alphabet),
+            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds, plan.alphabet),
         )
     };
 
@@ -1293,7 +1311,7 @@ mod tests {
     fn select_anchors_falls_back_to_origin_only_for_comparable_lengths() {
         // Seedless and comparable-length: the issue #146 contig-vs-contig safety net.
         assert_eq!(
-            select_anchors(&[], &[], chain_cap(Strategy::Fast), 100, 500),
+            select_anchors(&[], &[], chain_cap(Strategy::Fast), 100, 500, Alphabet::Dna),
             vec![SeedAnchor {
                 query_pos: 0,
                 target_pos: 0
@@ -1302,7 +1320,7 @@ mod tests {
 
         // Seedless against a target that dwarfs the query: no candidate locus exists, so
         // there is nothing to extend and the caller must report no alignment.
-        assert!(select_anchors(&[], &[], chain_cap(Strategy::Fast), 100, 100_000).is_empty());
+        assert!(select_anchors(&[], &[], chain_cap(Strategy::Fast), 100, 100_000, Alphabet::Dna).is_empty());
     }
 
     /// A repetitive query can share exact k-mers yet chain to nothing. Those seeds are real
@@ -1331,7 +1349,7 @@ mod tests {
 
         // Target dwarfs the query, so the `(0,0)` fallback does not apply — these anchors
         // exist purely because seeds do.
-        let anchors = select_anchors(&[], &seeds, chain_cap(Strategy::Balanced), 300, 100_000);
+        let anchors = select_anchors(&[], &seeds, chain_cap(Strategy::Balanced), 300, 100_000, Alphabet::Dna);
         assert_eq!(
             anchors,
             vec![
@@ -1349,7 +1367,7 @@ mod tests {
 
         // Fast caps at one anchor.
         assert_eq!(
-            select_anchors(&[], &seeds, chain_cap(Strategy::Fast), 300, 100_000).len(),
+            select_anchors(&[], &seeds, chain_cap(Strategy::Fast), 300, 100_000, Alphabet::Dna).len(),
             1
         );
     }
@@ -1387,7 +1405,7 @@ mod tests {
         ];
         // K=1 (Fast) keeps only the first (highest-scoring) chain's target_start.
         // No (0,0) fallback when chains exist.
-        let anchors = select_anchors(&chains, &[], chain_cap(Strategy::Fast), 150, 10_000);
+        let anchors = select_anchors(&chains, &[], chain_cap(Strategy::Fast), 150, 10_000, Alphabet::Dna);
         assert_eq!(
             anchors,
             vec![SeedAnchor {
@@ -1397,7 +1415,7 @@ mod tests {
         );
 
         // K=2 (Balanced) keeps the top 2 chains. No (0,0) fallback when chains exist.
-        let anchors = select_anchors(&chains, &[], chain_cap(Strategy::Balanced), 150, 10_000);
+        let anchors = select_anchors(&chains, &[], chain_cap(Strategy::Balanced), 150, 10_000, Alphabet::Dna);
         assert_eq!(
             anchors,
             vec![

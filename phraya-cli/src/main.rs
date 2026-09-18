@@ -1019,7 +1019,7 @@ fn run_align_reference(
             };
 
         let unreachable_space = resolved.as_ref().is_some_and(|sketch| {
-            !phraya_align::executor::fallback_anchor_applies(max_read_len, r.seq.len())
+            !phraya_align::executor::fallback_anchor_applies(max_read_len, r.seq.len(), plan.alphabet)
                 && !sketch
                     .minimizers
                     .iter()

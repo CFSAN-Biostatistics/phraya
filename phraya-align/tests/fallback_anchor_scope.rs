@@ -10,11 +10,21 @@
 //!
 //! These tests pin both halves of the resulting scope rule: no seedless alignment when the
 //! target dwarfs the query, but the fallback preserved when the two are comparable.
+//!
+//! `Alphabet::Protein` is scoped further still: the fallback never applies at all, comparable
+//! length or not. A proteome's candidate proteins are *naturally* comparable in length to a
+//! query (that's the normal shape of a database, not a homology signal the way it is for a
+//! handful of DNA contigs), so the DNA ratio rule would force a real extension attempt
+//! against every candidate with no seed — the combinatorial cost issue #146's rule was never
+//! meant to pay in a reference-palette protein search.
 
 use phraya_align::executor::{
     align_read, fallback_anchor_applies, AlignConfig, Strategy, TargetContext,
 };
-use phraya_core::types::{sketch_sequence_default, Sequence};
+use phraya_core::types::{
+    sketch_sequence_alphabet, sketch_sequence_default, Alphabet, Sequence, DEFAULT_K_PROTEIN,
+    DEFAULT_W_PROTEIN,
+};
 use phraya_io::plan::{PhrayaPlan, UseCase};
 use std::collections::HashSet;
 
@@ -57,6 +67,39 @@ fn assert_no_shared_minimizer(read: &Sequence, target: &Sequence) {
     assert_eq!(
         shared, 0,
         "fixture precondition: read and target must share no minimizer"
+    );
+}
+
+fn diverse_protein(len: usize, seed: u64) -> Vec<u8> {
+    const AA: &[u8] = b"ACDEFGHIKLMNPQRSTVWY";
+    let mut x = seed;
+    (0..len)
+        .map(|_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            AA[((x >> 33) as usize) % AA.len()]
+        })
+        .collect()
+}
+
+/// Protein counterpart of [`assert_no_shared_minimizer`], sketched at protein k/w.
+fn assert_no_shared_minimizer_protein(query: &Sequence, target: &Sequence) {
+    let query_vals: HashSet<u64> =
+        sketch_sequence_alphabet(query, DEFAULT_K_PROTEIN, DEFAULT_W_PROTEIN, Alphabet::Protein)
+            .minimizers
+            .iter()
+            .map(|&(v, _)| v)
+            .collect();
+    let shared =
+        sketch_sequence_alphabet(target, DEFAULT_K_PROTEIN, DEFAULT_W_PROTEIN, Alphabet::Protein)
+            .minimizers
+            .iter()
+            .filter(|(v, _)| query_vals.contains(v))
+            .count();
+    assert_eq!(
+        shared, 0,
+        "fixture precondition: protein query and target must share no minimizer"
     );
 }
 
@@ -105,11 +148,42 @@ fn seedless_query_still_attempts_alignment_against_comparable_length_target() {
 /// silently go missing.
 #[test]
 fn fallback_scope_boundary_is_ten_times_query_length() {
-    assert!(fallback_anchor_applies(150, 1_500), "exactly 10x still applies");
-    assert!(!fallback_anchor_applies(150, 1_501), "past 10x does not apply");
-    assert!(fallback_anchor_applies(150, 150), "equal lengths apply");
+    assert!(fallback_anchor_applies(150, 1_500, Alphabet::Dna), "exactly 10x still applies");
+    assert!(!fallback_anchor_applies(150, 1_501, Alphabet::Dna), "past 10x does not apply");
+    assert!(fallback_anchor_applies(150, 150, Alphabet::Dna), "equal lengths apply");
     assert!(
-        fallback_anchor_applies(0, 0),
+        fallback_anchor_applies(0, 0, Alphabet::Dna),
         "degenerate lengths must not panic or divide"
+    );
+}
+
+/// Protein disables the fallback entirely, at every ratio the DNA test above applies it at —
+/// including equal lengths, the case a proteome's candidates hit by construction.
+#[test]
+fn fallback_scope_is_disabled_entirely_for_protein() {
+    assert!(!fallback_anchor_applies(150, 150, Alphabet::Protein));
+    assert!(!fallback_anchor_applies(150, 1_500, Alphabet::Protein));
+    assert!(!fallback_anchor_applies(0, 0, Alphabet::Protein));
+}
+
+/// The `align_read`-level counterpart of the predicate test above: a protein query and a
+/// same-length candidate protein sharing zero minimizers must not force-align, unlike the
+/// DNA `seedless_query_still_attempts_alignment_against_comparable_length_target` case.
+/// Without this, reference-palette protein search would attempt a real Myers/WFA extension
+/// against every candidate in a proteome regardless of seed evidence.
+#[test]
+fn seedless_protein_query_does_not_force_align_even_at_comparable_length() {
+    let target = Sequence::new(diverse_protein(300, 13), None, "protein_a".to_string(), None);
+    let query = Sequence::new(diverse_protein(300, 99_991), None, "protein_b".to_string(), None);
+    assert_no_shared_minimizer_protein(&query, &target);
+
+    let mut plan = make_plan();
+    plan.alphabet = Alphabet::Protein;
+    let config = AlignConfig::new(Strategy::Balanced);
+    let ctx = TargetContext::build(&target, &plan, config.strategy);
+
+    assert!(
+        align_read(&ctx, &query, &plan, &config, None).is_none(),
+        "comparable-length protein sequences with zero shared minimizers must not force-align"
     );
 }

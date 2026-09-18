@@ -5,12 +5,14 @@
 # timed single-threaded alignment, correctness-oracle TSV digest) but for a
 # proteome + query-protein workload instead of a reference + FASTQ-reads workload.
 #
-# NOT YET RUNNABLE END-TO-END: `phraya plan --alphabet protein` doesn't exist
-# until ADR-0013 ships. This script is written to the target interface now so no
-# further harness-authoring work blocks that feature's implementation — until
-# then it fails at the `plan` step with a clear "unrecognized argument" error,
-# which is expected, not a bug in this script (see BENCHMARK_EXPANSION.md,
-# "What ships now vs. what waits").
+# Uses reference-palette mode (`align --reference <proteome> --output <dir>`), not
+# batch mode: a generated proteome is always multi-record (a database of many
+# proteins is the realistic shape of a protein-search reference), and batch mode
+# hard-errors on any multi-record reference/centroid file. This is the same
+# restriction the SLURM DNA harness hit on multi-chromosome targets and fixed in
+# 58c7c2d by switching to --reference; this script had the identical bug from the
+# day it was written (BENCHMARK_EXPANSION.md), just never exercised past the
+# ADR-0013 plan-time panic until that was fixed.
 #
 # Usage:
 #   scripts/benchmark/local/run_local_bench_protein.sh <label> [num_proteins] [protein_len] [num_queries] [divergence]
@@ -49,7 +51,7 @@ PROTEOME="$DATA_DIR/proteome.fa"
 QUERIES="$DATA_DIR/queries.fa"
 TRUTH="$DATA_DIR/queries.fa.truth.tsv"
 PLAN="$DATA_DIR/plan.phrayaplan"
-OUT="$DATA_DIR/${LABEL}.phraya"
+OUT_DIR="$DATA_DIR/${LABEL}_out"
 RESULTS="$BENCH_DIR/results_protein.tsv"
 
 mkdir -p "$DATA_DIR"
@@ -70,9 +72,14 @@ fi
 
 echo ">> planning (--alphabet protein)"
 "$PHRAYA" plan --inputs "$QUERIES" --reference "$PROTEOME" --output "$PLAN" \
-    --alphabet protein --batch-to 1 --batch-output-pattern "$OUT" >/dev/null
+    --alphabet protein >/dev/null
 
-ALIGN_ARGS=(align "$PLAN" --worker 0)
+# Reference-palette mode, not batch mode: PROTEOME is always multi-record (a
+# proteome is a database of many proteins), and batch mode hard-errors on any
+# multi-record reference. --output is a directory: one <protein_id>.phraya per
+# proteome record plus a cross_space.phraya.queries union sidecar.
+rm -rf "$OUT_DIR"
+ALIGN_ARGS=(align --reference "$PROTEOME" --output "$OUT_DIR" "$PLAN")
 [[ -n "$STRATEGY" ]] && ALIGN_ARGS+=(--strategy "$STRATEGY")
 
 echo ">> aligning (label=$LABEL, strategy=${STRATEGY:-default}, single-threaded)"
@@ -84,18 +91,26 @@ RSS_MB="$(printf '%s' "$MEASURE" | cut -f2)"
 if [[ ! -f "$RESULTS" ]]; then
     printf 'label\tkey\twall_s\tpeak_rss_mb\tstrategy\toutput\n' > "$RESULTS"
 fi
-printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$LABEL" "$KEY" "$WALL" "$RSS_MB" "${STRATEGY:-default}" "$OUT" >> "$RESULTS"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$LABEL" "$KEY" "$WALL" "$RSS_MB" "${STRATEGY:-default}" "$OUT_DIR" >> "$RESULTS"
 
 echo ">> $LABEL: wall=${WALL}s peak_rss=${RSS_MB}MB"
 echo ">> results appended to $RESULTS"
 
+# Correctness oracle: palette mode writes one .phraya per proteome record, not one
+# named file, so concatenate every record's filtered TSV (skipping the
+# cross_space.phraya.queries sidecar, a different format `filter` doesn't read)
+# before normalizing/hashing — same convention as run_local_bench.sh, generalized
+# to N reference spaces.
 NORM="$REPO_ROOT/scripts/benchmark/local/normalize_tsv.py"
-FILTER_TSV="$("$PHRAYA" filter "$OUT" --format tsv 2>/dev/null)"
-TSV_DIGEST="$(printf '%s\n' "$FILTER_TSV" | python3 "$NORM" | sort | sha256sum | cut -d' ' -f1)"
+FILTER_TSV=""
+for space_file in "$OUT_DIR"/*.phraya; do
+    FILTER_TSV+="$("$PHRAYA" filter "$space_file" --format tsv 2>/dev/null)"$'\n'
+done
+TSV_DIGEST="$(printf '%s' "$FILTER_TSV" | python3 "$NORM" | sort | sha256sum | cut -d' ' -f1)"
 echo ">> correctness: variants_tsv=$TSV_DIGEST"
 
 if [[ "$INDEL_RATE" != "0" && -f "$TRUTH" ]]; then
     IEC_SCRIPT="$REPO_ROOT/scripts/benchmark/local/compute_indel_recovery.py"
     echo ">> indel event concordance:"
-    printf '%s\n' "$FILTER_TSV" | python3 "$IEC_SCRIPT" --truth "$TRUTH" | sed 's/^/   /'
+    printf '%s' "$FILTER_TSV" | python3 "$IEC_SCRIPT" --truth "$TRUTH" | sed 's/^/   /'
 fi
