@@ -124,13 +124,26 @@ pub struct Sequence {
 
 impl Sequence {
     /// Create a new sequence. Panics if quality_scores.len() != bases.len() when Some.
+    ///
+    /// `bases` is uppercased on construction. Soft-masked reference FASTAs (NCBI RefSeq's
+    /// convention for repeat-annotated regions — lowercase acgt) are a normal input, not an
+    /// edge case: `gallus_gallus`/`plasmodium_falciparum`-class assemblies ship this way by
+    /// default. Minimizer sketching already treated case as non-semantic (`sketch_alphabet`
+    /// normalizes internally, matching `AsciiSeq`'s case-insensitive 2-bit packing), but WFA/
+    /// Myers extension compares raw bytes (`q[i] == t[j]`) with no such normalization — so a
+    /// read seeded and chained *correctly* into a soft-masked region previously scored one
+    /// mismatch per lowercase base against its own perfect match, collapsing identity well
+    /// below the 0.95 report threshold. Normalizing once here, at the single chokepoint every
+    /// `Sequence` is built through, fixes every consumer (extension, CIGAR/variant
+    /// extraction, coverage) uniformly instead of patching each comparison site and risking
+    /// missing one.
     pub fn new(
         bases: Vec<u8>,
         quality_scores: Option<Vec<u8>>,
         id: String,
         description: Option<String>,
     ) -> Self {
-        if let Some(ref scores) = quality_scores {
+        if let Some(scores) = &quality_scores {
             assert_eq!(
                 scores.len(),
                 bases.len(),
@@ -138,7 +151,7 @@ impl Sequence {
             );
         }
         Sequence {
-            bases,
+            bases: bases.to_ascii_uppercase(),
             quality_scores,
             id,
             description,

@@ -985,6 +985,12 @@ fn run_align_reference(
         prepared.iter().flat_map(|p| p.minimizer_values()).collect();
     let max_read_len = reads.iter().map(|r| r.len()).max().unwrap_or(0);
 
+    // Per-read outcome tally (issue #194): where are reads lost — seeding, extension, or
+    // the divergence cutoff? Mirrors batch mode's same-named counter (executor.rs
+    // `AlignStats`); reference-palette mode never wired it, leaving #194's own diagnostic
+    // AC unmet for the multi-record code path every non-trivial benchmark target uses.
+    let stats = phraya_align::executor::AlignStats::default();
+
     for r in &refs {
         // Resolve by content hash: hit reuses the planned sketch, miss warns/errors.
         let resolved: Option<phraya_core::types::MinimizerSketch> =
@@ -1060,7 +1066,7 @@ fn run_align_reference(
             let batch: Vec<(usize, phraya_align::executor::AlignmentResult)> = (start..end)
                 .into_par_iter()
                 .filter_map(|i| {
-                    align_read_prepared(&ctx, &reads[i], &prepared[i], &plan, &config, None)
+                    align_read_prepared(&ctx, &reads[i], &prepared[i], &plan, &config, Some(&stats))
                         .map(|res| (i, res))
                 })
                 .collect();
@@ -1115,6 +1121,7 @@ fn run_align_reference(
     let sidecar = out_dir.join("cross_space.phraya.queries");
     queries::write_cross_space_queries(&sidecar, &cross_space)?;
     eprintln!("Wrote {}", sidecar.display());
+    eprintln!("Read outcomes: {}", stats.summary());
 
     Ok(())
 }
