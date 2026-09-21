@@ -31,10 +31,10 @@ MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
 
 # Concatenate paired reads for rammap (it expects single input for paired-end in sr preset)
 # Actually, rammap -x sr can take two read files like minimap2. Let's use that.
-START=$SECONDS
+START=$(now_s)
 "$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
     bash -c "$RAMMAP -x sr -a -t $THREADS $REF $READS_1 $READS_2 > $OUT_DIR/alignment.sam 2>$OUT_DIR/rammap.log"
-ELAPSED=$((SECONDS - START))
+ELAPSED=$(elapsed_s "$START")
 
 PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" | grep -oP '\d+' | tail -1)
 PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")

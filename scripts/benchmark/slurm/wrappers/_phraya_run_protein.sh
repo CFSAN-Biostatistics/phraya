@@ -38,14 +38,14 @@ PLAN_FILE="$OUT_DIR/plan.phrayaplan"
 
 TOTAL_QUERIES=$(grep -c '^>' "$QUERY" || echo 0)
 
-START_SECS=$SECONDS
+START_SECS=$(now_s)
 PYTHON="${PYTHON3_BIN:-python3}"
 MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
 "$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
     bash -c "RAYON_NUM_THREADS=$THREADS \"$PHRAYA\" align --strategy \"$STRATEGY\" --worker 0 \"$PLAN_FILE\" >\"$OUT_DIR/align.log\" 2>&1"
 
 ALIGN_EXIT=$?
-ELAPSED=$((SECONDS - START_SECS))
+ELAPSED=$(elapsed_s "$START_SECS")
 
 if [[ $ALIGN_EXIT -ne 0 ]]; then
     echo "ERROR: Alignment failed (exit $ALIGN_EXIT)" >&2

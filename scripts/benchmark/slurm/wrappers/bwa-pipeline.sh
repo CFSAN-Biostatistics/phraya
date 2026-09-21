@@ -18,7 +18,7 @@ if [[ ! -f "${REF}.bwt" ]]; then
     (flock -x 200; [[ -f "${REF}.bwt" ]] || $BWA_BIN index "$REF") 200>"${REF}.bwa_index.lock"
 fi
 
-START=$SECONDS
+START=$(now_s)
 
 # Step 1: align + sort to BAM; capture peak RSS via measure_rss.py
 PYTHON="${PYTHON3_BIN:-python3}"
@@ -27,7 +27,7 @@ MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
     bash -c "$BWA_BIN mem -t $THREADS $REF $READS_1 $READS_2 2>$OUT_DIR/bwa.log \
         | $SAMTOOLS_BIN sort -@ $THREADS -o $OUT_DIR/alignment.bam -"
 
-T_ALIGN=$((SECONDS - START))
+T_ALIGN=$(elapsed_s "$START")
 
 # Step 2: index BAM
 $SAMTOOLS_BIN index "$OUT_DIR/alignment.bam"
@@ -38,7 +38,7 @@ $BCFTOOLS_BIN mpileup -f "$REF" -d 10000 -q 20 -Q 20 -Ou \
     | $BCFTOOLS_BIN call -mv -Oz -o "$OUT_DIR/variants.vcf.gz"
 $BCFTOOLS_BIN index "$OUT_DIR/variants.vcf.gz"
 
-ELAPSED=$((SECONDS - START))
+ELAPSED=$(elapsed_s "$START")
 
 PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" | grep -oP '\d+' | tail -1)
 PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")

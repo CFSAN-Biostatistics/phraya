@@ -25,10 +25,10 @@ fi
 
 PYTHON="${PYTHON3_BIN:-python3}"
 MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
-START=$SECONDS
+START=$(now_s)
 "$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
     bash -c "$BT2_ALIGN --very-sensitive -x $INDEX_BASE -1 $READS_1 -2 $READS_2 -p $THREADS 2>$OUT_DIR/bowtie2.log" | $SAMTOOLS_BIN view -bS - > "$OUT_DIR/alignment.bam"
-ELAPSED=$((SECONDS - START))
+ELAPSED=$(elapsed_s "$START")
 
 PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" | grep -oP '\d+' | tail -1)
 PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")

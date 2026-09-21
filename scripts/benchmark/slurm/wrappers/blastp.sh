@@ -45,12 +45,12 @@ fi
 PYTHON="${PYTHON3_BIN:-python3}"
 MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
 OUT_TSV="$OUT_DIR/alignment.tsv"
-START=$SECONDS
+START=$(now_s)
 "$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
     bash -c "$BLASTP -db '$PROTEOME' -query '$QUERY' -out '$OUT_TSV' -num_threads $THREADS \
         -outfmt '6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore' \
         2>$OUT_DIR/blastp.log"
-ELAPSED=$((SECONDS - START))
+ELAPSED=$(elapsed_s "$START")
 
 PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" | grep -oP '\d+' | tail -1)
 PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")

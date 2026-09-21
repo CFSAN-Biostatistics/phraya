@@ -51,7 +51,7 @@ PLAN_FILE="$OUT_DIR/plan.phrayaplan"
 # Count total reads in both FASTQ files for unaligned fraction
 TOTAL_READS=$(( $(zcat "$READS_1" | wc -l) / 4 + $(zcat "$READS_2" | wc -l) / 4 )) || TOTAL_READS=0
 
-START_SECS=$SECONDS
+START_SECS=$(now_s)
 
 # measure_rss.py polls /proc/PID/status for peak RSS; phraya stdout+stderr → align.log
 PYTHON="${PYTHON3_BIN:-python3}"
@@ -62,7 +62,7 @@ ALIGN_ARGS=(align --strategy "$STRATEGY" --reference "$REF" --output "$OUT_DIR" 
     bash -c "RAYON_NUM_THREADS=$THREADS \"$PHRAYA\" ${ALIGN_ARGS[*]@Q} >\"$OUT_DIR/align.log\" 2>&1"
 
 ALIGN_EXIT=$?
-ELAPSED=$((SECONDS - START_SECS))
+ELAPSED=$(elapsed_s "$START_SECS")
 
 if [[ $ALIGN_EXIT -ne 0 ]]; then
     echo "ERROR: Alignment failed (exit $ALIGN_EXIT)" >&2

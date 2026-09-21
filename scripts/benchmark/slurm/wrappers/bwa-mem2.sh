@@ -19,10 +19,10 @@ fi
 
 PYTHON="${PYTHON3_BIN:-python3}"
 MEASURE="$SCRIPT_DIR/utils/measure_rss.py"
-START=$SECONDS
+START=$(now_s)
 "$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
     bash -c "$BWA_BIN mem -t $THREADS $REF $READS_1 $READS_2 > $OUT_DIR/alignment.sam 2>$OUT_DIR/bwa.log"
-ELAPSED=$((SECONDS - START))
+ELAPSED=$(elapsed_s "$START")
 
 PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" | grep -oP '\d+' | tail -1)
 PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")
