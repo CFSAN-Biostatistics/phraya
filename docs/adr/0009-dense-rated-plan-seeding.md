@@ -95,3 +95,28 @@ chosen within this bound.
   signal is already in the plan by default, so the experiment costs no architecture to
   defer. `fast` stays byte-identical permanently — its value is the confident point
   estimate, for which finer ranking is irrelevant at `K=1`.
+
+## Postscript (2026-09-21): dense seeding did not fix issue #194
+
+Issue #194 (T2/T5 forward-strand placement collapse on AT-rich/repeat-heavy genomes) named
+this ADR's dense-seeding mechanism as "the intended lever" for its recall gap. It wasn't.
+Once `AlignStats` per-read drop-reason accounting was actually wired into the reference-
+palette code path (the one every multi-record benchmark target uses — see the fix below),
+the T2/T5 gap turned out to be **zero-delta between `balanced` and `sensitive`**: identical
+`unaligned_frac` to four decimal places, despite `sensitive`'s full dense set costing 2.5–17×
+more time. If seed density were the bottleneck, denser seeding would have closed some of the
+gap. It closed none — the loss was never in seeding.
+
+The real cause: NCBI RefSeq soft-masks repeat-annotated regions in these assemblies
+(lowercase acgt), and every WFA/Myers extension engine compared raw bytes with no case
+normalization, while minimizer sketching already normalized case internally. A read seeded
+and chained to the *exact correct position* scored a mismatch per lowercase target base
+against its own near-perfect match — collapsing identity from ~99% to ~50%, well below the
+0.95 report threshold, regardless of strategy (fixed in `dd774ee`, closing #194 for real).
+
+This ADR's mechanism is not invalidated — it remains the correct lever for a read whose true
+locus genuinely has zero surviving shared minimizers (e.g. a divergent region that knocked
+out every minimizer in a window), which is a real and distinct scenario from #194's. It is
+simply not what #194 was hitting, and no benchmark to date has demonstrated the scenario this
+ADR targets actually occurring at a measurable rate — the deferred `balanced`-ranking
+experiment two paragraphs up remains the way to find out.
