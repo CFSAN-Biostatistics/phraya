@@ -208,7 +208,7 @@ enum Commands {
         #[arg(long, value_name = "F")]
         min_kmer_uniqueness: Option<f64>,
 
-        /// Output format (vcf, tsv, phraya)
+        /// Output format (vcf, tsv, phraya, snpdiffs)
         #[arg(long, value_name = "FORMAT", default_value = "vcf")]
         format: String,
 
@@ -279,6 +279,24 @@ enum Commands {
         /// threshold flags and preset, e.g. "identity >= 0.98 && coverage >= 10"
         #[arg(long, value_name = "EXPR")]
         expr: Option<String>,
+
+        /// Reference FASTA path for snpdiffs header metadata (contig count, N50/L90,
+        /// assembly bases, SHA256). Only used with --format snpdiffs.
+        #[arg(long, value_name = "FILE")]
+        reference_fasta: Option<PathBuf>,
+
+        /// Query FASTA path for snpdiffs header metadata. Only used with --format snpdiffs.
+        #[arg(long, value_name = "FILE")]
+        query_fasta: Option<PathBuf>,
+
+        /// Reference sequence ID for snpdiffs header (overrides sample_id from .phraya).
+        /// Only used with --format snpdiffs.
+        #[arg(long, value_name = "NAME")]
+        reference_id: Option<String>,
+        /// Query sequence ID for snpdiffs header. Only used with --format snpdiffs.
+        #[arg(long, value_name = "NAME")]
+        query_id: Option<String>,
+
     },
     /// Report per-comparison QC (variant count, coverage breadth) for one or more
     /// .phraya files, one TSV row per file
@@ -439,6 +457,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_snp_density_1000,
             min_edge_distance,
             expr,
+            reference_fasta,
+            query_fasta,
+            reference_id,
+            query_id,
         } => {
             run_filter(
                 &input,
@@ -464,6 +486,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_snp_density_1000,
                 min_edge_distance,
                 expr.as_deref(),
+                reference_fasta.as_deref(),
+                query_fasta.as_deref(),
+                reference_id.as_deref(),
+                query_id.as_deref(),
             )?;
         }
         Commands::Qc { inputs } => {
@@ -2115,11 +2141,15 @@ fn run_filter(
     max_snp_density_1000: Option<u32>,
     min_edge_distance: Option<u32>,
     expr: Option<&str>,
+    reference_fasta: Option<&std::path::Path>,
+    query_fasta: Option<&std::path::Path>,
+    reference_id: Option<&str>,
+    query_id: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate format
-    if !["vcf", "tsv", "phraya"].contains(&format) {
+    if !["vcf", "tsv", "phraya", "snpdiffs"].contains(&format) {
         return Err(format!(
-            "Invalid format '{}'. Must be one of: vcf, tsv, phraya",
+            "Invalid format '{}'. Must be one of: vcf, tsv, phraya, snpdiffs",
             format
         )
         .into());
@@ -2260,6 +2290,21 @@ fn run_filter(
                 phraya::write_phraya(out_path, &filtered_file)?;
             } else {
                 return Err("--output is required when format is 'phraya'".into());
+            }
+        }
+        "snpdiffs" => {
+            let snpdiffs_output = phraya_filter::snpdiffs::format_snpdiffs(
+                &phraya_file,
+                &filtered_observations,
+                reference_id,
+                query_id,
+                reference_fasta,
+                query_fasta,
+            )?;
+            if let Some(out_path) = output_path {
+                std::fs::write(out_path, &snpdiffs_output)?;
+            } else {
+                println!("{}", snpdiffs_output);
             }
         }
         _ => return Err(format!("Unsupported format: {}", format).into()),

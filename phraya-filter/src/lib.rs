@@ -1,10 +1,11 @@
 use phraya_core::cigar::CigarStats;
 use phraya_core::types::VariantObservation;
 use phraya_io::queries::QueryIndex;
-
 pub mod extractors;
+pub mod snpdiffs;
 pub mod tsv;
 pub mod vcf;
+
 
 pub use extractors::{extract_allele_frequency, extract_cigar_ops, extract_multi_map_fraction};
 
