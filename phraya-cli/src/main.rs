@@ -2081,7 +2081,7 @@ fn run_qc(input_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "sample_id\treference_length\tvariant_count\tcovered_positions\tbreadth\tcovered_positions_10x\tbreadth_10x"
+        "sample_id\treference_length\tvariant_count\tcovered_positions\tbreadth\tcovered_positions_10x\tbreadth_10x\tstrategy\telapsed_ms\tmin_coverage\tmin_mapq\tmin_identity\tkmer_uniqueness_min\tkmer_uniqueness_mean\tkmer_uniqueness_max"
     );
 
     for path in input_paths {
@@ -2109,8 +2109,23 @@ fn run_qc(input_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
                 _ => ("NA".to_string(), "NA".to_string(), "NA".to_string(), "NA".to_string()),
             };
 
+        // K-mer uniqueness stats from per-observation scores.
+        // Strategy, elapsed_ms, and filter params are NOT stored in .phraya
+        // (strategy is a plan-time decision; filter params are CLI-time) → emit NA.
+        let (kmer_min, kmer_mean, kmer_max) = if file.observations.is_empty() {
+            ("NA".to_string(), "NA".to_string(), "NA".to_string())
+        } else {
+            let uniquenesses: Vec<f64> = file.observations.iter()
+                .map(|obs| obs.kmer_uniqueness())
+                .collect();
+            let min = uniquenesses.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = uniquenesses.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let mean = uniquenesses.iter().sum::<f64>() / uniquenesses.len() as f64;
+            (format!("{:.4}", min), format!("{:.4}", mean), format!("{:.4}", max))
+        };
+
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\tNA\tNA\tNA\tNA\tNA\t{}\t{}\t{}",
             file.header.sample_id,
             ref_len,
             file.observations.len(),
@@ -2118,6 +2133,9 @@ fn run_qc(input_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
             breadth_str,
             covered_10x_str,
             breadth_10x_str,
+            kmer_min,
+            kmer_mean,
+            kmer_max,
         );
     }
 
