@@ -1,0 +1,38 @@
+{% set name = "phraya" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/CFSAN-Biostatistics/phraya/releases/download/v{{ version }}/phraya-v{{ version }}-x86_64-linux-gnu-portable.tar.gz  # [linux and x86_64]
+  url: https://github.com/CFSAN-Biostatistics/phraya/releases/download/v{{ version }}/phraya-v{{ version }}-aarch64-linux-gnu.tar.gz  # [linux and aarch64]
+  sha256: TBD  # Update after release with: sha256sum phraya-v{{ version }}-*-linux-gnu*.tar.gz
+
+build:
+  number: 0
+  noarch_python: true
+  script: "mkdir -p $PREFIX/bin && tar -xzf phraya-*.tar.gz -C $PREFIX/bin"
+
+test:
+  commands:
+    - phraya --version
+
+about:
+  home: https://github.com/CFSAN-Biostatistics/phraya
+  summary: General-purpose pairwise sequence aligner for bacterial genomics
+  description: |
+    Phraya is a general-purpose pairwise sequence aligner for bacterial genomics.
+    Aligns short reads, long reads, and contigs. Produces rich alignment
+    superpositions with deferred filtering for SNP calling, in-silico typing,
+    classification, and other downstream analyses. Zero binary dependencies —
+    all alignment in native Rust with SIMD optimization (AVX2/NEON).
+  license: Unlicense
+  license_file: LICENSE
+  doc_url: https://github.com/CFSAN-Biostatistics/phraya#readme
+  dev_url: https://github.com/CFSAN-Biostatistics/phraya
+
+extra:
+  recipe-maintainers:
+    - CFSAN-Biostatistics

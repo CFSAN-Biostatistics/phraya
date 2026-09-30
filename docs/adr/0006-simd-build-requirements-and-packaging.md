@@ -1,7 +1,8 @@
 # 6. SIMD build requirements and packaging (`target-cpu` / `ensure_simd`)
 
-- **Status**: Proposed
+- **Status**: Accepted (Option 1: require and document RUSTFLAGS)
 - **Date**: 2026-07-01
+- **Decision Date**: 2026-09-30
 
 ## Context
 
@@ -40,16 +41,16 @@ feature (slower sketching). That interaction has not been written down or delibe
 
 ## Decision
 
-*Proposed — not yet decided.* This ADR records the constraint and the open question so it is not
-rediscovered by accident. The options to weigh:
+**Accepted: Option 1 — Require and document `RUSTFLAGS` for all from-source builds.**
 
-1. **Require and document `RUSTFLAGS` for all from-source builds** (`-C target-cpu=native` for
-   local/HPC, `-C target-cpu=x86-64-v3` for reproducible/distributable). Make CI and the
-   Dockerfile set it explicitly so the build never depends on ambient environment.
-2. **Activate the `ensure_simd`/`simd-minimizers` `scalar` feature for the portable + Docker
-   build** so it compiles on the SSE4.2 baseline without AVX2, accepting slower sketching there.
-3. **Expose a Phraya cargo feature** that selects (1) vs (2), wired into the release matrix so
-   "native" and "portable" are explicit build modes rather than an implicit `RUSTFLAGS` contract.
+This approach is already implemented in `.github/workflows/release.yml` (native/portable matrix per platform) and `Dockerfile` (SSE4.2 baseline for portability). Formalizing it here documents the requirement explicitly:
+
+- **Local builds**: `RUSTFLAGS="-C target-cpu=native" cargo build --release` for full AVX2/NEON
+- **Portable/distributable builds**: `RUSTFLAGS="-C target-cpu=x86-64-v3"` (x86-64) or `RUSTFLAGS="-C target-feature=+sse4.2"` (portable SSE4.2)
+- **Conda/Homebrew distribution**: Use prebuilt binaries from GitHub Releases (avoiding conda/brew build-time RUSTFLAGS fragility)
+- **Docker**: Set `RUSTFLAGS` explicitly in `Dockerfile` build stage
+
+This avoids activating the `scalar` feature (Option 2 performance cost) and avoids exposing a new Phraya cargo feature (Option 3 complexity).
 
 ## Consequences / open questions to think through
 
