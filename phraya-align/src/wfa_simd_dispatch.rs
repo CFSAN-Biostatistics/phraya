@@ -14,10 +14,10 @@ mod tests {
 
         let dispatch_target = crate::wfa_simd::get_active_dispatch_target();
 
-        // Valid targets: "sse42" / "naive" on x86_64, "neon" on aarch64.
+        // Valid targets: "sse42" / "avx2" / "avx512" / "naive" on x86_64; "neon" on aarch64.
         assert!(
-            matches!(dispatch_target.as_str(), "sse42" | "naive" | "neon"),
-            "Dispatch target must be 'sse42', 'neon', or 'naive', got: {}",
+            matches!(dispatch_target.as_str(), "sse42" | "naive" | "neon" | "avx2" | "avx512"),
+            "Dispatch target must be 'sse42', 'avx2', 'avx512', 'naive', or 'neon', got: {}",
             dispatch_target
         );
     }

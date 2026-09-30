@@ -138,7 +138,8 @@ enum Commands {
 
         /// Alignment strategy preset (selects algorithm + default coverage window + chain cap):
         /// sensitive (K=50, seeded WFA, ±25bp), balanced (K=2, Myers fitting + WFA fallback, ±50bp,
-        /// default), fast (K=1, divergence cutoff, ±150bp, low sensitivity)
+        /// default), fast (K=1, divergence cutoff, ±150bp, low sensitivity), exact (K=250, full WFA,
+        /// ±5bp, highest precision for small genomes or validation)
         #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
         strategy: String,
 
@@ -372,9 +373,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "fast" => Strategy::Fast,
                 "balanced" => Strategy::Balanced,
                 "sensitive" => Strategy::Sensitive,
+                "exact" => Strategy::Exact,
                 other => {
                     return Err(format!(
-                        "unknown strategy: {other}; expected fast, balanced, or sensitive"
+                        "unknown strategy: {other}; expected fast, balanced, sensitive, or exact"
                     )
                     .into())
                 }

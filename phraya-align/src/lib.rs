@@ -3,6 +3,7 @@ pub mod executor;
 pub mod seeding;
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
+pub mod short_read_aligner;
 
 pub use chaining::{chain_seeds, Chain, ChainParams};
 pub use executor::{
@@ -13,7 +14,7 @@ pub use seeding::{
     find_seeds, find_seeds_indexed, find_seeds_indexed_capped, seed_occurrence_cap,
     MinimizerIndex, Seed,
 };
-
+pub use short_read_aligner::{PairedEndConfig, ShortReadAligner};
 #[cfg(test)]
 mod local_coverage_tests;
 

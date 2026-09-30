@@ -72,6 +72,8 @@ pub enum Strategy {
     Balanced,
     /// Sensitive strategy: K=50 chain cap, narrow ±25bp coverage window for precision
     Sensitive,
+    /// Exact strategy: K=250 chain cap, minimal ±5bp coverage window, no mismatches tolerated in initial seeding
+    Exact,
 }
 
 impl Default for Strategy {
@@ -123,6 +125,7 @@ impl AlignConfig {
             Strategy::Fast => 150,
             Strategy::Balanced => 50,
             Strategy::Sensitive => 25,
+            Strategy::Exact => 5,
         };
         AlignConfig {
             strategy,
@@ -146,6 +149,10 @@ impl AlignConfig {
         Self::new(Strategy::Sensitive)
     }
 
+    /// Create an Exact strategy config (±5bp window, K=250, no mismatch tolerance in seeding).
+    pub fn exact() -> Self {
+        Self::new(Strategy::Exact)
+    }
     /// Override the coverage-window radius independently of the strategy preset.
     /// The strategy still selects the alignment algorithm; this only changes the width
     /// of the per-variant local-coverage annotation.
@@ -338,6 +345,7 @@ fn chain_cap(strategy: Strategy) -> usize {
         Strategy::Fast => 1,
         Strategy::Balanced => 2,
         Strategy::Sensitive => 50,
+        Strategy::Exact => 250,
     }
 }
 
@@ -444,6 +452,11 @@ fn extend_anchor(
             } else {
                 wfa_extend(query, target_window, anchor)
             }
+        }
+        Strategy::Exact => {
+            // Exact strategy always uses WFA for full precision, regardless of query length.
+            // No Myers fallback or adaptive selection.
+            wfa_extend(query, target_window, anchor)
         }
     }
 }

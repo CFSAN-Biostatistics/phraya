@@ -37,20 +37,37 @@ thread_local! {
 // the length of the longest common prefix of two byte slices — i.e. the number of
 // matching bytes before the first mismatch (or the shorter length, if no mismatch).
 //
-// Three tiers, all returning bit-identical results (enforced by differential tests):
+// Five tiers, all returning bit-identical results (enforced by differential tests):
 //   - `count_matching_prefix_scalar`: byte-by-byte reference. Always correct.
 //   - `count_matching_prefix_u64`:    8 bytes/step via little-endian XOR. Portable,
 //                                     no `unsafe`, endian-independent.
 //   - arch SIMD (SSE2 / NEON):        16 bytes/step. SSE2 is mandatory on x86_64 and
 //                                     NEON is mandatory on aarch64, so these are selected
 //                                     at compile time with no runtime feature dispatch.
+//   - `count_matching_prefix_avx2`:   32 bytes/step (x86_64 only). Selected at runtime
+//                                     via `is_x86_feature_detected!("avx2")`.
+//   - `count_matching_prefix_avx512`: 64 bytes/step (x86_64 only). Selected at runtime
+//                                     via `is_x86_feature_detected!("avx512f")`.
 
 /// Length of the longest common prefix of `a` and `b` (matching bytes before the
 /// first mismatch, capped at `a.len().min(b.len())`). Dispatches to the fastest tier
-/// available for the target architecture.
+/// available for the current CPU at runtime (AVX-512 → AVX2 → SSE2/NEON → u64 → scalar).
 #[inline]
 pub fn count_matching_prefix(a: &[u8], b: &[u8]) -> usize {
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Runtime dispatch: try widest SIMD first, fall back to SSE2 (always available on x86_64).
+        // SAFETY: is_x86_feature_detected!("avx512f") guarantees AVX-512F is available on the current CPU.
+        if is_x86_feature_detected!("avx512f") {
+            return unsafe { count_matching_prefix_avx512(a, b) };
+        }
+        // SAFETY: is_x86_feature_detected!("avx2") guarantees AVX2 is available on the current CPU.
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { count_matching_prefix_avx2(a, b) };
+        }
+        count_matching_prefix_arch(a, b)
+    }
+    #[cfg(target_arch = "aarch64")]
     {
         count_matching_prefix_arch(a, b)
     }
@@ -152,6 +169,67 @@ pub fn count_matching_prefix_u64(a: &[u8], b: &[u8]) -> usize {
         i += 1;
     }
     i
+}
+
+/// 32-bytes-per-step AVX2 implementation. Processes 256 bits (32 bytes) per iteration,
+/// doubling throughput over SSE2's 16 bytes. AVX2 is available on Intel Haswell (2013) and
+/// newer, AMD Excavator (2015) and newer. Runtime detection via `is_x86_feature_detected!("avx2")`.
+///
+/// # Safety
+/// This function uses AVX2 intrinsics and must only be called when the CPU supports AVX2.
+/// The caller must verify this via `is_x86_feature_detected!("avx2")` before calling.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+pub unsafe fn count_matching_prefix_avx2(a: &[u8], b: &[u8]) -> usize {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    // SAFETY: AVX2 is guaranteed on this call path (verified by caller via is_x86_feature_detected).
+    // Loads are unaligned (`loadu`) and bounded by `i + 32 <= n`, so they never read past the slices.
+    while i + 32 <= n {
+        let va = _mm256_loadu_si256(a.as_ptr().add(i) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.as_ptr().add(i) as *const __m256i);
+        let eq = _mm256_cmpeq_epi8(va, vb); // 0xFF per byte where equal, else 0x00
+        let mask = _mm256_movemask_epi8(eq) as u32; // 32-bit mask: one bit per byte
+        if mask != 0xFFFFFFFF {
+            // First 0 bit = first mismatching byte within this 32-byte chunk
+            return i + (mask ^ 0xFFFFFFFF).trailing_zeros() as usize;
+        }
+        i += 32;
+    }
+    // Tail: scalar comparison for remaining bytes
+    i + count_matching_prefix_scalar(&a[i..n], &b[i..n])
+}
+
+/// 64-bytes-per-step AVX-512 implementation. Processes 512 bits (64 bytes) per iteration.
+/// Available on Intel Knights Landing (2016) and newer, AMD EPYC Genoa (2023) and newer.
+/// Runtime detection via `is_x86_feature_detected!("avx512f")`.
+///
+/// # Safety
+/// This function uses AVX-512F intrinsics and must only be called when the CPU supports AVX-512F.
+/// The caller must verify this via `is_x86_feature_detected!("avx512f")` before calling.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f")]
+#[inline]
+pub unsafe fn count_matching_prefix_avx512(a: &[u8], b: &[u8]) -> usize {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    // SAFETY: AVX-512F is guaranteed on this call path (verified by caller via is_x86_feature_detected).
+    // Loads are unaligned and bounded by `i + 64 <= n`, so they never read past the slices.
+    while i + 64 <= n {
+        let va = _mm512_loadu_si512(a.as_ptr().add(i) as *const __m512i);
+        let vb = _mm512_loadu_si512(b.as_ptr().add(i) as *const __m512i);
+        let eq = _mm512_cmpeq_epi8_mask(va, vb); // __mmask64: one bit per byte
+        if eq != 0xFFFFFFFFFFFFFFFF {
+            // First 0 bit = first mismatching byte within this 64-byte chunk
+            return i + (eq ^ 0xFFFFFFFFFFFFFFFF).trailing_zeros() as usize;
+        }
+        i += 64;
+    }
+    // Tail: scalar comparison for remaining bytes
+    i + count_matching_prefix_scalar(&a[i..n], &b[i..n])
 }
 
 // ============================================================================
@@ -1526,6 +1604,26 @@ pub fn is_sse42_available() -> bool {
     false
 }
 
+/// Detect if AVX2 is available on this CPU.
+pub fn is_avx2_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        is_x86_feature_detected!("avx2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    false
+}
+
+/// Detect if AVX-512F is available on this CPU.
+pub fn is_avx512_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        is_x86_feature_detected!("avx512f")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    false
+}
+
 /// Get the active dispatch target (for testing/debugging).
 pub fn get_active_dispatch_target() -> String {
     LAST_IMPL.with(|last| last.borrow().clone())
@@ -1535,7 +1633,7 @@ pub fn get_active_dispatch_target() -> String {
 pub fn get_compiled_implementations() -> Vec<&'static str> {
     #[cfg(target_arch = "x86_64")]
     {
-        vec!["naive", "sse42"]
+        vec!["naive", "sse42", "avx2", "avx512"]
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -1576,10 +1674,36 @@ pub fn force_implementation(
                 wfa_extend_naive_impl(query, target, seed)
             }
         }
+        "avx2" => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                LAST_IMPL.with(|last| {
+                    *last.borrow_mut() = "avx2".to_string();
+                });
+                wfa_extend_naive_impl(query, target, seed)
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                wfa_extend_naive_impl(query, target, seed)
+            }
+        }
+        "avx512" => {
+            #[cfg(target_arch = "x86_64")]
+            {
+                LAST_IMPL.with(|last| {
+                    *last.borrow_mut() = "avx512".to_string();
+                });
+                wfa_extend_naive_impl(query, target, seed)
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                wfa_extend_naive_impl(query, target, seed)
+            }
+        }
         _ => Err(WfaError::InvalidInput(format!(
             "Unknown implementation: {}",
             impl_name
-        ))),
+        )))
     }
 }
 
