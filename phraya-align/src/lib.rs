@@ -14,7 +14,7 @@ pub use seeding::{
     find_seeds, find_seeds_indexed, find_seeds_indexed_capped, seed_occurrence_cap,
     MinimizerIndex, Seed,
 };
-pub use short_read_aligner::{PairedEndConfig, ShortReadAligner};
+pub use short_read_aligner::{PairedEndConfig, ShortReadAligner, ShortReadScoring, MateRescueResult};
 #[cfg(test)]
 mod local_coverage_tests;
 

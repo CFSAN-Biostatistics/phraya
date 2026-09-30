@@ -33,6 +33,52 @@ impl Default for PairedEndConfig {
     }
 }
 
+/// Scoring parameters optimized for short-read alignment.
+///
+/// Short reads (50-150bp) benefit from stricter mismatch penalties than
+/// long-read aligners use, since there's less room for error and most reads
+/// should map near-exactly to a reference.
+#[derive(Debug, Clone, Copy)]
+pub struct ShortReadScoring {
+    /// Match score (positive)
+    pub match_score: i32,
+    /// Mismatch penalty (positive)
+    pub mismatch_penalty: i32,
+    /// Gap open penalty (positive)
+    pub gap_open: i32,
+    /// Gap extension penalty (positive)
+    pub gap_extend: i32,
+    /// Minimum seed length: number of consecutive exact match bases required for a seed
+    pub min_seed_len: usize,
+    /// Maximum mismatches allowed before triggering rescue alignment
+    pub max_initial_hits: usize,
+}
+
+impl Default for ShortReadScoring {
+    fn default() -> Self {
+        // BWA-like scoring for Illumina short reads
+        ShortReadScoring {
+            match_score: 1,
+            mismatch_penalty: 4,
+            gap_open: 6,
+            gap_extend: 1,
+            min_seed_len: 19, // For 150bp reads: k=19 gives good specificity
+            max_initial_hits: 1000, // Trigger mate rescue if more than 1000 hits
+        }
+    }
+}
+
+/// Result of a mate rescue prediction: where to look for the missing mate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MateRescueResult {
+    /// Expected position of the mate on the reference
+    pub expected_position: usize,
+    /// Search window half-width around expected position (bp)
+    pub search_half_width: usize,
+    /// Whether the predicted position is at the reference boundary
+    pub at_boundary: bool,
+}
+
 /// Specialized aligner for short reads.
 pub struct ShortReadAligner {
     /// Strategy to use (defaults to Fast for throughput)
@@ -61,6 +107,64 @@ impl ShortReadAligner {
     /// Get the alignment configuration for this aligner.
     pub fn alignment_config(&self) -> AlignConfig {
         AlignConfig::new(self.strategy)
+    }
+
+    /// Get scoring parameters optimized for short reads.
+    ///
+    /// Returns BWA-like scoring that penalizes mismatches aggressively,
+    /// appropriate for 50-150bp reads with low divergence.
+    pub fn scoring_params(&self) -> ShortReadScoring {
+        ShortReadScoring::default()
+    }
+
+    /// Predict where a mate should be based on one mapped mate.
+    ///
+    /// Uses paired-end configuration to calculate expected position
+    /// and search window for rescue alignment.
+    pub fn predict_mate_position(
+        &self,
+        mate1_pos: usize,
+        insert_size_mean: usize,
+    ) -> MateRescueResult {
+        if let Some(config) = &self.paired_config {
+            let mean = config.insert_size_mean;
+            let sigma = config.insert_size_stddev;
+            
+            // Expected position: mate2 starts after insert_size from mate1
+            let expected = mate1_pos.saturating_add(mean);
+            let half_width = mean + 3 * sigma;
+            let at_boundary = false;
+            
+            MateRescueResult {
+                expected_position: expected,
+                search_half_width: half_width,
+                at_boundary,
+            }
+        } else {
+            MateRescueResult {
+                expected_position: mate1_pos,
+                search_half_width: 0,
+                at_boundary: true,
+            }
+        }
+    }
+
+    /// Choose adaptive k-mer size based on read length.
+    ///
+    /// For short reads (≤150bp), uses longer k-mers for specificity.
+    /// For longer reads, shorter k-mers increase sensitivity.
+    pub fn adaptive_kmer_size(read_len: usize) -> usize {
+        if read_len <= 50 {
+            17  // Short reads need high specificity
+        } else if read_len <= 100 {
+            19  // Standard short-read k-mer
+        } else if read_len <= 150 {
+            21  // Longer reads can use bigger k-mers
+        } else if read_len <= 300 {
+            25  // Medium reads
+        } else {
+            31  // Long reads (still not ultra-long)
+        }
     }
 
     /// Validate paired-end mate alignment constraints.
@@ -172,5 +276,45 @@ mod tests {
         // Insert size too large
         let result = aligner.validate_mate_pair(100, false, 600, true);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_adaptive_kmer_size() {
+        // Short reads get specificity
+        assert_eq!(ShortReadAligner::adaptive_kmer_size(40), 17);
+        assert_eq!(ShortReadAligner::adaptive_kmer_size(75), 19);
+        
+        // Standard short-read range
+        assert_eq!(ShortReadAligner::adaptive_kmer_size(100), 19);
+        assert_eq!(ShortReadAligner::adaptive_kmer_size(150), 21);
+        
+        // Medium reads
+        assert_eq!(ShortReadAligner::adaptive_kmer_size(200), 25);
+        
+        // Long reads
+        assert_eq!(ShortReadAligner::adaptive_kmer_size(500), 31);
+    }
+
+    #[test]
+    fn test_predict_mate_position() {
+        let aligner = ShortReadAligner::new();
+        let result = aligner.predict_mate_position(100, 350);
+        
+        // Single-end mode: returns mate1_pos unchanged
+        assert_eq!(result.expected_position, 100);
+        assert_eq!(result.search_half_width, 0);
+        assert!(result.at_boundary);
+    }
+
+    #[test]
+    fn test_predict_mate_position_paired() {
+        let config = PairedEndConfig::default();
+        let aligner = ShortReadAligner::paired(config);
+        let result = aligner.predict_mate_position(100, 350);
+        
+        // Paired-end mode: predicts based on insert size
+        assert_eq!(result.expected_position, 450); // 100 + 350
+        assert!(result.search_half_width > 0);
+        assert!(!result.at_boundary);
     }
 }
