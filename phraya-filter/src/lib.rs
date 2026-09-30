@@ -4,6 +4,7 @@ use phraya_io::queries::QueryIndex;
 pub mod extractors;
 pub mod snpdiffs;
 pub mod tsv;
+pub mod core_snp;
 pub mod vcf;
 
 

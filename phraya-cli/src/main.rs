@@ -184,9 +184,9 @@ enum Commands {
     },
     /// Filter .phraya file by thresholds and output in specified format
     Filter {
-        /// Input .phraya file
-        #[arg(value_name = "INPUT")]
-        input: PathBuf,
+        /// Input .phraya file(s) — multiple files for core-snp/distance-matrix formats
+        #[arg(value_name = "INPUT", num_args = 1..)]
+        inputs: Vec<PathBuf>,
 
         /// Minimum coverage threshold
         #[arg(long, value_name = "N")]
@@ -296,6 +296,11 @@ enum Commands {
         /// Query sequence ID for snpdiffs header. Only used with --format snpdiffs.
         #[arg(long, value_name = "NAME")]
         query_id: Option<String>,
+
+        /// Override sample IDs for multi-input formats (core-snp, distance-matrix).
+        /// Comma-separated, one per input file. Falls back to header.sample_id if not given.
+        #[arg(long, value_name = "ID1,ID2,...")]
+        sample_ids: Option<String>,
 
     },
     /// Report per-comparison QC (variant count, coverage breadth) for one or more
@@ -434,7 +439,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_merge(&inputs, &output)?;
         }
         Commands::Filter {
-            input,
+            inputs,
             min_coverage,
             max_coverage,
             min_mapq,
@@ -461,9 +466,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             query_fasta,
             reference_id,
             query_id,
+            sample_ids,
         } => {
             run_filter(
-                &input,
+                &inputs,
                 min_coverage,
                 max_coverage,
                 min_mapq,
@@ -490,6 +496,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 query_fasta.as_deref(),
                 reference_id.as_deref(),
                 query_id.as_deref(),
+                sample_ids.as_deref(),
             )?;
         }
         Commands::Qc { inputs } => {
@@ -2118,7 +2125,7 @@ fn run_qc(input_paths: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_filter(
-    input_path: &PathBuf,
+    input_paths: &[PathBuf],
     min_coverage: Option<u32>,
     max_coverage: Option<u32>,
     min_mapq: Option<u8>,
@@ -2145,23 +2152,30 @@ fn run_filter(
     query_fasta: Option<&std::path::Path>,
     reference_id: Option<&str>,
     query_id: Option<&str>,
+    sample_ids_override: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate format
-    if !["vcf", "tsv", "phraya", "snpdiffs"].contains(&format) {
+    if !["vcf", "tsv", "phraya", "snpdiffs", "core-snp", "distance-matrix"].contains(&format) {
         return Err(format!(
-            "Invalid format '{}'. Must be one of: vcf, tsv, phraya, snpdiffs",
+            "Invalid format '{}'. Must be one of: vcf, tsv, phraya, snpdiffs, core-snp, distance-matrix",
             format
         )
         .into());
     }
 
-    // Read the .phraya file. Mutable: SNP density is annotated in place below, before any
-    // filter runs, so --format tsv and --expr see populated values regardless of which
-    // flags were passed.
-    let mut phraya_file = phraya::read_phraya(input_path)?;
-    phraya_filter::annotate_snp_density(&mut phraya_file.observations);
-
-    let initial_count = phraya_file.observations.len();
+    // Read all input .phraya files. For single-input formats (vcf, tsv, phraya,
+    // snpdiffs), only inputs[0] is used. For multi-sample formats (core-snp,
+    // distance-matrix), all inputs are read and each header.sample_id is used
+    // as the sample label.
+    if input_paths.is_empty() {
+        return Err("No input files specified".into());
+    }
+    let mut phraya_files: Vec<phraya::PhrayaFile> = Vec::new();
+    for path in input_paths {
+        let mut file = phraya::read_phraya(path)?;
+        phraya_filter::annotate_snp_density(&mut file.observations);
+        phraya_files.push(file);
+    }
 
     // Start from preset defaults if specified, then apply explicit overrides on top.
     let mut filter_builder = match preset {
@@ -2246,44 +2260,67 @@ fn run_filter(
     // replacement for it — both must pass.
     let expr_filter = expr.map(phraya_filter::ExprFilter::new).transpose()?;
 
-    // Apply filter to observations
-    let filtered_observations: Vec<_> = phraya_file
-        .observations
-        .iter()
-        .filter(|obs| filter.apply(obs) && expr_filter.as_ref().map_or(true, |e| e.apply(obs)))
-        .cloned()
-        .collect();
+    // Apply filter to each file independently (same thresholds to all)
+    let mut sample_ids: Vec<String> = Vec::new();
+    for file in &mut phraya_files {
+        let initial_count = file.observations.len();
+        let filtered_observations: Vec<_> = file
+            .observations
+            .iter()
+            .filter(|obs| filter.apply(obs) && expr_filter.as_ref().map_or(true, |e| e.apply(obs)))
+            .cloned()
+            .collect();
+        let final_count = filtered_observations.len();
+        eprintln!("Filtered {} → {} observations", initial_count, final_count);
+        file.observations = filtered_observations;
+        sample_ids.push(file.header.sample_id.clone());
+    }
 
-    let final_count = filtered_observations.len();
-    eprintln!("Filtered {} → {} observations", initial_count, final_count);
+    // Apply sample_id overrides for multi-sample formats (core-snp, distance-matrix).
+    // Format: "sample1,sample2,sample3" — one per input file, position-matched.
+    if let Some(override_str) = sample_ids_override {
+        let override_ids: Vec<&str> = override_str.split(',').map(|s| s.trim()).collect();
+        if override_ids.len() != sample_ids.len() {
+            return Err(format!(
+                "Number of --sample-ids ({}) does not match number of input files ({})",
+                override_ids.len(),
+                sample_ids.len()
+            ).into());
+        }
+        for (i, id) in override_ids.iter().enumerate() {
+            sample_ids[i] = id.to_string();
+        }
+    }
 
     // Output in specified format
     match format {
         "vcf" => {
+            let file = &phraya_files[0];
             let vcf_output = vcf::format_vcf(
-                filtered_observations.into_iter(),
-                &phraya_file.header.sample_id,
-                phraya_file.header.reference_length,
+                file.observations.iter().cloned(),
+                &file.header.sample_id,
+                file.header.reference_length,
             );
             println!("{}", vcf_output);
         }
         "tsv" => {
-            output_tsv(&filtered_observations)?;
+            output_tsv(&phraya_files[0].observations)?;
         }
         "phraya" => {
             if let Some(out_path) = output_path {
+                let file = &phraya_files[0];
                 let mut filtered_file = phraya::PhrayaFile::new(
-                    phraya_file.header.reference_length,
-                    phraya_file.header.sample_id.clone(),
-                    phraya_file.header.timestamp.clone(),
-                    filtered_observations,
-                    phraya_file.coverage_track.clone(),
+                    file.header.reference_length,
+                    file.header.sample_id.clone(),
+                    file.header.timestamp.clone(),
+                    file.observations.clone(),
+                    file.coverage_track.clone(),
                 );
                 // Filtering variants doesn't change coverage — propagate breadth unchanged
                 // (both absent on a merged input, since merge can't recover it either).
                 if let (Some(covered), Some(covered_10x)) = (
-                    phraya_file.header.covered_positions,
-                    phraya_file.header.covered_positions_10x,
+                    file.header.covered_positions,
+                    file.header.covered_positions_10x,
                 ) {
                     filtered_file = filtered_file.with_coverage_breadth(covered, covered_10x);
                 }
@@ -2293,9 +2330,10 @@ fn run_filter(
             }
         }
         "snpdiffs" => {
+            let file = &phraya_files[0];
             let snpdiffs_output = phraya_filter::snpdiffs::format_snpdiffs(
-                &phraya_file,
-                &filtered_observations,
+                file,
+                &file.observations,
                 reference_id,
                 query_id,
                 reference_fasta,
@@ -2305,6 +2343,28 @@ fn run_filter(
                 std::fs::write(out_path, &snpdiffs_output)?;
             } else {
                 println!("{}", snpdiffs_output);
+            }
+        }
+        "core-snp" => {
+            let output = phraya_filter::core_snp::format_core_snp(
+                &phraya_files,
+                &sample_ids,
+            );
+            if let Some(out_path) = output_path {
+                std::fs::write(out_path, output)?;
+            } else {
+                println!("{}", output);
+            }
+        }
+        "distance-matrix" => {
+            let output = phraya_filter::core_snp::format_distance_matrix(
+                &phraya_files,
+                &sample_ids,
+            );
+            if let Some(out_path) = output_path {
+                std::fs::write(out_path, output)?;
+            } else {
+                println!("{}", output);
             }
         }
         _ => return Err(format!("Unsupported format: {}", format).into()),
