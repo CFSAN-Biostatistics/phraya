@@ -671,6 +671,10 @@ fn extend_chains(
     if anchors.is_empty() {
         return None;
     }
+    if strategy == Strategy::LongRead {
+        return extend_chains_longread(query_bytes, &anchors, target, ctx);
+    }
+
 
     // Extend every anchor with the strategy's engine, uniformly across Fast/Balanced/
     // Sensitive (ADR-0012 — chaining's structural collapse of repeat families into one
@@ -700,6 +704,114 @@ fn extend_chains(
     }
 
     Some(score_alignments(&alignments, query_bytes.len()))
+}
+/// Chunked WFA extension for long reads (ONT/PacBio, 10-50kb).
+///
+/// The standard WFA path (wfa_extend on the full query) hits default_max_s_cap's
+/// 512 MB wavefront-memory ceiling and abandons alignments once the edit distance
+/// exceeds ~700-2300 (depending on query/target window sizes). At 12% ONT error,
+/// a 20kb read has ~2400 expected edits - far beyond the cap.
+///
+/// This function splits each query into 5kb non-overlapping chunks, extends each
+/// chunk independently via WFA (each chunk stays well under the cap), and stitches
+/// the per-chunk CIGARs into a single alignment.
+fn extend_chains_longread(
+    query_bytes: &[u8],
+    anchors: &[crate::SeedAnchor],
+    target: &Sequence,
+    _ctx: &TargetContext<'_>,
+) -> Option<crate::ScoredAlignments> {
+    use crate::long_read::LongReadAligner;
+
+    let aligner = LongReadAligner::new();
+    let query_len = query_bytes.len();
+    let _chunks = aligner.chunk_read(query_len); // validates chunk boundaries
+
+    let mut merged_alignments: Vec<crate::Alignment> = Vec::with_capacity(anchors.len());
+    let mut best_combined_ed: usize = usize::MAX;
+    let mut best_alignment: Option<crate::Alignment> = None;
+
+    for anchor in anchors {
+        let margin = query_len * 2;
+        let window_end = (anchor.target_pos as usize + margin).min(target.bases().len());
+        let target_window = &target.bases()[..window_end];
+
+        let chunk_start = anchor.query_pos as usize;
+        let chunk_end = query_len;
+
+        let mut combined_cigar = String::new();
+        let mut total_ed = 0usize;
+        let mut first_target_start = anchor.target_pos as usize;
+        let mut last_target_end = anchor.target_pos as usize;
+
+        let mut cs = chunk_start;
+        while cs < chunk_end {
+            let ce = (cs + aligner.chunk_size).min(chunk_end);
+            if ce - cs < aligner.min_chunk_len {
+                break;
+            }
+            let chunk = &query_bytes[cs..ce];
+            let projected_target = (anchor.target_pos as usize)
+                .saturating_add(cs.saturating_sub(anchor.query_pos as usize));
+            if projected_target >= target_window.len() {
+                break;
+            }
+            let chunk_anchor = crate::SeedAnchor {
+                query_pos: 0,
+                target_pos: projected_target,
+            };
+            match wfa_extend(chunk, target_window, chunk_anchor) {
+                Ok(aln) => {
+                    if combined_cigar.is_empty() {
+                        first_target_start = aln.target_start;
+                    }
+                    combined_cigar.push_str(&aln.cigar);
+                    total_ed += aln.edit_distance;
+                    last_target_end = aln.target_end;
+                }
+                Err(_) => break,
+            }
+            cs = ce;
+        }
+
+        if combined_cigar.is_empty() {
+            continue;
+        }
+
+        let combined = crate::Alignment {
+            cigar: combined_cigar,
+            edit_distance: total_ed,
+            query_start: anchor.query_pos as usize,
+            query_end: query_len,
+            target_start: first_target_start,
+            target_end: last_target_end,
+        };
+
+        if total_ed < best_combined_ed {
+            best_combined_ed = total_ed;
+            best_alignment = Some(combined.clone());
+        }
+        merged_alignments.push(combined);
+    }
+
+    let best = best_alignment?;
+    let scored = score_alignments(&merged_alignments, query_bytes.len());
+
+    let primary = if scored.primary.edit_distance == best_combined_ed {
+        scored.primary
+    } else {
+        best.clone()
+    };
+
+    let alternatives: Vec<crate::Alignment> = merged_alignments
+        .into_iter()
+        .filter(|a| *a != primary)
+        .collect();
+
+    Some(crate::ScoredAlignments {
+        primary,
+        alternatives,
+    })
 }
 
 /// Per-query work that depends only on (query, plan, strategy) — never on the target
