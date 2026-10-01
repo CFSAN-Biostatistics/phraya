@@ -53,30 +53,25 @@ pub enum QueriesError {
 /// # Arguments
 /// * `path` - output file path
 /// * `index` - QueryIndex: HashMap<query_id, Vec<(position, score)>>
-///
-/// Note: Filters positions to score_ratio >= 0.95 (hard-coded opinion), then drops any
-/// query whose filtered list is empty. A query therefore appears in the file iff it placed
-/// at least one alignment at score >= 0.95 — matching the documented contract that
-/// downstream counters (e.g. the benchmark harness) rely on. Keeping empty-list keys
-/// previously inflated the aligned-read count to 100% (issue #193).
-pub fn write_queries(path: &std::path::Path, index: &QueryIndex) -> Result<(), QueriesError> {
-    const SCORE_THRESHOLD: f64 = 0.95;
-
-    // Filter index to keep only high-confidence alignments, dropping reads left with none
-    // (issue #193: empty-list keys otherwise inflate the aligned-read count to 100%).
+/// Note: Filters positions to score_ratio >= threshold, then drops any query whose
+/// filtered list is empty. A query therefore appears in the file iff it placed at
+/// least one alignment at score >= threshold.
+pub fn write_queries(
+    path: &std::path::Path,
+    index: &QueryIndex,
+    threshold: f64,
+) -> Result<(), QueriesError> {
+    // Filter index to keep only high-confidence alignments, dropping reads left with
+    // none (issue #193: empty-list keys otherwise inflate the aligned-read count).
     //
-    // Serialize through a BTreeMap keyed by query id so output is deterministic run-to-run:
-    // the in-memory QueryIndex is a HashMap whose iteration order is randomized per process,
-    // which would otherwise make the `.phraya.queries` bytes vary between identical runs.
-    // Within each query, positions are sorted by (position, score) for the same reason (the
-    // alignment order depends on anchor-extension order, which we do not want leaking into
-    // the serialized form).
+    // Serialize through a BTreeMap keyed by query id so output is deterministic.
+    // Within each query, positions are sorted by (position, score).
     let filtered_index: std::collections::BTreeMap<String, Vec<(u32, f64)>> = index
         .iter()
         .filter_map(|(query_id, alignments)| {
             let mut filtered_alignments: Vec<(u32, f64)> = alignments
                 .iter()
-                .filter(|(_, score)| *score >= SCORE_THRESHOLD)
+                .filter(|(_, score)| *score >= threshold)
                 .copied()
                 .collect();
             if filtered_alignments.is_empty() {
@@ -123,22 +118,20 @@ pub fn read_queries(path: &std::path::Path) -> Result<QueryIndex, QueriesError> 
 
 /// Write a cross-space query index (ADR-0011, issue #198) to compressed binary format.
 ///
-/// Mirrors [`write_queries`]: placements are filtered to identity `>= 0.95` (the hard-coded
-/// multi-mapping opinion), reads left with no surviving placement are dropped, and output is
-/// serialized through a `BTreeMap` with placements sorted by `(space, pos)` so the bytes are
-/// deterministic run-to-run regardless of `HashMap` iteration order.
+/// Mirrors [`write_queries`]: placements are filtered to identity >= threshold, reads left
+/// with no surviving placement are dropped, and output is serialized through a BTreeMap
+/// with placements sorted by (space, pos) so bytes are deterministic.
 pub fn write_cross_space_queries(
     path: &std::path::Path,
     index: &CrossSpaceQueryIndex,
+    threshold: f64,
 ) -> Result<(), QueriesError> {
-    const IDENTITY_THRESHOLD: f64 = 0.95;
-
     let filtered: std::collections::BTreeMap<String, Vec<CrossSpacePlacement>> = index
         .iter()
         .filter_map(|(query_id, placements)| {
             let mut kept: Vec<CrossSpacePlacement> = placements
                 .iter()
-                .filter(|p| p.identity >= IDENTITY_THRESHOLD)
+                .filter(|p| p.identity >= threshold)
                 .cloned()
                 .collect();
             if kept.is_empty() {
@@ -189,7 +182,7 @@ mod tests {
         let index: QueryIndex = HashMap::new();
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         assert_eq!(read_index.len(), 0);
@@ -204,7 +197,7 @@ mod tests {
         );
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         assert_eq!(read_index.len(), 1);
@@ -237,8 +230,8 @@ mod tests {
 
         let ta = NamedTempFile::new().unwrap();
         let tb = NamedTempFile::new().unwrap();
-        write_queries(ta.path(), &forward).unwrap();
-        write_queries(tb.path(), &reverse).unwrap();
+        write_queries(ta.path(), &forward, 0.95).unwrap();
+        write_queries(tb.path(), &reverse, 0.95).unwrap();
 
         let bytes_a = std::fs::read(ta.path()).unwrap();
         let bytes_b = std::fs::read(tb.path()).unwrap();
@@ -262,7 +255,7 @@ mod tests {
         );
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         assert_eq!(read_index.len(), 3);
@@ -285,7 +278,7 @@ mod tests {
         }
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         assert_eq!(read_index.len(), 10000);
@@ -308,7 +301,7 @@ mod tests {
         index.insert("test_query".to_string(), positions.clone());
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         let read_positions = &read_index["test_query"];
@@ -325,7 +318,7 @@ mod tests {
         index.insert("query_subthreshold".to_string(), vec![(10u32, 0.40f64)]);
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         assert_eq!(read_index.len(), 0, "empty and all-sub-threshold reads must be dropped");
@@ -342,7 +335,7 @@ mod tests {
         );
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         assert_eq!(read_index.len(), 1);
@@ -355,7 +348,7 @@ mod tests {
     fn cross_space_round_trip_empty() {
         let index: CrossSpaceQueryIndex = HashMap::new();
         let temp = NamedTempFile::new().unwrap();
-        write_cross_space_queries(temp.path(), &index).unwrap();
+        write_cross_space_queries(temp.path(), &index, 0.95).unwrap();
         let read = read_cross_space_queries(temp.path()).unwrap();
         assert_eq!(read.len(), 0);
     }
@@ -374,7 +367,7 @@ mod tests {
         );
 
         let temp = NamedTempFile::new().unwrap();
-        write_cross_space_queries(temp.path(), &index).unwrap();
+        write_cross_space_queries(temp.path(), &index, 0.95).unwrap();
         let read = read_cross_space_queries(temp.path()).unwrap();
 
         let placements = &read["read1"];
@@ -406,7 +399,7 @@ mod tests {
         );
 
         let temp = NamedTempFile::new().unwrap();
-        write_cross_space_queries(temp.path(), &index).unwrap();
+        write_cross_space_queries(temp.path(), &index, 0.95).unwrap();
         let read = read_cross_space_queries(temp.path()).unwrap();
 
         assert_eq!(read.len(), 1, "all-sub-threshold read dropped");
@@ -444,8 +437,8 @@ mod tests {
 
         let ta = NamedTempFile::new().unwrap();
         let tb = NamedTempFile::new().unwrap();
-        write_cross_space_queries(ta.path(), &forward).unwrap();
-        write_cross_space_queries(tb.path(), &reverse).unwrap();
+        write_cross_space_queries(ta.path(), &forward, 0.95).unwrap();
+        write_cross_space_queries(tb.path(), &reverse, 0.95).unwrap();
         assert_eq!(
             std::fs::read(ta.path()).unwrap(),
             std::fs::read(tb.path()).unwrap(),
@@ -483,7 +476,7 @@ mod tests {
         }
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
 
         let file_size = std::fs::metadata(temp.path()).unwrap().len();
         // With repetitive data, file should compress well
@@ -504,7 +497,7 @@ mod tests {
         index.insert("high_scores".to_string(), positions);
 
         let temp = NamedTempFile::new().unwrap();
-        write_queries(temp.path(), &index).unwrap();
+        write_queries(temp.path(), &index, 0.95).unwrap();
         let read_index = read_queries(temp.path()).unwrap();
 
         let read_positions = &read_index["high_scores"];

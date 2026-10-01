@@ -283,6 +283,15 @@ const SEED_OCC_CAP_FLOOR: usize = 256;
 /// as placed vs below-threshold for [`AlignStats`]; the actual filtering happens at write time.
 const SCORE_REPORT_THRESHOLD: f64 = 0.95;
 
+/// Strategy-aware score threshold.
+pub fn score_threshold(strategy: Strategy) -> f64 {
+    match strategy {
+        Strategy::LongRead => 0.80, // ONT/PacBio reads: ~10-15% error → identity ~0.85-0.90
+        Strategy::Fast => 0.85,     // Fast path tolerates more divergence
+        _ => SCORE_REPORT_THRESHOLD, // 0.95 for balanced/sensitive/exact
+    }
+}
+
 /// Per-read outcome classification, for localizing where reads are lost (issue #194 AC #1).
 enum Outcome {
     /// Reportable primary (normalized score ≥ [`SCORE_REPORT_THRESHOLD`]).
@@ -1008,7 +1017,8 @@ pub fn align_read_prepared(
 
     // Classify the surviving read: reportable placement, or seeded-but-below-threshold, or a
     // read that only reached extension via the (0,0) fallback (no shared seed).
-    record(if primary_score >= SCORE_REPORT_THRESHOLD {
+    let report_threshold = score_threshold(config.strategy);
+    record(if primary_score >= report_threshold {
         Outcome::Placed
     } else if had_seeds {
         Outcome::BelowThreshold

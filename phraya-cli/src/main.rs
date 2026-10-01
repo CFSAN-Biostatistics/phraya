@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use log::info;
 use phraya_align::executor::{
-    align_read, align_task_with_config, AlignConfig, Strategy, TargetContext,
+    align_read, align_task_with_config, AlignConfig, score_threshold, Strategy, TargetContext,
 };
 use phraya_core::types::{
     compute_kmer_uniqueness, coverage_breadth, detect_hotspot_intervals, jaccard_similarity,
@@ -592,7 +592,7 @@ fn run_align(
             p.push(".queries");
             std::path::PathBuf::from(p)
         };
-        queries::write_queries(&queries_path, &index)?;
+        queries::write_queries(&queries_path, &index, score_threshold(config.strategy))?;
         return Ok(());
     };
 
@@ -636,7 +636,7 @@ fn run_align(
         p.push(".queries");
         std::path::PathBuf::from(p)
     };
-    queries::write_queries(&queries_path, &index)?;
+    queries::write_queries(&queries_path, &index, score_threshold(config.strategy))?;
 
     Ok(())
 }
@@ -880,7 +880,7 @@ fn run_align_worker_with_plan(
         index.insert(qid, positions);
     }
     let queries_path = format!("{}.queries", output_path);
-    queries::write_queries(std::path::Path::new(&queries_path), &index)?;
+    queries::write_queries(std::path::Path::new(&queries_path), &index, score_threshold(config.strategy))?;
 
     eprintln!(
         "Worker {} complete: {} observations written to {}",
@@ -1182,7 +1182,7 @@ fn run_align_reference(
 
     // One cross-space sidecar for the whole invocation.
     let sidecar = out_dir.join("cross_space.phraya.queries");
-    queries::write_cross_space_queries(&sidecar, &cross_space)?;
+    queries::write_cross_space_queries(&sidecar, &cross_space, score_threshold(config.strategy))?;
     eprintln!("Wrote {}", sidecar.display());
     eprintln!("Read outcomes: {}", stats.summary());
 

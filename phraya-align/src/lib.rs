@@ -8,7 +8,7 @@ pub mod long_read;
 pub use chaining::{chain_seeds, Chain, ChainParams};
 pub use executor::{
     align_read, align_task_with_config, AlignConfig, AlignStats, Strategy, TargetContext,
-    WindowedCoverage,
+    score_threshold, WindowedCoverage,
 };
 pub use seeding::{
     find_seeds, find_seeds_indexed, find_seeds_indexed_capped, seed_occurrence_cap,
