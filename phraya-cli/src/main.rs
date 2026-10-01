@@ -303,6 +303,25 @@ enum Commands {
         #[arg(long, value_name = "ID1,ID2,...")]
         sample_ids: Option<String>,
 
+        /// Cross-space queries sidecar (.phraya.queries) for depletion and typing.
+        /// Required when using --deplete-space or --classify-by-space.
+        #[arg(long, value_name = "FILE")]
+        queries_sidecar: Option<PathBuf>,
+
+        /// Deplete reads that confidently align to this reference space.
+        /// Requires --queries-sidecar. Preserves ambiguous (near-tie) reads.
+        #[arg(long, value_name = "SPACE")]
+        deplete_space: Option<String>,
+
+        /// Ambiguity margin: identity gap below which two placements are near-ties (default: 0.02)
+        #[arg(long, value_name = "F", default_value = "0.02")]
+        min_margin: f64,
+
+        /// Classify reads by best-identity reference space (typing mode).
+        /// Requires --queries-sidecar. Outputs TSV: read_id, best_space, identity, margin
+        #[arg(long)]
+        classify_by_space: bool,
+
     },
     /// Report per-comparison QC (variant count, coverage breadth) for one or more
     /// .phraya files, one TSV row per file
@@ -469,6 +488,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             reference_id,
             query_id,
             sample_ids,
+            queries_sidecar,
+            deplete_space,
+            min_margin,
+            classify_by_space,
         } => {
             run_filter(
                 &inputs,
@@ -499,6 +522,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 reference_id.as_deref(),
                 query_id.as_deref(),
                 sample_ids.as_deref(),
+                queries_sidecar.as_deref(),
+                deplete_space.as_deref(),
+                min_margin,
+                classify_by_space,
             )?;
         }
         Commands::Qc { inputs } => {
@@ -2173,6 +2200,10 @@ fn run_filter(
     reference_id: Option<&str>,
     query_id: Option<&str>,
     sample_ids_override: Option<&str>,
+    queries_sidecar_path: Option<&std::path::Path>,
+    deplete_space: Option<&str>,
+    min_margin: f64,
+    classify_by_space: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate format
     if !["vcf", "tsv", "phraya", "snpdiffs", "core-snp", "distance-matrix"].contains(&format) {
@@ -2310,6 +2341,69 @@ fn run_filter(
         for (i, id) in override_ids.iter().enumerate() {
             sample_ids[i] = id.to_string();
         }
+    }
+
+    // Cross-reference filter operations (issue #202): depletion and typing.
+    // These read the cross-space superposition from the .phraya.queries sidecar,
+    // enacting decisions that `align` deliberately deferred.
+    if deplete_space.is_some() || classify_by_space {
+        let sidecar = queries_sidecar_path.ok_or_else(|| {
+            "--deplete-space and --classify-by-space require --queries-sidecar <FILE>"
+        })?;
+
+        let cross_index = phraya_io::queries::read_cross_space_queries(sidecar)?;
+        let mut cross_filter = phraya_filter::cross_ref::CrossRefFilter::new()
+            .with_ambiguity_margin(min_margin);
+
+        if let Some(space) = deplete_space {
+            cross_filter = cross_filter.with_deplete_space(space);
+        }
+
+        if let Some(space) = deplete_space {
+            // Depletion mode: output TSV with read_id, decision, reason
+            let decisions = cross_filter.classify_all_depletion(&cross_index);
+            println!("read_id\tdecision\treason\tbest_space\tidentity\tmargin");
+            for (read_id, decision) in &decisions {
+                match decision {
+                    phraya_filter::cross_ref::DepletionDecision::Drop { reason } => {
+                        println!("{}\tdrop\t{:?}\t\t\t", read_id, reason);
+                    }
+                    phraya_filter::cross_ref::DepletionDecision::Keep { reason } => {
+                        // Find the best placement for output
+                        let placements = &cross_index[read_id];
+                    let real: Vec<_> = placements.iter()
+                            .filter(|p| p.identity >= cross_filter.min_identity)
+                            .collect();
+                    if let Some(best) = real.iter().max_by(|a, b| a.identity.partial_cmp(&b.identity).unwrap()) {
+                            println!("{}\tkeep\t{:?}\t{}\t{}\t{}", read_id, reason, best.space, best.identity, 0.0);
+                        } else {
+                            println!("{}\tkeep\t{:?}\t\t\t", read_id, reason);
+                        }
+                    }
+                }
+            }
+        }
+
+        if classify_by_space {
+            // Typing mode: output TSV with read_id, best_space, identity, margin, classification
+            let decisions = cross_filter.classify_all_typing(&cross_index);
+            println!("read_id\tbest_space\tidentity\tmargin\tclassification");
+            for (read_id, decision) in &decisions {
+                match decision {
+                    phraya_filter::cross_ref::TypingDecision::Assign { best_space, best_identity, margin } => {
+                        println!("{}\t{}\t{}\t{}\tassign", read_id, best_space, best_identity, margin);
+                    }
+                    phraya_filter::cross_ref::TypingDecision::Ambiguous { best_space, best_identity, second_space, second_identity, margin } => {
+                        println!("{}\t{}\t{}\t{}\tambiguous", read_id, best_space, best_identity, margin);
+                    }
+                    phraya_filter::cross_ref::TypingDecision::Unassigned => {
+                        println!("{}\t\t\t\tunassigned", read_id);
+                    }
+                }
+            }
+        }
+
+        return Ok(());
     }
 
     // Output in specified format

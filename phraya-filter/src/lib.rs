@@ -5,8 +5,8 @@ pub mod extractors;
 pub mod snpdiffs;
 pub mod tsv;
 pub mod core_snp;
+pub mod cross_ref;
 pub mod vcf;
-
 
 pub use extractors::{extract_allele_frequency, extract_cigar_ops, extract_multi_map_fraction};
 
