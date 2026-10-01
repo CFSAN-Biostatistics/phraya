@@ -4,7 +4,7 @@ pub mod seeding;
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
 pub mod short_read_aligner;
-
+pub mod long_read;
 pub use chaining::{chain_seeds, Chain, ChainParams};
 pub use executor::{
     align_read, align_task_with_config, AlignConfig, AlignStats, Strategy, TargetContext,
@@ -15,6 +15,7 @@ pub use seeding::{
     MinimizerIndex, Seed,
 };
 pub use short_read_aligner::{PairedEndConfig, ShortReadAligner, ShortReadScoring, MateRescueResult};
+pub use long_read::LongReadAligner;
 #[cfg(test)]
 mod local_coverage_tests;
 

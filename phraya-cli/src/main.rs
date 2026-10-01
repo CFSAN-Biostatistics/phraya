@@ -139,7 +139,8 @@ enum Commands {
         /// Alignment strategy preset (selects algorithm + default coverage window + chain cap):
         /// sensitive (K=50, seeded WFA, ±25bp), balanced (K=2, Myers fitting + WFA fallback, ±50bp,
         /// default), fast (K=1, divergence cutoff, ±150bp, low sensitivity), exact (K=250, full WFA,
-        /// ±5bp, highest precision for small genomes or validation)
+        /// ±5bp, highest precision for small genomes or validation), long-read (K=100, WFA+chunking,
+        /// ±25bp, for ONT/PacBio reads 10-50kb)
         #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
         strategy: String,
 
@@ -393,14 +394,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "balanced" => Strategy::Balanced,
                 "sensitive" => Strategy::Sensitive,
                 "exact" => Strategy::Exact,
+                "long-read" => Strategy::LongRead,
                 other => {
                     return Err(format!(
-                        "unknown strategy: {other}; expected fast, balanced, sensitive, or exact"
+                        "unknown strategy: {other}; expected fast, balanced, sensitive, exact, or long-read"
                     )
                     .into())
                 }
             };
-
             // Strategy sets the default coverage-window radius; --coverage-window overrides it.
             let mut config = AlignConfig::new(strat);
             if let Some(radius) = coverage_window {

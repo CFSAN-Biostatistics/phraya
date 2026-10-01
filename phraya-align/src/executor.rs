@@ -74,6 +74,8 @@ pub enum Strategy {
     Sensitive,
     /// Exact strategy: K=250 chain cap, minimal ±5bp coverage window, no mismatches tolerated in initial seeding
     Exact,
+    /// Long-read strategy: Chunked alignment for ONT/PacBio reads (10-50kb), adaptive banding
+    LongRead,
 }
 
 impl Default for Strategy {
@@ -126,6 +128,7 @@ impl AlignConfig {
             Strategy::Balanced => 50,
             Strategy::Sensitive => 25,
             Strategy::Exact => 5,
+            Strategy::LongRead => 25,  // Long reads use narrow window like Sensitive
         };
         AlignConfig {
             strategy,
@@ -153,7 +156,12 @@ impl AlignConfig {
     pub fn exact() -> Self {
         Self::new(Strategy::Exact)
     }
-    /// Override the coverage-window radius independently of the strategy preset.
+
+    /// Create a LongRead strategy config (±25bp window, K=100, for ONT/PacBio reads 10-50kb).
+    pub fn long_read() -> Self {
+        Self::new(Strategy::LongRead)
+    }
+
     /// The strategy still selects the alignment algorithm; this only changes the width
     /// of the per-variant local-coverage annotation.
     pub fn with_coverage_window_radius(mut self, radius: usize) -> Self {
@@ -346,6 +354,7 @@ fn chain_cap(strategy: Strategy) -> usize {
         Strategy::Balanced => 2,
         Strategy::Sensitive => 50,
         Strategy::Exact => 250,
+        Strategy::LongRead => 100,  // Long reads use moderate chain cap
     }
 }
 
@@ -458,9 +467,12 @@ fn extend_anchor(
             // No Myers fallback or adaptive selection.
             wfa_extend(query, target_window, anchor)
         }
+        Strategy::LongRead => {
+            // Long reads use WFA for accuracy on long, divergent sequences
+            wfa_extend(query, target_window, anchor)
+        }
     }
 }
-
 /// Precomputed, read-only per-target data shared across every query aligned to one
 /// target.
 ///

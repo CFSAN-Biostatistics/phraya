@@ -6,37 +6,42 @@
 #SBATCH --time=4:00:00
 
 # Main benchmark array job
-# Decodes task ID → (target, aligner, replicate), runs alignment+calling with timing
+# Decodes task ID -> (target, aligner, replicate), runs alignment+calling with timing
 #
 # DNA aligners (10 total, ALPHABET=dna):
-#   bwa-mem2               — alignment only (throughput baseline, SAM output)
-#   minimap2                — alignment only (throughput baseline, SAM output)
-#   bwa-pipeline             — bwa mem + sort + mpileup + bcftools call (fair phraya comparison)
-#   phraya                   — phraya --strategy balanced (Myers ≤500bp, WFA fallback, K=2, ±50bp)
-#   phraya-sensitive          — phraya --strategy sensitive (WFA, K=50 chains, ±25bp; gap-affine
+#   bwa-mem2               - alignment only (throughput baseline, SAM output)
+#   minimap2                - alignment only (throughput baseline, SAM output)
+#   bwa-pipeline             - bwa mem + sort + mpileup + bcftools call (fair phraya comparison)
+#   phraya                   - phraya --strategy balanced (Myers <=500bp, WFA fallback, K=2, +/-50bp)
+#   phraya-sensitive          - phraya --strategy sensitive (WFA, K=50 chains, +/-25bp; gap-affine
 #                               by default once ADR-0014 ships)
-#   phraya-sensitive-linear   — phraya --strategy sensitive --gap-model linear (ADR-0014: the old
+#   phraya-sensitive-linear   - phraya --strategy sensitive --gap-model linear (ADR-0014: the old
 #                               linear-cost WFA path, kept for direct affine-vs-linear comparison)
-#   phraya-fast               — phraya --strategy fast (K=1 chain + divergence cutoff, ±150bp)
-#   bowtie2                   — industry-standard gapped aligner (--very-sensitive preset)
-#   minibwa                   — hybrid bwa-mem/minimap2 (3× faster than bwa-mem)
-#   rammap                    — pure Rust minimap2 clone (SIMD DP, -x sr preset)
+#   phraya-fast               - phraya --strategy fast (K=1 chain + divergence cutoff, +/-150bp)
+#   bowtie2                   - industry-standard gapped aligner (--very-sensitive preset)
+#   minibwa                   - hybrid bwa-mem/minimap2 (3x faster than bwa-mem)
+#   rammap                    - pure Rust minimap2 clone (SIMD DP, -x sr preset)
 #
-# Protein aligners (4 total, ALPHABET=protein — ADR-0013):
-#   diamond-blastp            — fast seed-and-extend protein search (DNA harness's minimap2 analog)
-#   blastp                    — maximally-sensitive protein search reference (DNA harness's
+# Protein aligners (4 total, ALPHABET=protein - ADR-0013):
+#   diamond-blastp            - fast seed-and-extend protein search (DNA harness's minimap2 analog)
+#   blastp                    - maximally-sensitive protein search reference (DNA harness's
 #                               sensitive/BWA analog)
-#   phraya-protein             — phraya --alphabet protein --strategy balanced
-#   phraya-protein-sensitive   — phraya --alphabet protein --strategy sensitive
+#   phraya-protein             - phraya --alphabet protein --strategy balanced
+#   phraya-protein-sensitive   - phraya --alphabet protein --strategy sensitive
 #
-# Wrapper contract differs by alphabet (see BENCHMARK_EXPANSION.md): DNA wrappers
-# take 5 positional args (<ref> <reads_1> <reads_2> <out_dir> <threads>, paired
-# FASTQ); protein wrappers take 4 (<proteome> <query> <out_dir> <threads>, no
-# read pairing).
+# Long-read aligners (3 total, ALPHABET=long-read - ONT/PacBio CLR style):
+#   minimap2-ont             - ONT R10.4 preset (map-ont, single-end)
+#   minimap2-pb              - PacBio CLR preset (map-pb, single-end)
+#   phraya-longread          - phraya --strategy long-read (single-end reads)
+#
+# Wrapper contract:
+#   - DNA: 5 args (<ref> <reads_1> <reads_2> <out_dir> <threads>, paired FASTQ)
+#   - Protein: 4 args (<proteome> <query> <out_dir> <threads>, single FASTA)
+#   - Long-read: 4 args (<ref> <reads.fq> <out_dir> <threads>, single FASTQ)
 
 set -euo pipefail
 
-# Load environment (uses absolute tool paths — module system unreliable in SLURM)
+# Load environment (uses absolute tool paths - module system unreliable in SLURM)
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "$SCRIPT_DIR/config/global.env"
 
@@ -47,8 +52,7 @@ if [[ -z "${RUN_DIR:-}" ]] || [[ -z "${TARGETS_FILE:-}" ]]; then
 fi
 ALPHABET="${ALPHABET:-dna}"
 
-# Map alphabet to its aligner array (must match run_benchmark.sh's ALIGNERS_DNA /
-# ALIGNERS_PROTEIN exactly — kept in sync by hand, same as the pre-alphabet code).
+# Map alphabet to its aligner array (must match run_benchmark.sh's ALIGNERS_*)
 case "$ALPHABET" in
     dna)
         ALIGNERS=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-sensitive-linear" "phraya-fast" "bowtie2" "minibwa" "rammap")
@@ -56,23 +60,25 @@ case "$ALPHABET" in
     protein)
         ALIGNERS=("diamond-blastp" "blastp" "phraya-protein" "phraya-protein-sensitive")
         ;;
+    long-read)
+        ALIGNERS=("minimap2-ont" "minimap2-pb" "phraya-longread")
+        ;;
     *)
-        echo "ERROR: Unknown ALPHABET: $ALPHABET (expected dna or protein)" >&2
+        echo "ERROR: Unknown ALPHABET: $ALPHABET (expected dna, protein, or long-read)" >&2
         exit 1
         ;;
 esac
 NUM_ALIGNERS=${#ALIGNERS[@]}
 NUM_REPLICATES=$REPLICATES
 
-# Decode array task ID → (target_idx, aligner_idx, replicate_idx)
+# Decode array task ID -> (target_idx, aligner_idx, replicate_idx)
 TASK_ID=${SLURM_ARRAY_TASK_ID}
 TARGET_IDX=$((TASK_ID / (NUM_ALIGNERS * NUM_REPLICATES)))
 ALIGNER_IDX=$(((TASK_ID / NUM_REPLICATES) % NUM_ALIGNERS))
 REPLICATE_IDX=$((TASK_ID % NUM_REPLICATES))
 ALIGNER="${ALIGNERS[$ALIGNER_IDX]}"
 
-# Read target from targets.conf (skip comments; DNA additionally filters |large|
-# unless requested — protein targets.conf has no size tiers to filter).
+# Read target from targets.conf (skip comments; filter by alphabet/size)
 if [[ "$ALPHABET" == "dna" && "${INCLUDE_LARGE:-0}" -eq 0 ]]; then
     TARGET_LINE=$(grep -v '^#' "$TARGETS_FILE" | grep -v '^[[:space:]]*$' | grep -v '|large|' | sed -n "$((TARGET_IDX + 1))p")
 else
@@ -110,6 +116,7 @@ if [[ ! -f "$WRAPPER" ]]; then
     exit 1
 fi
 
+# Handle different alphabets with different input contract
 if [[ "$ALPHABET" == "dna" ]]; then
     # 5-arg contract: <ref.fasta> <reads_1.fq.gz> <reads_2.fq.gz> <out_dir> <threads>
     REF_FASTA="$DATA_DIR/reference/reference.fasta"
@@ -136,10 +143,9 @@ if [[ "$ALPHABET" == "dna" ]]; then
 
     echo "Running $ALIGNER..."
     "$WRAPPER" "$REF_FASTA" "$READS_1" "$READS_2" "$OUT_DIR" "$THREADS"
-else
-    # 4-arg contract: <proteome.fasta> <query.fasta> <out_dir> <threads> (ADR-0013:
-    # no read pairing for protein search). Staged by gen_synthetic_protein.py per
-    # BENCHMARK_EXPANSION.md, not acquire.py — see targets_protein.conf.
+
+elif [[ "$ALPHABET" == "protein" ]]; then
+    # 4-arg contract: <proteome.fasta> <query.fasta> <out_dir> <threads> (ADR-0013)
     PROTEOME="$DATA_DIR/protein/proteome.fasta"
     QUERY="$DATA_DIR/protein/queries.fasta"
 
@@ -158,6 +164,30 @@ else
 
     echo "Running $ALIGNER..."
     "$WRAPPER" "$PROTEOME" "$QUERY" "$OUT_DIR" "$THREADS"
+
+elif [[ "$ALPHABET" == "long-read" ]]; then
+    # 4-arg contract: <ref.fasta> <reads.fq> <out_dir> <threads> (single-end)
+    REF_FASTA="$DATA_DIR/reference/reference.fasta"
+    READS="$DATA_DIR/reads/reads_1.fq"
+
+    for f in "$REF_FASTA" "$READS"; do
+        if [[ ! -f "$f" ]]; then
+            echo "ERROR: Input file not found: $f" >&2
+            echo "Did you run gen_synthetic_long.py for target $TARGET_ID?" >&2
+            exit 1
+        fi
+    done
+
+    if [[ "$ALIGNER" == phraya* ]]; then
+        PHRAYA="${PHRAYA_ROOT}/target/release/phraya"
+        [[ -f "$PHRAYA" ]] || { echo "ERROR: phraya binary not found at $PHRAYA" >&2; exit 1; }
+    fi
+
+    echo "Running $ALIGNER..."
+    "$WRAPPER" "$REF_FASTA" "$READS" "$OUT_DIR" "$THREADS"
+else
+    echo "ERROR: Unknown ALPHABET: $ALPHABET" >&2
+    exit 1
 fi
 
 # Write timing.json: parse all fields from timing.txt and add SLURM metadata
