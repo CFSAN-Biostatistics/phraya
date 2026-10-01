@@ -291,3 +291,23 @@ Unlicense. As a work product of the US Government (17 USC 105), Phraya is in the
 ## Contributing
 
 See [issue #58](https://github.com/CFSAN-Biostatistics/phraya/issues/58) for Phase 1 PRD. Implementation contributions welcome.
+
+### Commit conventions
+
+Commits that implement an issue (fix a bug, add a feature, or complete Phase work) **must
+close the corresponding GitHub issue**. GitHub auto-closes issues when a commit on the
+default branch references one using a closing keyword:
+
+```
+feat: gap-affine scoring for sensitive strategy (closes #230)
+fix: batch-mode worker panics with index out of bounds (fixes #234)
+Phase 1: enhanced QC summary — add strategy/filter/k-mer stats columns (closes #246)
+```
+
+**Supported keywords**: `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`,
+`resolves`, `resolved`.
+
+If you commit without the keyword, **you must manually close the issue** on GitHub before
+considering the work complete. Stale open issues that were actually implemented waste
+reviewer and CI time — checking for unclosed-but-implemented issues is a required step of
+every task's verification checklist.
