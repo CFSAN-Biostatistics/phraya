@@ -723,7 +723,18 @@ fn extend_chains_longread(
 ) -> Option<crate::ScoredAlignments> {
     use crate::long_read::LongReadAligner;
 
-    let aligner = LongReadAligner::new();
+    // Use 2kb chunks for ONT/PacBio reads with realistic error rates.
+    // At 12% error, a 2kb chunk has ~240 expected edits, well under
+    // default_max_s_cap(2000, 40000) ≈ 811 — the 512MB wavefront cap.
+    // The default 10kb chunk_size fails at 12% (1200 edits > ~682 cap).
+    let aligner = LongReadAligner::with_config(
+        1_000,   // min_read_len
+        2_000,   // chunk_size — keeps per-chunk edits under WFA cap
+        0,       // chunk_overlap — non-overlapping for simple CIGAR stitching
+        0,       // band_width — unbanded (WFA handles this internally)
+        15,      // kmer_k
+        5,       // kmer_w
+    );
     let query_len = query_bytes.len();
     let _chunks = aligner.chunk_read(query_len); // validates chunk boundaries
 
