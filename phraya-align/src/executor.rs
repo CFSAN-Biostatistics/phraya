@@ -743,6 +743,7 @@ fn extend_chains_longread(
         let mut total_ed = 0usize;
         let mut first_target_start = anchor.target_pos as usize;
         let mut last_target_end = anchor.target_pos as usize;
+        let mut running_target_pos = anchor.target_pos as usize;
 
         let mut cs = chunk_start;
         while cs < chunk_end {
@@ -751,14 +752,12 @@ fn extend_chains_longread(
                 break;
             }
             let chunk = &query_bytes[cs..ce];
-            let projected_target = (anchor.target_pos as usize)
-                .saturating_add(cs.saturating_sub(anchor.query_pos as usize));
-            if projected_target >= target_window.len() {
+            if running_target_pos >= target_window.len() {
                 break;
             }
             let chunk_anchor = crate::SeedAnchor {
                 query_pos: 0,
-                target_pos: projected_target,
+                target_pos: running_target_pos,
             };
             match wfa_extend(chunk, target_window, chunk_anchor) {
                 Ok(aln) => {
@@ -767,6 +766,7 @@ fn extend_chains_longread(
                     }
                     combined_cigar.push_str(&aln.cigar);
                     total_ed += aln.edit_distance;
+                    running_target_pos = aln.target_end;
                     last_target_end = aln.target_end;
                 }
                 Err(_) => break,
