@@ -2445,15 +2445,29 @@ fn run_filter(
             }
         }
         "snpdiffs" => {
-            let file = &phraya_files[0];
-            let snpdiffs_output = phraya_filter::snpdiffs::format_snpdiffs(
-                file,
-                &file.observations,
-                reference_id,
-                query_id,
-                reference_fasta,
-                query_fasta,
-            )?;
+            let snpdiffs_output = if phraya_files.len() == 1 {
+                let file = &phraya_files[0];
+                phraya_filter::snpdiffs::format_snpdiffs(
+                    file,
+                    &file.observations,
+                    reference_id,
+                    query_id,
+                    reference_fasta,
+                    query_fasta,
+                )?
+            } else {
+                let files_with_obs: Vec<(&phraya_io::phraya::PhrayaFile, &[phraya_core::types::VariantObservation])> = phraya_files
+                    .iter()
+                    .map(|f| (f, f.observations.as_slice()))
+                    .collect();
+                phraya_filter::snpdiffs::format_snpdiffs_multi(
+                    &files_with_obs,
+                    reference_id,
+                    query_id,
+                    reference_fasta,
+                    query_fasta,
+                )?
+            };
             if let Some(out_path) = output_path {
                 std::fs::write(out_path, &snpdiffs_output)?;
             } else {

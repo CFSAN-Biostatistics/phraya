@@ -142,6 +142,45 @@ fn seedless_query_still_attempts_alignment_against_comparable_length_target() {
     );
 }
 
+/// A seedless (0,0)-fallback alignment below `FALLBACK_ONLY_MIN_IDENTITY` must not deposit
+/// `VariantObservation`s, even though the alignment is still attempted (the result is
+/// `Some`). This is the palette-mode noise gate: in reference-palette mode every read is
+/// aligned against every space, so non-homologous pairs reach the (0,0) fallback and
+/// previously emitted ~query_len/2 fabricated variants at ~50% identity (CSP2 snpdiffs
+/// escalation: 173 840 vs 33 386 real SNPs). Coverage depth is still recorded — a read
+/// aligning at offset 0 is genuine depth even at low identity.
+#[test]
+fn fallback_only_low_identity_alignment_yields_no_variants() {
+    // 1200 bp vs 150 bp: fallback applies (1200 ≤ 150 × 10), sequences share no minimizer.
+    let target = Sequence::new(diverse_dna(1_200, 13), None, "contig_a".to_string(), None);
+    let query = Sequence::new(diverse_dna(150, 99_991), None, "contig_b".to_string(), None);
+    assert_no_shared_minimizer(&query, &target);
+
+    let plan = make_plan();
+    let config = AlignConfig::new(Strategy::Balanced);
+    let ctx = TargetContext::build(&target, &plan, config.strategy);
+
+    let result = align_read(&ctx, &query, &plan, &config, None);
+    assert!(
+        result.is_some(),
+        "comparable-length seedless pair must still attempt the (0,0) fallback alignment"
+    );
+    let result = result.unwrap();
+    assert!(
+        result.variants.is_empty(),
+        "seedless alignment below FALLBACK_ONLY_MIN_IDENTITY must not emit variants \
+         (got {} variant observations — palette noise not suppressed)",
+        result.variants.len()
+    );
+    assert!(
+        result
+            .coverage
+            .iter()
+            .any(|w| !w.counts.is_empty()),
+        "coverage depth must still be recorded for the fallback alignment"
+    );
+}
+
 /// The predicate reference-palette alignment shares with `extend_chains` to decide a space
 /// is unreachable. Pinned directly because the two callers must agree: if the palette
 /// prefilter skipped a space the aligner would still have placed reads in, output would

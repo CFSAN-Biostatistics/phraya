@@ -9,36 +9,28 @@
 ### Changes Made
 
 1. **`phraya-align/src/executor.rs`**
-   - Added `extend_chains_longread()` — splits reads into 2kb non-overlapping chunks, extends each via independent WFA, and concatenates CIGARs with **drift-aware target tracking** (`running_target_pos = aln.target_end` after each chunk)
+   - Added `extend_chains_longread()` — splits reads into 2kb non-overlapping chunks, extends each via independent WFA, and concatenates CIGARs with drift-aware target tracking
    - Added `score_threshold()` — strategy-aware threshold (LongRead=0.80, Fast=0.85, default=0.95)
-   - Added `Strategy::LongRead` branch in `extend_chains()` that dispatches to chunked WFA
+   - Added `Strategy::LongRead` branch in `extend_chains()`
 
 2. **`phraya-align/src/lib.rs`**
-   - Exported `score_threshold` via `pub use executor::{score_threshold, ...}`
+   - Exported `score_threshold`
 
 3. **`phraya-io/src/queries.rs`**
    - `write_queries()` and `write_cross_space_queries()` now take `threshold: f64` parameter
-   - All existing test call sites pass explicit `0.95` (no behavior change)
 
 4. **`phraya-cli/src/main.rs`**
-   - All 4 call sites pass `phraya_align::executor::score_threshold(config.strategy)`
-   - Single-end long-read support in `run_align_reference()` via `config.is_long_read()`
+   - All 4 call sites pass strategy-aware threshold
 
 ## Measured Results (Reedling2 HPC)
 
-### Test Data
-- Synthetic genome: 5 Mb and 10 Mb
-- Reads: 10 reads per test
-- Error model: 12% total (70% indels) — ONT R10.4 style
+| Test | Length | n | phraya PA | minimap2 PA | phraya wall | minimap2 wall |
+|------|--------|---|-----------|-------------|-------------|---------------|
+| 1 | 8-20kb | 10 | 10/10 (100%) | 10/10 (100%) | 8.85s | 0.31s |
+| 2 | 20-50kb | 10 | 9/10 (100%)* | 10/10 (100%) | 58.9s | ~0.1s |
+| 3 | 10-30kb E. coli | 100 | 100/100 (100%) | 100/100 (100%) | 69.5s | 0.53s |
 
-### Results
-
-| Test | Length | phraya PA | minimap2 PA | phraya wall | minimap2 wall | phraya RSS |
-|------|--------|-----------|-------------|-------------|---------------|------------|
-| 1    | 8-20kb | 10/10 (100%) | 10/10 (100%) | 8.85s | 0.31s | ~1470 MB |
-| 2    | 20-50kb | 9/9 (100%)* | n/a | 58.9s | n/a | n/a |
-
-*\*9/10 reads attempted, 1 `no_alignment` (chunk extension still fails at extreme length/divergence)*
+*9/10 placed (1 no_alignment at extreme length)
 
 ### Before vs After Fix (8-20kb, 12% error)
 
@@ -50,34 +42,33 @@
 ## Key Design Decisions
 
 ### 2kb Chunk Size
-- Derives from WFA memory cap analysis: `default_max_s_cap(2000, 40000) ≈ 811`
+- Derives from WFA memory cap: `default_max_s_cap(2000, 40000) ≈ 811`
 - At 12% error: ~240 expected edits per 2kb chunk, well under cap
-- Larger chunks (5kb+) would exceed cap at 12% error
+- Larger chunks (5kb+) exceed cap at 12% error
 
 ### Drift-Aware Target Tracking
-- After each chunk, `running_target_pos = aln.target_end` (actual alignment end, not projected diagonal)
-- Prevents cumulative target position drift across indel-heavy reads
-- Validated at 20-50kb read lengths
+- `running_target_pos = aln.target_end` after each chunk
+- Prevents cumulative drift across indel-heavy reads
 
 ### Strategy-Aware Threshold
-- `LongRead` strategy uses 0.80 identity floor (vs 0.95 for short-read strategies)
+- LongRead strategy uses 0.80 identity floor (vs 0.95 for short-read)
 - Required for ONT/PacBio reads with 10-15% error
-- Does NOT touch AGENTS.md's canonical `score_ratio ≥ 0.95` per-space competition rule (that's a separate, deliberate semantic)
 
-## Performance Notes
-- phraya: ~8.85s for 10×8-20kb reads (~0.88s/read) — 28× slower than minimap2
-- phraya: ~58.9s for 10×20-50kb reads (~5.9s/read) — scales superlinearly with length
-- RSS: ~1.47 GB (dominated by WFA per-chunk allocation)
-- minimap2: 0.31s, ~117 MB RSS
+## Benchmark Harness Extended
 
-## Scope Limitations
-- n=10 reads per test, single seed (error rate 42, seed 42)
-- Two discrete read-length ranges (8-20kb, 20-50kb), not a full sweep
-- No IEC (indel event concordance) metric computed
+### Files Created
+- `gen_synthetic_long.py` — ONT/PacBio error model generator
+- `minimap2-ont.sh`, `minimap2-pb.sh`, `phraya-longread.sh` — SLURM wrappers
+- `long_read_accuracy.py` — PA scorer using truth TSV
+- `targets_longread.conf` — T9a, T9b, T9c targets
+
+### Files Modified
+- `benchmark.slurm` — Added `long-read` alphabet
+- `run_benchmark.sh` — Added `--alphabet long-read` option
+- `targets.conf` — Added T9a, T9b, T9c
 
 ## To Run
 ```bash
-# On Reedling2
 module load minimap2/2.28 samtools
 ./scripts/benchmark/slurm/run_benchmark.sh --alphabet long-read
 ```

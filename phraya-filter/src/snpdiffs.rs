@@ -670,6 +670,138 @@ pub fn format_snpdiffs(
     Ok(output)
 }
 
+/// Format snpdiffs output from multiple `.phraya` files (one per reference contig),
+/// merging them into a single CSP2-compatible text block.
+///
+/// This is the multi-input counterpart of [`format_snpdiffs`]: instead of a single
+/// reference contig, it accepts one `(&PhrayaFile, &[VariantObservation])` pair per
+/// reference space and produces:
+/// 1. A single `#` header (aggregate metrics across all files)
+/// 2. One `##` BED row per reference contig (using each file's `sample_id`)
+/// 3. Variant rows from all files, with `Ref_Contig` set per-file
+///
+/// The `reference_id` parameter (if provided) is the **assembly-level** reference label
+/// for the header only; each file's `header.sample_id` becomes the per-contig `Ref_Contig`.
+/// This matches MUMmer's `dnadiff` + `show-snps` behaviour for multi-contig references,
+/// where `#Reference_ID` is the assembly name and each variant row carries the contig it
+/// falls on.
+pub fn format_snpdiffs_multi(
+    files: &[(&phraya_io::phraya::PhrayaFile, &[VariantObservation])],
+    reference_id: Option<&str>,
+    query_id: Option<&str>,
+    reference_fasta: Option<&Path>,
+    query_fasta: Option<&Path>,
+) -> Result<String, SnpdiffsError> {
+    if files.is_empty() {
+        return Err(SnpdiffsError {
+            message: "format_snpdiffs_multi requires at least one input file".to_string(),
+        });
+    }
+
+    let ref_fasta_path = reference_fasta
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let query_fasta_path = query_fasta
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    // Assembly-level reference label for the header only.
+    let ref_label = reference_id
+        .map(str::to_string)
+        .or_else(|| {
+            reference_fasta
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "reference".to_string());
+
+    // FASTA metadata (one set per FASTA, regardless of contig count).
+    let ref_meta = match reference_fasta {
+        Some(path) => Some(compute_fasta_meta(path).map_err(|e| SnpdiffsError { message: e })?),
+        None => None,
+    };
+    let query_meta = match query_fasta {
+        Some(path) => Some(compute_fasta_meta(path).map_err(|e| SnpdiffsError { message: e })?),
+        None => None,
+    };
+
+    // Query label for the header: CLI override, else first observation's provenance contig.
+    let query_label = query_id
+        .map(str::to_string)
+        .or_else(|| {
+            files.iter().flat_map(|(_, obs)| obs.iter()).next().map(|obs| {
+                let prov = obs.provenance();
+                prov.split(':').next().unwrap_or(prov).to_string()
+            })
+        })
+        .unwrap_or_else(|| "query".to_string());
+
+    // Aggregate query length for BED rows across all files (derived once, same for all).
+    let query_length_for_bed = match &query_meta {
+        Some(meta) => {
+            let first_obs = files.iter().flat_map(|(_, obs)| obs.iter()).next();
+            let bed_query_contig = first_obs
+                .map(|obs| derive_query_contig(obs, Some(&query_label)))
+                .unwrap_or_else(|| query_label.clone());
+            lookup_contig_length(meta, &bed_query_contig).map(|l| l as u32)
+        }
+        None => None,
+    };
+    // Aggregate summary metrics across all files.
+    let all_obs: Vec<VariantObservation> =
+        files.iter().flat_map(|(_, obs)| obs.iter().cloned()).collect();
+    let total_ref_length: u32 = files.iter().map(|(f, _)| f.header.reference_length).sum();
+    let total_covered: u32 = files
+        .iter()
+        .filter_map(|(f, _)| f.header.covered_positions)
+        .sum();
+    let summary = compute_summary(&all_obs, Some(total_covered), total_ref_length, query_length_for_bed);
+
+    let mut output = String::new();
+
+    // 1. Header — single assembly-level label, aggregate metrics.
+    output.push_str(&format_header(
+        &query_meta,
+        &query_label,
+        &query_fasta_path,
+        &ref_meta,
+        &ref_label,
+        &ref_fasta_path,
+        &summary,
+    ));
+    output.push('\n');
+
+    // 2+ . BED rows — one per reference contig (file), each with its own sample_id as Ref_Contig.
+    for (file, obs) in files {
+        output.push_str(&format_bed_row(
+            &file.header.sample_id,
+            file.header.reference_length,
+            file.header.covered_positions,
+            &query_label,
+            query_length_for_bed,
+            obs,
+        ));
+        output.push('\n');
+    }
+
+    // 3+ . Variant rows — from all files, each carrying its own file's sample_id as Ref_Contig.
+    for (file, obs) in files {
+        let ref_length = file.header.reference_length;
+        for observation in obs.iter() {
+            output.push_str(&format_variant_row(
+                observation,
+                &file.header.sample_id,
+                &query_meta,
+                query_id,
+                ref_length,
+            ));
+            output.push('\n');
+        }
+    }
+
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1876,4 +2008,169 @@ mod tests {
         let bed_fields: Vec<&str> = var_lines[0].split('\t').collect();
         assert_eq!(bed_fields[6], "contigA");
     }
+
+    // ── format_snpdiffs_multi ───────────────────────────────────────
+
+    #[test]
+    fn test_format_snpdiffs_multi_two_files() {
+        // Two .phraya files representing two reference contigs (palette mode output).
+        // File 1: ref_contig1 (200 bp, 100 covered) with one SNP at position 50.
+        // File 2: ref_contig2 (150 bp, 75 covered) with one SNP at position 75.
+        let obs1 = VariantObservation::new(
+            50,
+            b'A',
+            {
+                let mut m = HashMap::new();
+                m.insert(b'T', 10);
+                m
+            },
+            0.95,
+            "100M".to_string(),
+            60,
+            0, // edit_distance → identity 100%
+            vec![10],
+            35.0,
+            "query:read1".to_string(),
+        )
+        .with_variant_type(VariantType::Snp)
+        .with_strand(Strand::Forward)
+        .with_query_position(50)
+        .with_coverage_window_offset(50);
+
+        let obs2 = VariantObservation::new(
+            75,
+            b'G',
+            {
+                let mut m = HashMap::new();
+                m.insert(b'C', 10);
+                m
+            },
+            0.95,
+            "100M".to_string(),
+            60,
+            0,
+            vec![10],
+            35.0,
+            "query:read2".to_string(),
+        )
+        .with_variant_type(VariantType::Snp)
+        .with_strand(Strand::Forward)
+        .with_query_position(75)
+        .with_coverage_window_offset(50);
+
+        let file1 = phraya_io::phraya::PhrayaFile::new(
+            200,
+            "ref_contig1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            vec![obs1.clone()],
+            CoverageTrack::uncovered(200),
+        )
+        .with_coverage_breadth(100, 0);
+
+        let file2 = phraya_io::phraya::PhrayaFile::new(
+            150,
+            "ref_contig2".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            vec![obs2.clone()],
+            CoverageTrack::uncovered(150),
+        )
+        .with_coverage_breadth(75, 0);
+
+        let files_with_obs: Vec<(&phraya_io::phraya::PhrayaFile, &[VariantObservation])> = vec![
+            (&file1, &file1.observations),
+            (&file2, &file2.observations),
+        ];
+
+        let output = format_snpdiffs_multi(
+            &files_with_obs,
+            Some("assembly_ref"),
+            Some("assembly_query"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lines: Vec<&str> = output.lines().collect();
+
+        // ── Header (single, aggregate) ──
+        let header_fields: Vec<&str> = lines[0].split('\t').collect();
+        assert_eq!(header_fields[0], "#");
+        assert!(header_fields.iter().any(|f| f == &"Reference_ID:assembly_ref"));
+        assert!(header_fields.iter().any(|f| f == &"Query_ID:assembly_query"));
+        // Aggregate SNP count = 2 (one from each file)
+        assert!(header_fields.iter().any(|f| f == &"SNPs:2"));
+        assert!(header_fields.iter().any(|f| f == &"Indels:0"));
+
+        // ── BED rows (one per reference contig) ──
+        let bed1: Vec<&str> = lines[1].split('\t').collect();
+        assert_eq!(bed1[0], "##");
+        assert_eq!(bed1[1], "ref_contig1");
+        assert_eq!(bed1[3], "200"); // Ref_Length
+        assert_eq!(bed1[5], "100"); // Ref_Aligned (covered_positions)
+
+        let bed2: Vec<&str> = lines[2].split('\t').collect();
+        assert_eq!(bed2[0], "##");
+        assert_eq!(bed2[1], "ref_contig2");
+        assert_eq!(bed2[3], "150"); // Ref_Length
+        assert_eq!(bed2[5], "75");  // Ref_Aligned (covered_positions)
+
+        // ── Variant rows (one per observation, with per-file Ref_Contig) ──
+        let var_lines: Vec<&str> = lines[3..]
+            .iter()
+            .filter(|l| !l.starts_with("##") && !l.starts_with("#\t"))
+            .copied()
+            .collect();
+        assert_eq!(var_lines.len(), 2, "should have 2 variant rows");
+
+        let v1: Vec<&str> = var_lines[0].split('\t').collect();
+        assert_eq!(v1[0], "ref_contig1"); // Ref_Contig from file 1's sample_id
+        assert_eq!(v1[2], "51");          // Ref_Pos 1-indexed
+        assert_eq!(v1[20], "SNP");
+
+        let v2: Vec<&str> = var_lines[1].split('\t').collect();
+        assert_eq!(v2[0], "ref_contig2"); // Ref_Contig from file 2's sample_id
+        assert_eq!(v2[2], "76");          // Ref_Pos 1-indexed
+        assert_eq!(v2[20], "SNP");
+    }
+
+    #[test]
+    fn test_format_snpdiffs_multi_empty_files() {
+        // Two empty .phraya files — should still produce header + 2 BED rows, no variants.
+        let file1 = phraya_io::phraya::PhrayaFile::new(
+            200,
+            "ref_contig1".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            vec![],
+            CoverageTrack::uncovered(200),
+        )
+        .with_coverage_breadth(0, 0);
+
+        let file2 = phraya_io::phraya::PhrayaFile::new(
+            150,
+            "ref_contig2".to_string(),
+            "2024-01-01T00:00:00Z".to_string(),
+            vec![],
+            CoverageTrack::uncovered(150),
+        )
+        .with_coverage_breadth(0, 0);
+
+        let files_with_obs: Vec<(&phraya_io::phraya::PhrayaFile, &[VariantObservation])> =
+            vec![(&file1, &[]), (&file2, &[])];
+
+        let output = format_snpdiffs_multi(
+            &files_with_obs,
+            Some("assembly_ref"),
+            Some("assembly_query"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 3, "header + 2 BED rows, no variants");
+        assert!(lines[0].starts_with("#\t"));
+        assert_eq!(lines[1], "##\tref_contig1\t0\t200\t200\t0\tassembly_query\t0\t0\t0\t0\t0.0");
+        assert_eq!(lines[2], "##\tref_contig2\t0\t150\t150\t0\tassembly_query\t0\t0\t0\t0\t0.0");
+    }
+
 }

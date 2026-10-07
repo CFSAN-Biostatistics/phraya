@@ -282,6 +282,24 @@ const SEED_OCC_CAP_FLOOR: usize = 256;
 /// (mirrors the 0.95 filter in `phraya_io::queries::write_queries`). Used only to classify a read
 /// as placed vs below-threshold for [`AlignStats`]; the actual filtering happens at write time.
 const SCORE_REPORT_THRESHOLD: f64 = 0.95;
+/// Minimum identity for a `(0,0)` fallback-only alignment to produce variant observations.
+///
+/// When a query shares no minimizer with a target (no seeds, no chains), `select_anchors`
+/// falls back to a `(0,0)` anchor. For comparable-length DNA (the contig-vs-contig case
+/// issue #146 added the fallback for), this can rescue a genuinely divergent homolog that
+/// shares no exact k-mer. But it also fires for every non-homologous pair in reference-
+/// palette mode (every read aligned against every reference space): a 50 kb query vs a
+/// non-homologous 50 kb reference produces a full-length ~50%-identity alignment whose
+/// ~25 000 `VariantObservation`s are pure noise.
+///
+/// The cross-space sidecar already discards such placements at its 0.95 identity filter
+/// (they never reach the superposition a filter acts on), but the per-space `.phraya` has
+/// no such gate and retains every fabricated call. This floor suppresses *variant* extraction
+/// from seedless alignments below the noise threshold, while still recording coverage depth
+/// and the placement (for the cross-space superposition). Seeded alignments are unaffected —
+/// this gate only engages when `had_seeds` is false (the alignment relied solely on the
+/// `(0,0)` fallback).
+const FALLBACK_ONLY_MIN_IDENTITY: f64 = 0.55;
 
 /// Strategy-aware score threshold.
 pub fn score_threshold(strategy: Strategy) -> f64 {
@@ -1026,37 +1044,65 @@ pub fn align_read_prepared(
         Outcome::NoSeed
     });
 
+    // Query positions are always recorded for the cross-space sidecar (the filter stage
+    // sees the full superposition of placements; the sidecar's 0.95 threshold discards
+    // low-identity ones). The identity field is absolute normalized (1 - ed/len).
+    let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
+    for alt in &scored.alternatives {
+        let alt_score = 1.0 - (alt.edit_distance as f64 / query.len().max(1) as f64);
+        query_positions.push((alt.target_start as u32, alt_score));
+    }
+
+    // Suppress variant extraction from seedless (0,0)-fallback-only alignments below
+    // [`FALLBACK_ONLY_MIN_IDENTITY`], but still record coverage and placement. Such
+    // alignments have no minimizer evidence — they are the full-length ~50%-identity noise
+    // that inflates palette-mode .phraya output (CSP2 snpdiffs escalation: 173 840 vs 33 386
+    // real SNPs). Coverage depth is still computed (a read aligning at offset 0 is genuine
+    // coverage even at low identity), but no bogus `VariantObservation`s are emitted. The
+    // placement is recorded in query_positions above; the sidecar's 0.95 filter discards
+    // sub-threshold placements from the superposition anyway.
+    //
+    // Seeded alignments (had_seeds == true) are never gated here — even a low-scoring seeded
+    // alignment has positional evidence from shared minimizers.
+    let suppress_variants = !had_seeds && primary_score < FALLBACK_ONLY_MIN_IDENTITY;
+
     // Raw (un-quantized) coverage over just the aligned span, for local_coverage
     // lookups in variants; quantized separately for the stored coverage track.
+    // Computed unconditionally — even a fallback-only alignment that we suppress
+    // variants for still contributes genuine coverage-depth at its aligned locus.
     let raw_coverage = compute_windowed_coverage(&scored, target.len());
 
-    let query_mapq = query.mapq().unwrap_or(60);
-    let query_avg_bq = query.avg_quality().unwrap_or(60.0);
+    let variants = if suppress_variants {
+        Vec::new()
+    } else {
+        let query_mapq = query.mapq().unwrap_or(60);
+        let query_avg_bq = query.avg_quality().unwrap_or(60.0);
 
-    // Look up mate info from plan (if available from BAM input)
-    let mate_info = plan.mate_info.get(query.id());
+        // Look up mate info from plan (if available from BAM input)
+        let mate_info = plan.mate_info.get(query.id());
 
-    // Pre-compute aggregate insert stats from mate_info so variants are merge-stable.
-    let insert_stats: Option<(i64, u32)> = mate_info.map(|mi| (mi.insert_size.abs() as i64, 1u32));
+        // Pre-compute aggregate insert stats from mate_info so variants are merge-stable.
+        let insert_stats: Option<(i64, u32)> = mate_info.map(|mi| (mi.insert_size.abs() as i64, 1u32));
 
-    let variants = extract_variants_from_cigar(
-        &scored.primary.cigar,
-        scored.primary.target_start,
-        query_bytes,
-        target.bases(),
-        scored.primary.edit_distance as u32,
-        query.id().to_string(),
-        &raw_coverage,
-        ctx.repeat_regions(),
-        query_mapq,
-        query_avg_bq,
-        primary_score,
-        config.coverage_window_radius,
-        &plan.hotspot_intervals,
-        mate_info,
-        insert_stats,
-        strand,
-    );
+        extract_variants_from_cigar(
+            &scored.primary.cigar,
+            scored.primary.target_start,
+            query_bytes,
+            target.bases(),
+            scored.primary.edit_distance as u32,
+            query.id().to_string(),
+            &raw_coverage,
+            ctx.repeat_regions(),
+            query_mapq,
+            query_avg_bq,
+            primary_score,
+            config.coverage_window_radius,
+            &plan.hotspot_intervals,
+            mate_info,
+            insert_stats,
+            strand,
+        )
+    };
 
     // Quantize each window in place; positions outside all windows quantize to 0
     // (quantize(0) == 0), so the merged genome track is identical to quantizing full.
@@ -1067,12 +1113,6 @@ pub fn align_read_prepared(
             counts: quantize_coverage(&w.counts),
         })
         .collect();
-
-    let mut query_positions = vec![(scored.primary.target_start as u32, primary_score)];
-    for alt in &scored.alternatives {
-        let alt_score = 1.0 - (alt.edit_distance as f64 / query.len().max(1) as f64);
-        query_positions.push((alt.target_start as u32, alt_score));
-    }
 
     Some(AlignmentResult {
         variants,
