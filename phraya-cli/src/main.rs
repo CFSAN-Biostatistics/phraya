@@ -140,7 +140,7 @@ enum Commands {
         /// sensitive (K=50, seeded WFA, ±25bp), balanced (K=2, Myers fitting + WFA fallback, ±50bp,
         /// default), fast (K=1, divergence cutoff, ±150bp, low sensitivity), exact (K=250, full WFA,
         /// ±5bp, highest precision for small genomes or validation), long-read (K=100, WFA+chunking,
-        /// ±25bp, for ONT/PacBio reads 10-50kb)
+        /// ±25bp, for ONT/PacBio reads 10-50kb), assembly (every chain, WFA, ±5bp, contig-vs-contig)
         #[arg(long, value_name = "STRATEGY", default_value = "balanced")]
         strategy: String,
 
@@ -395,9 +395,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "sensitive" => Strategy::Sensitive,
                 "exact" => Strategy::Exact,
                 "long-read" => Strategy::LongRead,
+                "assembly" => Strategy::Assembly,
                 other => {
                     return Err(format!(
-                        "unknown strategy: {other}; expected fast, balanced, sensitive, exact, or long-read"
+                        "unknown strategy: {other}; expected fast, balanced, sensitive, exact, long-read, or assembly"
                     )
                     .into())
                 }
