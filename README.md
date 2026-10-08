@@ -68,6 +68,22 @@ All three work over DNA or protein sequences — `phraya plan --alphabet {auto|d
 auto-detects amino-acid input from content by default (ADR-0013); no separate command or
 workflow for protein alignment.
 
+### Assembly vs assembly (dnadiff-style SNP comparison)
+
+```bash
+phraya plan --reference ref_assembly.fasta --inputs query_assembly.fasta --output pair.phrayaplan
+phraya align --reference ref_assembly.fasta pair.phrayaplan --output aln/ --strategy assembly
+phraya filter aln/*.phraya --format snpdiffs \
+    --reference-fasta ref_assembly.fasta --query-fasta query_assembly.fasta \
+    --reference-id REF --query-id QRY --output pair.snpdiffs
+```
+
+`--strategy assembly` aligns every homologous region of each query contig as its own local
+block (one `.phraya` per reference contig). `--format snpdiffs` selects blocks one-to-one
+across all reference contigs (like `delta-filter -1`) and writes CSP2's `.snpdiffs` format:
+one BED row per kept block, `.` rows for uncovered regions, and one row per variant inside a
+kept block, with header coverage computed from those blocks (ADR-0015).
+
 ## Key Features
 
 - **Multi-mapping storage**: Tracks alternative alignment positions (score ratio ≥ 0.95). Filter ambiguous variants post-hoc.
@@ -91,7 +107,7 @@ Workspace with 5 crates:
 ## File Formats
 
 - **`.phrayaplan`** (v2): Plan file (k-mer evidence + task list). Read-only during alignment. Binary MessagePack + zstd.
-- **`.phraya`**: Position index (variant observations + coverage track). Mergeable. Binary MessagePack + zstd.
+- **`.phraya`** (v2): Position index (variant observations + coverage track, plus the local alignment blocks of `--strategy assembly`). Mergeable. Binary MessagePack + zstd. v1 files still read.
 - **`.phraya.queries`**: Query index (multi-mapping alternatives per read). Sidecar file. Binary MessagePack + zstd.
 
 ## Installation

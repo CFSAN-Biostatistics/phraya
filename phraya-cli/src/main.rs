@@ -282,20 +282,22 @@ enum Commands {
         #[arg(long, value_name = "EXPR")]
         expr: Option<String>,
 
-        /// Reference FASTA path for snpdiffs header metadata (contig count, N50/L90,
-        /// assembly bases, SHA256). Only used with --format snpdiffs.
+        /// Reference assembly FASTA for --format snpdiffs: header metadata (contig count,
+        /// N50/L90, assembly bases, SHA256), the coverage denominator, and uncovered-region rows.
         #[arg(long, value_name = "FILE")]
         reference_fasta: Option<PathBuf>,
 
-        /// Query FASTA path for snpdiffs header metadata. Only used with --format snpdiffs.
+        /// Query assembly FASTA for --format snpdiffs: header metadata, the query coverage
+        /// denominator (Query_Percent_Aligned is NA without it), and uncovered-region rows.
         #[arg(long, value_name = "FILE")]
         query_fasta: Option<PathBuf>,
 
-        /// Reference sequence ID for snpdiffs header (overrides sample_id from .phraya).
-        /// Only used with --format snpdiffs.
+        /// Reference assembly label for the snpdiffs header (Reference_ID); defaults to the
+        /// reference FASTA file name. Rows always carry real contig names.
         #[arg(long, value_name = "NAME")]
         reference_id: Option<String>,
-        /// Query sequence ID for snpdiffs header. Only used with --format snpdiffs.
+        /// Query assembly label for the snpdiffs header (Query_ID); defaults to the query FASTA
+        /// file name. Rows always carry real contig names.
         #[arg(long, value_name = "NAME")]
         query_id: Option<String>,
 
@@ -2456,29 +2458,18 @@ fn run_filter(
             }
         }
         "snpdiffs" => {
-            let snpdiffs_output = if phraya_files.len() == 1 {
-                let file = &phraya_files[0];
-                phraya_filter::snpdiffs::format_snpdiffs(
-                    file,
-                    &file.observations,
-                    reference_id,
-                    query_id,
-                    reference_fasta,
-                    query_fasta,
-                )?
-            } else {
-                let files_with_obs: Vec<(&phraya_io::phraya::PhrayaFile, &[phraya_core::types::VariantObservation])> = phraya_files
-                    .iter()
-                    .map(|f| (f, f.observations.as_slice()))
-                    .collect();
-                phraya_filter::snpdiffs::format_snpdiffs_multi(
-                    &files_with_obs,
-                    reference_id,
-                    query_id,
-                    reference_fasta,
-                    query_fasta,
-                )?
-            };
+            // One reference space per file (`phraya align --reference ... --strategy assembly`).
+            let files_with_obs: Vec<(&phraya_io::phraya::PhrayaFile, &[phraya_core::types::VariantObservation])> = phraya_files
+                .iter()
+                .map(|f| (f, f.observations.as_slice()))
+                .collect();
+            let snpdiffs_output = phraya_filter::snpdiffs::format_snpdiffs(
+                &files_with_obs,
+                reference_id,
+                query_id,
+                reference_fasta,
+                query_fasta,
+            )?;
             if let Some(out_path) = output_path {
                 std::fs::write(out_path, &snpdiffs_output)?;
             } else {

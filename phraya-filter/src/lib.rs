@@ -1,6 +1,7 @@
 use phraya_core::cigar::CigarStats;
 use phraya_core::types::VariantObservation;
 use phraya_io::queries::QueryIndex;
+pub mod blocks;
 pub mod extractors;
 pub mod snpdiffs;
 pub mod tsv;

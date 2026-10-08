@@ -33,3 +33,4 @@ the old one (and update the old one's Status). Do not edit history.
 | [0012](0012-chaining-supersedes-branch-and-bound.md) | Seed chaining supersedes ADR-0007's branch-and-bound | Accepted |
 | [0013](0013-protein-space-alphabet-support.md) | Protein-space alphabet support | Accepted |
 | [0014](0014-gap-affine-scoring-in-sensitive.md) | Gap-affine scoring, defaulted in `sensitive` | Accepted |
+| [0015](0015-assembly-blocks-and-filter-one-to-one.md) | Assembly alignment blocks, with one-to-one selection in the filter | Accepted |
