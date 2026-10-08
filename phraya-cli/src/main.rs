@@ -626,7 +626,8 @@ fn run_align(
         result.variants,
         coverage,
     )
-    .with_coverage_breadth(covered, covered_10x);
+    .with_coverage_breadth(covered, covered_10x)
+    .with_alignments(result.blocks);
     phraya::write_phraya(output_path, &phraya_file)?;
 
     // Build .phraya.queries sidecar
@@ -751,6 +752,7 @@ fn run_align_worker_with_plan(
 
     // Extract and align reads in this chunk
     let mut all_variants = Vec::new();
+    let mut all_blocks = Vec::new();
     let mut all_query_positions = HashMap::new();
     let mut coverage_track = vec![0u32; target.len()];
     let mut raw_coverage_track = vec![0u32; target.len()];
@@ -778,6 +780,7 @@ fn run_align_worker_with_plan(
     let plan_ref = unsafe { &*plan_ptr };
 
     let merge_result = |all_variants: &mut Vec<_>,
+                        all_blocks: &mut Vec<_>,
                         all_query_positions: &mut HashMap<_, _>,
                         coverage_track: &mut Vec<u32>,
                         raw_coverage_track: &mut Vec<u32>,
@@ -800,6 +803,7 @@ fn run_align_worker_with_plan(
             }
         }
         all_variants.extend(result.variants);
+        all_blocks.extend(result.blocks);
         all_query_positions.insert(query_id, result.query_positions);
     };
 
@@ -825,6 +829,7 @@ fn run_align_worker_with_plan(
             for (query_id, result) in batch_results {
                 merge_result(
                     &mut all_variants,
+                    &mut all_blocks,
                     &mut all_query_positions,
                     &mut coverage_track,
                     &mut raw_coverage_track,
@@ -852,6 +857,7 @@ fn run_align_worker_with_plan(
             for (query_id, result) in batch_results {
                 merge_result(
                     &mut all_variants,
+                    &mut all_blocks,
                     &mut all_query_positions,
                     &mut coverage_track,
                     &mut raw_coverage_track,
@@ -872,7 +878,8 @@ fn run_align_worker_with_plan(
         all_variants,
         coverage,
     )
-    .with_coverage_breadth(covered, covered_10x);
+    .with_coverage_breadth(covered, covered_10x)
+    .with_alignments(all_blocks);
     phraya::write_phraya(std::path::Path::new(output_path), &phraya_file)?;
 
     // Write queries sidecar
@@ -1121,6 +1128,7 @@ fn run_align_reference(
         let mut full_coverage = vec![0u32; r.seq.len()];
         let mut full_coverage_raw = vec![0u32; r.seq.len()];
         let mut variants = Vec::new();
+        let mut blocks = Vec::new();
         for start in (0..reads.len()).step_by(BATCH_SIZE) {
             let end = (start + BATCH_SIZE).min(reads.len());
             // Parallel align, then serial merge: `into_par_iter().collect()` over a range
@@ -1163,6 +1171,7 @@ fn run_align_reference(
                         });
                 }
                 variants.extend(result.variants);
+                blocks.extend(result.blocks);
             }
         }
 
@@ -1175,7 +1184,8 @@ fn run_align_reference(
             variants,
             coverage,
         )
-        .with_coverage_breadth(covered, covered_10x);
+        .with_coverage_breadth(covered, covered_10x)
+        .with_alignments(blocks);
         let out_path = out_dir.join(format!("{}.phraya", r.label));
         phraya::write_phraya(&out_path, &phraya_file)?;
         eprintln!("Wrote {}", out_path.display());

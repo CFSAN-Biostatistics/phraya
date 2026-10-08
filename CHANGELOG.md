@@ -23,6 +23,7 @@ Phraya uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - **`phraya filter --format snpdiffs` accepts multiple `.phraya` files** (multi-input merge): when two or more input files are given, they are merged into a single snpdiffs text block with one `##` BED row per reference contig (using each file's `sample_id` as `Ref_Contig`) and aggregate header metrics. Previously only `inputs[0]` was used; all additional files were silently dropped. Enables the CSP2 `phraya filter out/*.phraya --format snpdiffs` workflow without a per-file merge script.
 
 ### Changed
+- **`.phraya` format v2** (ADR-0015): `PhrayaFile` gains `alignments`, the local alignment blocks `--strategy assembly` produced (query interval in forward coordinates, reference interval, strand, edit distance, CIGAR); `phraya merge` unions them. v1 files still read, with no blocks; older binaries reject v2 files with a version mismatch.
 - **Breaking**: Filter presets renamed: `conservative` → `strict`, `sensitive` → `tolerant` (ADR-0010). Threshold values unchanged; this is a pure rename to avoid overloading "sensitive" with the alignment strategy layer.
 
 ### Fixed

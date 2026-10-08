@@ -1,9 +1,12 @@
-use phraya_core::types::{CoverageTrack, VariantObservation};
+use phraya_core::types::{AlignmentBlock, CoverageTrack, Strand, VariantObservation};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// .phraya format version
-pub const PHRAYA_VERSION: u32 = 1;
+/// .phraya format version. v2 adds [`PhrayaFile::alignments`] (ADR-0015).
+pub const PHRAYA_VERSION: u32 = 2;
+
+/// Oldest `.phraya` version [`read_phraya`] accepts. A v1 file reads with no alignment blocks.
+pub const PHRAYA_MIN_READ_VERSION: u32 = 1;
 
 /// Phraya file format errors
 #[derive(Debug, Error, Serialize, Deserialize)]
@@ -44,6 +47,11 @@ pub struct PhrayaFile {
     pub header: PhrayaHeader,
     pub observations: Vec<VariantObservation>,
     pub coverage_track: CoverageTrack,
+    /// Local alignment blocks from `Strategy::Assembly` (format v2, ADR-0015); empty for the
+    /// other strategies and for v1 files. Last field and `#[serde(default)]`, so a v1 file's
+    /// three-element array still deserializes.
+    #[serde(default)]
+    pub alignments: Vec<AlignmentBlock>,
 }
 
 impl PhrayaFile {
@@ -70,6 +78,7 @@ impl PhrayaFile {
             header,
             observations,
             coverage_track,
+            alignments: Vec::new(),
         }
     }
 
@@ -80,6 +89,12 @@ impl PhrayaFile {
     pub fn with_coverage_breadth(mut self, covered: u32, covered_10x: u32) -> Self {
         self.header.covered_positions = Some(covered);
         self.header.covered_positions_10x = Some(covered_10x);
+        self
+    }
+
+    /// Attach the alignment blocks the observations were extracted from.
+    pub fn with_alignments(mut self, alignments: Vec<AlignmentBlock>) -> Self {
+        self.alignments = alignments;
         self
     }
 }
@@ -107,7 +122,7 @@ pub fn read_phraya(path: &std::path::Path) -> Result<PhrayaFile, PhrayaError> {
     let file: PhrayaFile = rmp_serde::from_slice(&decompressed)
         .map_err(|e| PhrayaError::SerializationError(e.to_string()))?;
 
-    if file.header.version != PHRAYA_VERSION {
+    if !(PHRAYA_MIN_READ_VERSION..=PHRAYA_VERSION).contains(&file.header.version) {
         return Err(PhrayaError::VersionMismatch {
             expected: PHRAYA_VERSION,
             got: file.header.version,
@@ -213,6 +228,17 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
 
     let merged_coverage = CoverageTrack::new(&merged_coverage_vec);
 
+    // Alignment blocks: union of the inputs, deduplicated, in a deterministic order.
+    let mut alignments: Vec<AlignmentBlock> =
+        files.iter().flat_map(|f| f.alignments.iter().cloned()).collect();
+    alignments.sort_by(|a, b| {
+        let key = |x: &AlignmentBlock| {
+            (x.query_id.clone(), x.t_start, x.t_end, x.q_start, x.q_end, x.strand == Strand::Reverse, x.cigar.clone())
+        };
+        key(a).cmp(&key(b))
+    });
+    alignments.dedup();
+
     // Create merged file header
     let merged_header = PhrayaHeader {
         version: PHRAYA_VERSION,
@@ -230,6 +256,7 @@ pub fn merge_phraya_files(paths: &[&std::path::Path]) -> Result<PhrayaFile, Phra
         header: merged_header,
         observations,
         coverage_track: merged_coverage,
+        alignments,
     })
 }
 
@@ -293,6 +320,78 @@ mod tests {
         assert_eq!(read_file.observations.len(), 1);
         assert_eq!(read_file.observations[0].position(), 100);
         assert_eq!(read_file.observations[0].mapq(), 60);
+    }
+
+    fn block(query: &str, t_start: u32, t_end: u32, strand: Strand) -> AlignmentBlock {
+        let len = t_end - t_start;
+        AlignmentBlock {
+            query_id: query.into(),
+            query_len: 5_000,
+            q_start: 100,
+            q_end: 100 + len,
+            t_start,
+            t_end,
+            strand,
+            edit_distance: 1,
+            cigar: format!("10M1X{}M", len - 11).into(),
+        }
+    }
+
+    #[test]
+    fn round_trip_preserves_alignment_blocks() {
+        let blocks = vec![block("q1", 0, 500, Strand::Forward), block("q2", 600, 900, Strand::Reverse)];
+        let file = PhrayaFile::new(1_000, "ref".into(), "t".into(), vec![], CoverageTrack::uncovered(1_000))
+            .with_alignments(blocks.clone());
+        let temp = NamedTempFile::new().unwrap();
+        write_phraya(temp.path(), &file).unwrap();
+        let read = read_phraya(temp.path()).unwrap();
+        assert_eq!(read.header.version, PHRAYA_VERSION);
+        assert_eq!(read.alignments, blocks);
+    }
+
+    /// A v1 file (three-element array without `alignments`, header version 1) still reads,
+    /// with no blocks, so existing `.phraya` outputs are not orphaned by v2.
+    #[test]
+    fn version_1_file_reads_without_alignment_blocks() {
+        #[derive(Serialize)]
+        struct PhrayaFileV1 {
+            header: PhrayaHeader,
+            observations: Vec<VariantObservation>,
+            coverage_track: CoverageTrack,
+        }
+        let obs = VariantObservation::new(
+            100, b'A', HashMap::from([(b'C', 1)]), 0.95, "200M".to_string(), 60, 1, vec![1], 35.5,
+            "q1".to_string(),
+        );
+        let mut current = PhrayaFile::new(300, "ref".into(), "t".into(), vec![obs], CoverageTrack::new(&vec![1; 300]));
+        current.header.version = 1;
+        let v1 = PhrayaFileV1 {
+            header: current.header.clone(),
+            observations: current.observations.clone(),
+            coverage_track: current.coverage_track.clone(),
+        };
+        let temp = NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), zstd::encode_all(&rmp_serde::to_vec(&v1).unwrap()[..], 3).unwrap()).unwrap();
+
+        let read = read_phraya(temp.path()).unwrap();
+        assert_eq!(read.header.version, 1);
+        assert_eq!(read.observations.len(), 1);
+        assert!(read.alignments.is_empty());
+    }
+
+    #[test]
+    fn merge_unions_alignment_blocks_in_a_stable_order() {
+        let (a, b) = (block("q1", 0, 500, Strand::Forward), block("q2", 600, 900, Strand::Reverse));
+        let f1 = PhrayaFile::new(1_000, "s1".into(), "t".into(), vec![], CoverageTrack::uncovered(1_000))
+            .with_alignments(vec![b.clone(), a.clone()]);
+        let f2 = PhrayaFile::new(1_000, "s2".into(), "t".into(), vec![], CoverageTrack::uncovered(1_000))
+            .with_alignments(vec![a.clone()]);
+        let (t1, t2) = (NamedTempFile::new().unwrap(), NamedTempFile::new().unwrap());
+        write_phraya(t1.path(), &f1).unwrap();
+        write_phraya(t2.path(), &f2).unwrap();
+
+        let merged = merge_phraya_files(&[t1.path(), t2.path()]).unwrap();
+        assert_eq!(merged.alignments, vec![a, b], "union, deduplicated, ordered by query then reference start");
     }
 
     #[test]
