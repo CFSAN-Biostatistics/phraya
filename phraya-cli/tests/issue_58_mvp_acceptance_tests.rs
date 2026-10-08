@@ -643,7 +643,7 @@ fn issue_58_query_index_round_trip() {
     );
     queries.insert("query_1".to_string(), vec![(150u32, 0.99f64)]);
 
-    write_queries(&query_path, &queries).expect("should write queries");
+    write_queries(&query_path, &queries, 0.95).expect("should write queries");
 
     assert!(query_path.exists(), "queries file should exist");
 
@@ -672,7 +672,7 @@ fn issue_58_query_index_filters_by_score_ratio() {
         vec![(100u32, 0.95f64), (200u32, 0.94f64)],
     );
 
-    write_queries(&query_path, &queries).expect("should write");
+    write_queries(&query_path, &queries, 0.95).expect("should write");
     let read_back = read_queries(&query_path).expect("should read");
 
     if let Some(alignments) = read_back.get("query_0") {

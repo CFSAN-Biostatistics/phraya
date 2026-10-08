@@ -24,6 +24,19 @@ mod issue_130_local_coverage_tests {
         )
     }
 
+    /// Deterministic non-periodic DNA (LCG), so alignments have one unambiguous diagonal.
+    fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed;
+        (0..len)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                b"ACGT"[((x >> 33) & 3) as usize]
+            })
+            .collect()
+    }
+
     /// Test that local_coverage contains the ±50bp window, not just [1]
     /// When a variant is found at position P, local_coverage should contain
     /// per-position read depth for positions [max(0, P-50), min(len, P+50)].
@@ -235,15 +248,15 @@ mod issue_130_local_coverage_tests {
     /// Each variant at different position should get its own properly-sized window
     #[test]
     fn issue_130_multiple_variants_correct_windows() {
-        let query = Sequence::new(
-            b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec(),
-            None,
-            "query1".to_string(),
-            None,
-        );
-        let mut target_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT".to_vec();
-        target_bases[30] = b'T'; // Variant at position 30
-        target_bases[100] = b'T'; // Variant at position 100
+        // Non-periodic input: on a period-4 ACGT repeat every diagonal ≡ 0 (mod 4) chains
+        // equally well, so the K=2 chain cap can anchor one period off and report a shifted
+        // alignment with indels. This test is about window sizes, not repeat placement.
+        let query_bases = diverse_dna(160, 130);
+        let query = Sequence::new(query_bases.clone(), None, "query1".to_string(), None);
+        let mut target_bases = query_bases;
+        for pos in [30, 100] {
+            target_bases[pos] = if target_bases[pos] == b'T' { b'A' } else { b'T' };
+        }
         let target = Sequence::new(target_bases, None, "ref".to_string(), None);
         let plan = create_test_plan();
 

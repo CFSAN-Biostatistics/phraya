@@ -3247,6 +3247,7 @@ mod wfa_algorithm_tests {
     // edit_dist ≈ 10 edits, O(n×m) = 100M cells, WFA = O(s*n) = 100k ops → 1000x faster.
 
     #[test]
+    #[cfg_attr(debug_assertions, ignore = "10 ms wall-clock budget assumes an optimized build")]
     fn wfa_is_faster_than_on2_for_sparse_edits_windowed() {
         use std::time::Instant;
         // 150bp query vs 300bp windowed target (2% divergence → edit_dist ≈ 3)
