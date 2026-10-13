@@ -15,7 +15,6 @@ mod issue_130_local_coverage_tests {
     /// Helper: create a plan for testing
     fn create_test_plan() -> PhrayaPlan {
         PhrayaPlan::new(
-            phraya_io::plan::UseCase::ReadsWithRef,
             vec!["test".to_string()],
             "2026-06-03T00:00:00Z".to_string(),
             HashMap::new(),

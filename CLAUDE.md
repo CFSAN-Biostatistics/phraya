@@ -6,7 +6,7 @@ General-purpose pairwise sequence aligner for bacterial genomics. Reads/assembli
 
 ## Status
 
-Phase 1 MVP shipped (2026-06-06). Cases 2, 3, 4 working end-to-end. Real WFA O(s·n) alignment, named filter presets, tandem repeat wiring, real mapq/base-quality/confidence all complete.
+Phase 1 MVP shipped (2026-06-06). Reads+ref, contigs+reads (auto-centroid), and contigs-only shapes all working end-to-end. Real WFA O(s·n) alignment, named filter presets, tandem repeat wiring, real mapq/base-quality/confidence all complete.
 
 ## Workspace Structure
 
@@ -16,7 +16,7 @@ phraya-core/     # Core types (Sequence, VariantObservation, EvidenceLayer, Mini
 phraya-align/    # WFA extension, SIMD diagonal fill (SSE4.2/NEON), seeding (Seed, find_seeds)
 phraya-io/       # I/O: FASTA/FASTQ/BAM/CRAM parsing, .phraya/.phrayaplan/.phraya.queries formats
 phraya-filter/   # Post-alignment filtering library (threshold/expression/preset)
-phraya-cli/      # Binary CLI: plan/plan-tasks/align/merge/filter subcommands
+phraya-cli/      # Binary CLI: plan/plan-tasks/align/merge/filter/qc subcommands
 ```
 
 **No `phraya-index` crate.** K-mer sketching was moved from a custom implementation into `phraya-core` (backed by `simd-minimizers`). The crate was deleted in the simd-minimizers refactor.
@@ -34,20 +34,26 @@ phraya-cli/      # Binary CLI: plan/plan-tasks/align/merge/filter subcommands
 ## Pipeline
 
 ```
-phraya plan   → .phrayaplan v2 (k-mer evidence + task list + sketches)
+phraya plan   → .phrayaplan v7 (k-mer evidence + read/contig sketches + task list)
               ↓
 phraya align  → .phraya (position index) + .phraya.queries (query index with multi-mapping)
               ↓
 phraya filter → VCF | TSV | filtered .phraya
 ```
 
-### Use Cases (detected by `phraya plan`)
+### Input Shapes (auto-detected by `phraya plan`)
 
-1. **Case 2**: N reads + M reference records → N×M alignments (BWA-like, main use case)
-2. **Case 3**: M contigs + N reads, no ref → centroid selection + M+N-1 alignments (key innovation)
-3. **Case 4**: M contigs ± K reference records → M×K or M×(M-1)/2 alignments (minimap2-like)
+The input shape — reads vs contigs, presence of a reference — is auto-detected at plan time from
+input content (contig-length majority by base count).
 
-**Not supported**: reads-only with no reference and no contigs. All-vs-all short-read pairwise is de novo assembly (PRD §Won't Have). Phraya requires a coordinate space — provide a reference or mix in contigs and Case 3 auto-selects a centroid.
+1. **Reads + reference** (`reads-with-ref`): N reads + M reference records → N×M alignments (BWA-like, main use case)
+2. **Contigs + reads** (`contigs-with-reads`): M contigs + N reads, no ref → centroid selection + M+N-1 alignments (key innovation)
+3. **Contigs** (`contigs-only`): M contigs ± K reference records → M×K or M×(M-1)/2 alignments (minimap2-like)
+
+**Not supported**: reads-only with no reference and no contigs. All-vs-all short-read pairwise is de novo assembly (PRD §Won't Have). Phraya requires a coordinate space — provide a reference or mix in contigs; the centroid path auto-selects one.
+
+`--min-homology <f64>` / `--no-homology-gate` gates the contigs-only (no reference) all-pairs
+task generation by minimizer-sketch Jaccard similarity (default 0.1).
 
 ### Alignment Algorithm
 
@@ -140,6 +146,7 @@ Parameters k=21, w=11 satisfy the simd-minimizers canonicality requirement (l = 
 - K-mer uniqueness: which k-mers appear in 1 vs many sequences
 - Jaccard similarity: pairwise contig similarity from shared minimizers (used for centroid selection)
 - Coverage estimate: k-mer depth across reference positions
+- Variation hotspot intervals: contiguous runs of low k-mer-uniqueness positions (< 0.5 by default) flagged at plan time
 
 ### Alignment-time (ground truth)
 - Per-position: multi_map_fraction, avg_score_ratio_gap to next-best alignment
@@ -183,10 +190,10 @@ excluded" note.
 ## Phase 1 MVP (Shipped 2026-06-06)
 
 **Complete:**
-- Cases 2 (reads + ref), 3 (contigs + reads, auto-centroid), 4 (contigs only) working end-to-end
-- Automatic centroid selection (Case 3): providing `--reference` overrides; omitting it triggers centroid selection. No separate flag needed.
+- Reads + reference, contigs + reads (auto-centroid), contigs-only working end-to-end
+- Automatic centroid selection (contigs + reads without reference): providing `--reference` overrides; omitting it triggers centroid selection. No separate flag needed.
 - BAM/CRAM input via `noodles` (pure Rust, no htslib)
-- `.phrayaplan` v2 with sketch reuse
+- `.phrayaplan` v7 with sketch reuse (chunk-addressable, seekable zstd frames)
 - Real WFA O(s·n) alignment (wavefront-based, not diagonal DP)
 - Real local coverage (±50bp window from alignment, not stubbed)
 - mapq, avg_base_quality, confidence derived from input data (BAM records / alignment score)
@@ -200,7 +207,6 @@ excluded" note.
   silently discards `in_tandem_repeat`/`variant_type`/`kmer_uniqueness`/`strand`/`mate_info`
 
 **Deferred to Phase 2+:**
-- Variation hotspot estimation in plan
 - Two-tier evidence (k-mer → alignment refinement)
 - Python bindings / R integration
 - Advanced coverage: per-base breakdown (not just ±50bp window)
@@ -229,7 +235,7 @@ excluded" note.
 ## Implementation Notes
 
 - **Score ratio hard-coded**: 0.95 threshold for multi-mapping is Phraya's opinion, not user-configurable
-- **Centroid selection**: For case 3 (contigs + reads, no ref), select contig closest to k-mer space center (median Jaccard similarity) as reference coordinate space
+- **Centroid selection**: For contigs + reads without a reference, select the contig closest to k-mer space center (median Jaccard similarity) as the reference coordinate space
 - **MinimizerSketch positions**: `u32` (not `usize`) — matches simd-minimizers output directly
 - **PHRAYAPLAN_VERSION = 7**: non-v7 files (missing "PHR7" magic) hard-rejected; plan files are ephemeral (always regenerate with `phraya plan`)
 - **`MinimimizerSketch` typo**: The old crate used `MinimimizerSketch` (extra 'i'). The current type is `MinimizerSketch`. Do not reintroduce the old name.

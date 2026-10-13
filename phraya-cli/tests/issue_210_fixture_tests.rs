@@ -1,7 +1,7 @@
 /// Issue #210: test(e2e): case2/case3 suites time out
 ///
 /// Acceptance tests for fixture divergence fix:
-/// - Case 3 fixture contigs must be ~95% similar (mutated copies), not independent LCG sequences
+/// - contigs + reads fixture contigs must be ~95% similar (mutated copies), not independent LCG sequences
 /// - Fixture generation must create contigs by mutating a base sequence, not via independent seeds
 /// - High-divergence contig alignments must complete within reasonable time
 ///

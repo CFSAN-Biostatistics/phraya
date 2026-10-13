@@ -1,4 +1,4 @@
-/// End-to-end Case 3 integration tests: contigs + reads (no reference) →
+/// End-to-end contigs + reads integration tests: contigs + reads (no reference) →
 /// centroid selection → plan → align → merge → filter → VCF
 ///
 /// Fixture
@@ -6,7 +6,7 @@
 /// Contigs (5 total, 10kb each, ~95% similar to each other):
 ///   Contig 1: diverse_dna with seed 42
 ///   Contigs 2-5: ~95% similar mutated copies of contig1 (5% mutation rate each)
-///   This ensures fast contig-to-centroid alignments, matching real Case 3 use (strain-level contigs)
+///   This ensures fast contig-to-centroid alignments, matching real contigs + reads use (strain-level contigs)
 ///
 /// Reads (50 total, 150bp each):
 ///   Derived from contig sequences with occasional SNPs to create variants
@@ -20,7 +20,7 @@
 ///
 /// AC coverage
 /// -----------
-/// ✓ plan detects ContigsWithReads use case       (test 1)
+/// ✓ plan detects contigs + reads input shape       (test 1)
 /// ✓ centroid selected (logged to stderr)         (test 2)
 /// ✓ task_count == 54 (4 contigs + 50 reads)      (test 3)
 /// ✓ centroid_id consistent across all tasks      (test 4)
@@ -89,7 +89,7 @@ fn mutate_sequence(base: &[u8], mutation_rate: f64, seed: u64) -> Vec<u8> {
     result
 }
 
-/// Build Case 3 fixtures: 5 contigs (10kb each) + 50 reads (150bp each)
+/// Build contigs + reads fixtures: 5 contigs (10kb each) + 50 reads (150bp each)
 /// Returns (contigs_path, reads_path)
 fn write_fixtures(dir: &Path) -> (PathBuf, PathBuf) {
     // 5 contigs, each 10kb (contig-length)
@@ -157,7 +157,7 @@ fn run_to_merge(dir: &Path) -> (PathBuf, String, usize) {
     let num_tasks = plan.task_list.len();
 
     // Extract centroid_id from task list (all tasks should have the same target)
-    // In Case 3, centroid is the target of most tasks
+    // In contigs + reads, centroid is the target of most tasks
     let centroid_id = if !plan.task_list.is_empty() {
         // The target that appears most frequently is the centroid
         use std::collections::HashMap;
@@ -245,11 +245,11 @@ fn run_to_merge(dir: &Path) -> (PathBuf, String, usize) {
     (merged, centroid_id, num_tasks)
 }
 
-// ── Test 1: plan detects ContigsWithReads use case ─────────────────────────
+// ── Test 1: plan detects contigs + reads input shape ─────────────────────────
 
-/// phraya plan recognizes contigs + reads as Case 3 (ContigsWithReads)
+/// phraya plan recognizes contigs + reads as contigs + reads (contigs + reads)
 #[test]
-fn issue_89_plan_detects_case3_contigs_with_reads() {
+fn issue_89_plan_produces_centroid_tasks() {
     let dir = TempDir::new().unwrap();
     let (contigs_path, reads_path) = write_fixtures(dir.path());
     let plan_path = dir.path().join("plan.phrayaplan");
@@ -267,12 +267,7 @@ fn issue_89_plan_detects_case3_contigs_with_reads() {
     );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
-    assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsWithReads,
-        "should detect Case 3: contigs with reads, got {:?}",
-        plan.use_case
-    );
+    assert!(!plan.task_list.is_empty(), "task list should not be empty for this input shape");
 }
 
 // ── Test 2: centroid selected and logged ──────────────────────────────────
@@ -458,7 +453,7 @@ fn issue_89_merge_reference_length_correct() {
 
 // ── Test 8: filter with --min-coverage 5 produces VCF ────────────────────
 
-/// phraya filter on merged Case 3 file produces valid VCF output
+/// phraya filter on merged contigs + reads file produces valid VCF output
 #[test]
 fn issue_89_filter_produces_vcf_output() {
     let dir = TempDir::new().unwrap();
@@ -508,9 +503,9 @@ fn issue_89_vcf_contains_variant_records() {
 
 // ── Test 10: no crashes, all commands exit 0 ──────────────────────────────
 
-/// Full Case 3 pipeline (plan → align → merge → filter) completes without error
+/// Full contigs + reads pipeline (plan → align → merge → filter) completes without error
 #[test]
-fn issue_89_e2e_case3_pipeline_succeeds() {
+fn issue_89_e2e_pipeline_succeeds() {
     let dir = TempDir::new().unwrap();
     let (contigs_path, reads_path) = write_fixtures(dir.path());
     let plan_path = dir.path().join("plan.phrayaplan");

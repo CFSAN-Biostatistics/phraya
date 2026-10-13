@@ -63,11 +63,11 @@ fn plan_reference_space_has_one_entry_per_fasta_record() {
     assert_ne!(plan.reference_space[0].content_hash, plan.reference_space[1].content_hash);
 }
 
-/// #233: Case 2 (reads + reference) task generation must target every reference record,
+/// #233: reads + reference (reads + reference) task generation must target every reference record,
 /// not just the first. With 2 reference contigs and 1 read, expect 2 tasks (one per
 /// reference record), both with the same query (the read) and distinct targets.
 #[test]
-fn plan_case2_multi_contig_reference_tasks_cover_every_contig() {
+fn plan_multi_contig_reference_tasks_cover_every_contig() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
     let reads = write_fasta(p, "reads.fa", &[("read1", PLASMID_READ)]);

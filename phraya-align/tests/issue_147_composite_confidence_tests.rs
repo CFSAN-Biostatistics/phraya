@@ -10,11 +10,10 @@
 use std::collections::HashMap;
 use phraya_align::executor::{align_task_with_config, AlignConfig};
 use phraya_core::types::Sequence;
-use phraya_io::plan::{PhrayaPlan, UseCase};
+use phraya_io::plan::{PhrayaPlan};
 
 fn make_plan_with_hotspots(hotspot_intervals: Vec<(u32, u32)>) -> PhrayaPlan {
     let mut plan = PhrayaPlan::new(
-        UseCase::ReadsWithRef,
         vec!["test".to_string()],
         "2026-06-07T00:00:00Z".to_string(),
         HashMap::new(),
@@ -120,8 +119,19 @@ fn issue_147_confidence_is_in_unit_interval() {
 /// Hotspot variant has strictly lower confidence than same-quality non-hotspot variant
 #[test]
 fn issue_147_hotspot_confidence_lower_than_non_hotspot() {
-    let mut query_bases = vec![b'A'; 100];
-    let mut target_bases = vec![b'A'; 200];
+    // Use a shared diverse-DNA base (same seed for query and target prefix) so
+    // the alignment anchors at reference position 0. Poly-A alone lands at an
+    // arbitrary offset (~83) due to the single A-rich minimizer, causing variants
+    // to appear at reference positions 113/163 instead of 30/70.
+    fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed;
+        (0..len).map(|_| {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            b"ACGT"[((x >> 33) & 3) as usize]
+        }).collect()
+    }
+    let mut query_bases = diverse_dna(100, 42);
+    let mut target_bases = diverse_dna(200, 42);  // same seed → query is prefix
     query_bases[30] = b'T';
     query_bases[70] = b'T';
     target_bases[30] = b'C';

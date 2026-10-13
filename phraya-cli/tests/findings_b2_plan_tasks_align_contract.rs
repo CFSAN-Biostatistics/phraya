@@ -3,7 +3,7 @@
 /// can look up directly. Before the fix, `plan-tasks` printed raw `u32` plan-internal
 /// array indices while `align` resolved its `QUERY_ID`/`TARGET_ID` arguments by FASTA/
 /// FASTQ header string — the documented `plan-tasks | parallel align` pipeline in
-/// README.md could never work for any use case, not just contigs.
+/// README.md could never work for any input shape, not just contigs.
 ///
 /// This test exercises the full CLI pipeline end-to-end (not the library API directly,
 /// and not a hand-decoded index→ID mapping) — `plan-tasks`'s own stdout, unmodified,

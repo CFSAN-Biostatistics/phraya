@@ -1,9 +1,9 @@
-/// Regression test for CSP2 spike finding B3: Case 4 (contigs-only, no reference)
+/// Regression test for CSP2 spike finding B3: contigs-only (contigs-only, no reference)
 /// generated a dense `i<j` all-pairs task list with no homology pre-filter — two draft
 /// assemblies with a few hundred contigs each produce tens of thousands of tasks, almost
 /// all between contigs that share no real homology.
 ///
-/// Fixture: 5 contigs, no reference, all in one input file (single-file Case 4 MSA).
+/// Fixture: 5 contigs, no reference, all in one input file (single-file contigs-only MSA).
 /// Two genuinely related pairs (mutated copies of each other, ~95% similar — the
 /// same fixture convention `issue_210_fixture_tests.rs` documents) plus one unrelated
 /// singleton. Independent-seed LCG sequences are ~75% divergent from each other per
@@ -107,7 +107,7 @@ fn findings_b3_default_gate_keeps_related_pairs_drops_unrelated() {
     );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
-    assert_eq!(plan.use_case, phraya_io::plan::UseCase::ContigsOnly);
+    assert!(!plan.task_list.is_empty(), "task list should not be empty for this input shape");
 
     let a = ids.iter().position(|&x| x == "contigA").unwrap() as u32;
     let a_mut = ids.iter().position(|&x| x == "contigA_mut").unwrap() as u32;

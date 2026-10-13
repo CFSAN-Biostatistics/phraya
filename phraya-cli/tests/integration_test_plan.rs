@@ -40,9 +40,9 @@ fn create_fastq_file(dir: &Path, filename: &str, sequences: &[(&str, &str, &str)
     path
 }
 
-/// Test: phraya plan with FASTA reference and FASTQ reads (Case 2)
+/// Test: phraya plan with FASTA reference and FASTQ reads (reads + reference)
 #[test]
-fn issue_68_plan_case2_reads_with_reference() {
+fn issue_68_plan_reads_with_reference() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
@@ -79,8 +79,8 @@ fn issue_68_plan_case2_reads_with_reference() {
     // Command: phraya plan --inputs reads.fq --reference reference.fa --output plan.phrayaplan
     // This test verifies the CLI parses arguments correctly and invokes the plan logic.
     // Expected: non-zero exit code on success (success == file written)
-    // Expected: task list contains N=(num_reads) tasks since this is Case 2 (reads + ref)
-    // Expected: use_case should be ReadsWithRef
+    // Expected: task list contains N=(num_reads) tasks since this is reads + reference (reads + ref)
+    // Expected: input shape should be reads + reference
     // Expected: output file exists and is valid .phrayaplan format
 
     let output = std::process::Command::new("cargo")
@@ -118,13 +118,9 @@ fn issue_68_plan_case2_reads_with_reference() {
     let plan_size = fs::metadata(&output_path).unwrap().len();
     assert!(plan_size > 0, "plan file should not be empty");
 
-    // Parse the plan and verify use_case
+    // Parse the plan and verify task list
     let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
-    assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ReadsWithRef,
-        "should detect Case 2: reads with reference"
-    );
+    assert!(!plan.task_list.is_empty(), "task list should not be empty for this input shape");
 
     // Verify task list has 2 tasks (one per read)
     assert_eq!(
@@ -146,16 +142,16 @@ fn issue_68_plan_case2_reads_with_reference() {
     );
 }
 
-/// Test: phraya plan with contigs and reads, no reference (Case 3)
+/// Test: phraya plan with contigs and reads, no reference (contigs + reads)
 #[test]
-fn issue_68_plan_case3_contigs_with_reads() {
+fn issue_68_plan_contigs_with_reads() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
     // Create contigs FASTA — must actually be contig-length (>=5000bp) now that
     // multi-file, no-reference classification checks per-file content, not just file
     // count (CSP2 spike finding B1 fix): a tiny placeholder sequence would no longer
-    // be recognized as "contigs" and this fixture would misclassify as ReadsOnly.
+    // be recognized as "contigs" and this fixture would misclassify as reads-only.
     let long_seq_1 = "ACGTACGTACGTACGT".repeat(320); // 5120bp
     let mut long_seq_2 = long_seq_1.clone();
     long_seq_2.pop();
@@ -214,18 +210,14 @@ fn issue_68_plan_case3_contigs_with_reads() {
     // Verify plan file was created
     assert!(output_path.exists(), "plan file should be created");
 
-    // Parse the plan and verify use_case
+    // Parse the plan and verify task list
     let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
-    assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsWithReads,
-        "should detect Case 3: contigs with reads"
-    );
+    assert!(!plan.task_list.is_empty(), "task list should not be empty for this input shape");
 
     // Verify task list is populated (should have tasks for alignment)
     assert!(
         plan.task_list.len() > 0,
-        "task list should not be empty for Case 3"
+        "task list should not be empty for contigs + reads"
     );
 
     // Verify we have 4 sequences total (2 contigs + 2 reads)
@@ -236,9 +228,9 @@ fn issue_68_plan_case3_contigs_with_reads() {
     );
 }
 
-/// Test: phraya plan with contigs only (Case 4)
+/// Test: phraya plan with contigs only (contigs-only)
 #[test]
-fn issue_68_plan_case4_contigs_only() {
+fn issue_68_plan_contigs_only() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
@@ -287,13 +279,8 @@ fn issue_68_plan_case4_contigs_only() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Parse the plan and verify use_case
+    // Parse the plan and verify contigs were sketched
     let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
-    assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsOnly,
-        "should detect Case 4: contigs only"
-    );
 
     // Verify all contigs are sketched
     assert_eq!(
@@ -464,9 +451,9 @@ fn issue_68_plan_kmer_uniqueness_computed() {
     }
 }
 
-/// Test: phraya plan logs detected use case to stderr
+/// Test: phraya plan logs detected input shape to stderr
 #[test]
-fn issue_68_plan_logs_use_case() {
+fn issue_68_plan_logs_input_shape() {
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path();
 
@@ -512,10 +499,10 @@ fn issue_68_plan_logs_use_case() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Should log which case was detected
+    // Should log the detected input shape
     assert!(
-        stderr.contains("Case") || stderr.contains("case") || stderr.contains("Detected"),
-        "should log detected use case to stderr: {}",
+        stderr.contains("input shape"),
+        "should log detected input shape to stderr: {}",
         stderr
     );
 }
@@ -656,7 +643,7 @@ fn issue_68_plan_task_list_valid() {
 
     let plan = phraya_io::plan::read_plan(&output_path).expect("plan file should be readable");
 
-    // For Case 2 (reads + ref), each task should be (query_id, target_id)
+    // For reads + reference (reads + ref), each task should be (query_id, target_id)
     // where target_id is the reference (0) and query_id is each read (1, 2, 3, ...)
     assert_eq!(plan.task_list.len(), 3, "should have 3 tasks for 3 reads");
 

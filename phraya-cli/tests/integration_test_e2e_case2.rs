@@ -1,4 +1,4 @@
-/// End-to-end Case 2 integration tests: plan → align → merge → filter → VCF
+/// End-to-end reads + reference integration tests: plan → align → merge → filter → VCF
 ///
 /// Fixture
 /// -------
@@ -149,7 +149,7 @@ fn run_to_merge(dir: &Path) -> (PathBuf, usize, u8, u8) {
 
 // ── Test 1: task count ────────────────────────────────────────────────────────
 
-/// phraya plan produces exactly N tasks for N reads (Case 2)
+/// phraya plan produces exactly N tasks for N reads (reads + reference)
 #[test]
 fn issue_88_plan_task_count_equals_read_count() {
     let dir = TempDir::new().unwrap();

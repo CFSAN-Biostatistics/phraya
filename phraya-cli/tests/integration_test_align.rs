@@ -19,9 +19,8 @@ fn create_fasta(dir: &Path, filename: &str, sequences: &[(&str, &str)]) -> PathB
 
 /// Build a minimal plan file programmatically referencing the given FASTA.
 fn write_test_plan(plan_path: &Path, fasta_path: &Path) {
-    use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+    use phraya_io::plan::{write_plan, PhrayaPlan};
     let plan = PhrayaPlan::new(
-        UseCase::ReadsWithRef,
         vec![fasta_path.to_string_lossy().to_string()],
         "2026-06-02T00:00:00Z".to_string(),
         HashMap::new(),

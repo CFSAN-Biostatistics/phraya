@@ -33,9 +33,9 @@ fn phraya(args: &[&str]) -> std::process::Output {
 
 // ── Tracer bullet ────────────────────────────────────────────────────────────
 
-/// phraya plan with contigs + reference stores UseCase::ContigsOnly, not ReadsWithRef
+/// phraya plan with contigs + reference stores contigs-only, not reads + reference
 #[test]
-fn issue_87_case4_with_ref_use_case_is_contigs_only() {
+fn issue_87_with_ref_targets_reference() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
@@ -58,19 +58,14 @@ fn issue_87_case4_with_ref_use_case_is_contigs_only() {
     assert!(out.status.success(), "phraya plan failed:\n{}", String::from_utf8_lossy(&out.stderr));
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
-    assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsOnly,
-        "contigs + reference should produce ContigsOnly, got {:?}",
-        plan.use_case
-    );
+    assert!(!plan.task_list.is_empty(), "task list should not be empty for this input shape");
 }
 
 // ── Slice 2 ──────────────────────────────────────────────────────────────────
 
 /// phraya plan case4 with ref: task list has exactly M tasks, all targeting the reference
 #[test]
-fn issue_87_case4_with_ref_generates_m_tasks_targeting_ref() {
+fn issue_87_with_ref_generates_m_tasks_targeting_ref() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
@@ -111,9 +106,9 @@ fn issue_87_case4_with_ref_generates_m_tasks_targeting_ref() {
 
 // ── Slice 3 ──────────────────────────────────────────────────────────────────
 
-/// phraya align runs successfully on a Case 4 (contig → reference) task
+/// phraya align runs successfully on a contigs-only (contig → reference) task
 #[test]
-fn issue_87_case4_align_contig_to_reference() {
+fn issue_87_align_contig_to_reference() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
@@ -127,12 +122,11 @@ fn issue_87_case4_align_contig_to_reference() {
     );
     let plan_path = p.join("case4.phrayaplan");
 
-    // Write plan directly: ContigsOnly, tasks = (1,0) and (2,0)
+    // Write plan directly: contigs-only, tasks = (1,0) and (2,0)
     {
         use std::collections::HashMap;
-        use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+        use phraya_io::plan::{write_plan, PhrayaPlan};
         let plan = PhrayaPlan::new(
-            UseCase::ContigsOnly,
             vec![seqs.to_string_lossy().to_string()],
             "2026-06-02T00:00:00Z".to_string(),
             HashMap::new(),
