@@ -15,12 +15,11 @@
 
 use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::Sequence;
-use phraya_io::plan::{PhrayaPlan, UseCase};
+use phraya_io::plan::{PhrayaPlan};
 use std::collections::HashMap;
 
 fn make_plan() -> PhrayaPlan {
     PhrayaPlan::new(
-        UseCase::ReadsWithRef,
         vec!["test".to_string()],
         "2026-06-01T00:00:00Z".to_string(),
         HashMap::new(),

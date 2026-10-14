@@ -45,7 +45,7 @@ fn create_fastq_file(dir: &Path, filename: &str, sequences: &[(&str, &str, &str)
 /// referenced by `task_list`, so `plan_tasks` can resolve them (B2 fix: `plan_tasks`
 /// must print sequence IDs, not raw indices — `align` looks sequences up by ID).
 fn create_plan_file(dir: &Path, filename: &str, task_list: Vec<(u32, u32)>) -> PathBuf {
-    use phraya_io::plan::{PhrayaPlan, UseCase};
+    use phraya_io::plan::{PhrayaPlan};
     use std::collections::HashMap;
 
     let max_idx = task_list
@@ -59,7 +59,6 @@ fn create_plan_file(dir: &Path, filename: &str, task_list: Vec<(u32, u32)>) -> P
     };
 
     let mut plan = PhrayaPlan::new(
-        UseCase::ReadsWithRef,
         vec![],
         "2026-05-31T12:00:00Z".to_string(),
         HashMap::new(),

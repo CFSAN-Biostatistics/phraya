@@ -81,6 +81,76 @@ impl Default for Strand {
     }
 }
 
+/// One local alignment block produced by `Strategy::Assembly`: a query interval aligned to
+/// an interval of the reference space a `.phraya` file belongs to. Stored in `.phraya` (v2)
+/// so the filter stage can pick blocks one-to-one and derive coverage from them (ADR-0015).
+///
+/// Coordinates are 0-based and half-open. `t_*` index the reference space; `q_*` index the
+/// query in its **forward** (FASTA) orientation whatever the strand. The CIGAR uses this
+/// crate's `{M, X, I, D}` alphabet in reference-forward orientation: for a `Reverse` block
+/// it aligns the reverse-complemented query, starting at strand-local offset
+/// `query_len - q_end` (see [`AlignmentBlock::strand_local_query_range`]).
+///
+/// Serialized positionally (rmp_serde arrays): append new fields at the end, never reorder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlignmentBlock {
+    /// Query sequence ID — the same string as the producing observations' provenance.
+    #[serde(serialize_with = "serialize_arc_str", deserialize_with = "deserialize_arc_str")]
+    pub query_id: Arc<str>,
+    /// Full length of the query sequence.
+    pub query_len: u32,
+    /// Query interval start, forward orientation.
+    pub q_start: u32,
+    /// Query interval end (exclusive), forward orientation.
+    pub q_end: u32,
+    /// Reference interval start.
+    pub t_start: u32,
+    /// Reference interval end (exclusive).
+    pub t_end: u32,
+    /// Orientation the query aligned in.
+    pub strand: Strand,
+    /// Mismatches plus indel bases in `cigar`.
+    pub edit_distance: u32,
+    /// Alignment of the strand-local query interval to the reference interval.
+    #[serde(serialize_with = "serialize_arc_str", deserialize_with = "deserialize_arc_str")]
+    pub cigar: Arc<str>,
+}
+
+impl AlignmentBlock {
+    /// The query interval in the coordinates the CIGAR walks: forward coordinates for
+    /// `Forward`, reverse-complement coordinates for `Reverse`. This is the coordinate space
+    /// of [`VariantObservation::query_position`].
+    pub fn strand_local_query_range(&self) -> std::ops::Range<u32> {
+        match self.strand {
+            Strand::Forward => self.q_start..self.q_end,
+            Strand::Reverse => self.query_len - self.q_end..self.query_len - self.q_start,
+        }
+    }
+
+    /// Map a strand-local query offset (as in [`VariantObservation::query_position`]) to the
+    /// forward query coordinate of the same base.
+    pub fn forward_query_position(&self, strand_local: u32) -> u32 {
+        match self.strand {
+            Strand::Forward => strand_local,
+            Strand::Reverse => self.query_len - 1 - strand_local,
+        }
+    }
+
+    /// `1 - edit_distance / query_aligned_len`, as [`crate::cigar::CigarStats::identity`].
+    pub fn identity(&self) -> f64 {
+        crate::cigar::CigarStats::parse(&self.cigar).identity(self.edit_distance)
+    }
+
+    /// Whether `obs` was extracted from this block: same query and strand, reference
+    /// position inside the block, and query position inside its strand-local interval.
+    pub fn contains_observation(&self, obs: &VariantObservation) -> bool {
+        obs.provenance() == &*self.query_id
+            && obs.strand() == self.strand
+            && (self.t_start..self.t_end).contains(&obs.position())
+            && self.strand_local_query_range().contains(&obs.query_position())
+    }
+}
+
 /// Reverse-complement a DNA byte string.
 ///
 /// Complements A↔T, C↔G (both cases), passes N and any other byte through unchanged, and

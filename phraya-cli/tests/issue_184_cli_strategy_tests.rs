@@ -3,7 +3,7 @@
 /// K-capped (K=1/5/∞) anchor selection.
 use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::Sequence;
-use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+use phraya_io::plan::{write_plan, PhrayaPlan};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -17,7 +17,6 @@ fn get_manifest_path() -> PathBuf {
 
 fn make_plan_with_fasta(fasta_path: &str) -> PhrayaPlan {
     PhrayaPlan::new(
-        UseCase::ReadsWithRef,
         vec![fasta_path.to_string()],
         "2026-06-06T00:00:00Z".to_string(),
         HashMap::new(),
@@ -63,12 +62,13 @@ fn issue_184_cli_align_accepts_strategy_fast() {
     assert_eq!(config.coverage_window_radius, 150);
 }
 
-/// issue #184: `phraya align --strategy exact` is rejected by the real CLI parser
-/// (no longer a valid strategy). Spawns the actual binary (pattern from
-/// issue_181_preset_rename.rs) rather than simulating the match locally -- a local
-/// simulation would pass whether or not phraya-cli/src/main.rs was ever updated.
+/// issue #184: `phraya align --strategy exact` is accepted by the real CLI parser. Spawns the
+/// actual binary (pattern from issue_181_preset_rename.rs) rather than simulating the match
+/// locally -- a local simulation would pass whether or not phraya-cli/src/main.rs changed.
 #[test]
-fn issue_184_cli_align_rejects_exact_strategy() {
+fn issue_184_cli_align_accepts_exact_strategy() {
+    // `exact` was renamed to `sensitive` in #184, then reintroduced as its own preset
+    // (`Strategy::Exact`, K=250, full WFA), so it must parse again.
     let output = std::process::Command::new("cargo")
         .args(&[
             "run",
@@ -83,22 +83,11 @@ fn issue_184_cli_align_rejects_exact_strategy() {
         .output()
         .expect("Failed to execute phraya align");
 
-    assert!(
-        !output.status.success(),
-        "phraya align --strategy exact must fail"
-    );
+    // The strategy parses; the run fails only because the plan file is missing.
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unknown strategy"),
-        "stderr must mention 'unknown strategy': {stderr}"
-    );
-    assert!(
-        stderr.contains("sensitive"),
-        "stderr must list 'sensitive' as a valid option: {stderr}"
-    );
-    assert!(
-        !stderr.contains("expected fast, balanced, or exact"),
-        "stderr must not still advertise 'exact' as valid: {stderr}"
+        !stderr.contains("unknown strategy"),
+        "stderr must not reject 'exact' as an unknown strategy: {stderr}"
     );
 }
 

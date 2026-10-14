@@ -2,7 +2,7 @@ use crate::seeding::{find_seeds_indexed_capped, seed_occurrence_cap, MinimizerIn
 use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{
     reverse_complement, sketch_sequence_default, sketch_sequence_default_for, Alphabet,
-    MinimizerSketch, Sequence, Strand, VariantObservation,
+    AlignmentBlock, MinimizerSketch, Sequence, Strand, VariantObservation,
 };
 use phraya_core::{detect_tandem_repeats, RepeatDetectorConfig};
 use phraya_io::plan::{read_content_hash, PhrayaPlan};
@@ -76,6 +76,11 @@ pub enum Strategy {
     Exact,
     /// Long-read strategy: Chunked alignment for ONT/PacBio reads (10-50kb), adaptive banding
     LongRead,
+    /// Assembly strategy for contig-vs-contig comparison (ADR-0015): every chain in either
+    /// orientation becomes a local alignment block (its exact seed segments joined by global
+    /// gap fills), so a contig yields one block per homologous region instead of one
+    /// whole-query extension. ±5bp coverage window.
+    Assembly,
 }
 
 impl Default for Strategy {
@@ -129,6 +134,7 @@ impl AlignConfig {
             Strategy::Sensitive => 25,
             Strategy::Exact => 5,
             Strategy::LongRead => 25,  // Long reads use narrow window like Sensitive
+            Strategy::Assembly => 5,   // Contigs carry depth 1; tight window like Exact
         };
         AlignConfig {
             strategy,
@@ -252,6 +258,9 @@ pub struct AlignmentResult {
     pub raw_coverage: Vec<WindowedCoverage>,
     /// Query index: (target_position, normalized_score) for primary + alternatives
     pub query_positions: Vec<(u32, f64)>,
+    /// `Strategy::Assembly` only: every kept local alignment block (ADR-0015). Empty for the
+    /// other strategies, whose placements are reported through `query_positions` alone.
+    pub blocks: Vec<AlignmentBlock>,
 }
 
 /// Execute a single alignment task: query vs target with default configuration.
@@ -382,6 +391,7 @@ fn chain_cap(strategy: Strategy) -> usize {
         Strategy::Sensitive => 50,
         Strategy::Exact => 250,
         Strategy::LongRead => 100,  // Long reads use moderate chain cap
+        Strategy::Assembly => unreachable!("Strategy::Assembly aligns blocks in align_assembly, never via extend_chains"),
     }
 }
 
@@ -498,6 +508,7 @@ fn extend_anchor(
             // Long reads use WFA for accuracy on long, divergent sequences
             wfa_extend(query, target_window, anchor)
         }
+        Strategy::Assembly => unreachable!("Strategy::Assembly aligns blocks in align_assembly, never via extend_anchor"),
     }
 }
 /// Precomputed, read-only per-target data shared across every query aligned to one
@@ -984,6 +995,15 @@ pub fn align_read_prepared(
         return None;
     }
 
+    // Assembly mode: every chain in either orientation becomes its own local block
+    // (ADR-0015) — no anchor selection, no orientation winner, no (0,0) fallback.
+    if config.strategy == Strategy::Assembly {
+        let (result, outcome) =
+            align_assembly(ctx, query, prepared, plan, config, &fwd_chains, &rev_chains, had_seeds);
+        record(outcome);
+        return result;
+    }
+
     // Extend only the orientation(s) worth extending. If exactly one orientation has
     // chain support and the other has none, the chainless side can only ever produce a
     // weaker seed- or fallback-anchored alignment (see [`select_anchors`]) — never
@@ -1087,6 +1107,7 @@ pub fn align_read_prepared(
         extract_variants_from_cigar(
             &scored.primary.cigar,
             scored.primary.target_start,
+            scored.primary.query_start,
             query_bytes,
             target.bases(),
             scored.primary.edit_distance as u32,
@@ -1119,6 +1140,7 @@ pub fn align_read_prepared(
         coverage,
         raw_coverage,
         query_positions,
+        blocks: Vec::new(),
     })
 }
 
@@ -1135,6 +1157,275 @@ pub fn align_read(
 ) -> Option<AlignmentResult> {
     let prepared = prepare_query(query, plan, config);
     align_read_prepared(ctx, query, &prepared, plan, config, stats)
+}
+
+/// Floor on a `Strategy::Assembly` block's aligned reference length (ADR-0015). Shorter
+/// blocks are chance seed clusters rather than homology; nucmer's minimum cluster length
+/// (`-c 65`) is the same order.
+const ASSEMBLY_MIN_BLOCK_LEN: usize = 100;
+
+/// Identity floor on a `Strategy::Assembly` block: a homology backstop, not a SNP-quality
+/// filter (CSP2 applies its own `min_iden` downstream).
+const ASSEMBLY_MIN_BLOCK_IDENTITY: f64 = 0.80;
+
+/// An exact match `query[q..q + len] == target[t..t + len]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Segment {
+    q: usize,
+    t: usize,
+    len: usize,
+}
+
+/// A local alignment in strand-local query coordinates (half-open).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalBlock {
+    q_start: usize,
+    q_end: usize,
+    t_start: usize,
+    t_end: usize,
+    cigar: String,
+    edit_distance: usize,
+}
+
+/// Turn a chain's seeds into ordered, non-overlapping exact-match segments.
+///
+/// Canonical minimizers also match the opposite strand and hashes can collide, so a seed
+/// counts only if its k-mer matches byte-for-byte in this orientation. Overlapping seeds on
+/// one diagonal merge; a seed on a new diagonal loses whatever prefix overlaps the previous
+/// segment on either axis. Each segment then grows to its maximal exact match, bounded by its
+/// neighbours, so the gaps left between segments hold only the real differences.
+fn chain_segments(seeds: &[crate::Seed], query: &[u8], target: &[u8], k: usize) -> Vec<Segment> {
+    let mut segs: Vec<Segment> = Vec::new();
+    for seed in seeds {
+        let (q, t) = (seed.query_pos as usize, seed.target_pos as usize);
+        if q + k > query.len() || t + k > target.len() || query[q..q + k] != target[t..t + k] {
+            continue;
+        }
+        if let Some(last) = segs.last_mut() {
+            if q.wrapping_sub(t) == last.q.wrapping_sub(last.t) && q <= last.q + last.len {
+                last.len = last.len.max(q + k - last.q);
+                continue;
+            }
+        }
+        let overlap = segs.last().map_or(0, |last| {
+            (last.q + last.len).saturating_sub(q).max((last.t + last.len).saturating_sub(t))
+        });
+        if overlap < k {
+            segs.push(Segment { q: q + overlap, t: t + overlap, len: k - overlap });
+        }
+    }
+    for i in 0..segs.len() {
+        let (q_floor, t_floor) = match i.checked_sub(1) {
+            Some(p) => (segs[p].q + segs[p].len, segs[p].t + segs[p].len),
+            None => (0, 0),
+        };
+        let (q_ceil, t_ceil) = match segs.get(i + 1) {
+            Some(n) => (n.q, n.t),
+            None => (query.len(), target.len()),
+        };
+        let s = &mut segs[i];
+        while s.q > q_floor && s.t > t_floor && query[s.q - 1] == target[s.t - 1] {
+            s.q -= 1;
+            s.t -= 1;
+            s.len += 1;
+        }
+        while s.q + s.len < q_ceil && s.t + s.len < t_ceil && query[s.q + s.len] == target[s.t + s.len] {
+            s.len += 1;
+        }
+    }
+    segs
+}
+
+/// Append `n` × `op` to a run-length CIGAR, merging with the previous run.
+fn push_op(ops: &mut Vec<(usize, char)>, n: usize, op: char) {
+    if n == 0 {
+        return;
+    }
+    match ops.last_mut() {
+        Some((count, last)) if *last == op => *count += n,
+        _ => ops.push((n, op)),
+    }
+}
+
+/// Globally align the gap between two consecutive segments, appending its CIGAR to `ops`.
+/// Returns the gap's edit distance, or `None` if the WFA cap is exhausted (the block is
+/// split there and `ops` is left untouched).
+fn fill_gap(q: &[u8], t: &[u8], ops: &mut Vec<(usize, char)>) -> Option<usize> {
+    match (q.is_empty(), t.is_empty()) {
+        (true, true) => Some(0),
+        // This crate's alphabet: 'I' = target-extra, 'D' = query-extra.
+        (true, false) => {
+            push_op(ops, t.len(), 'I');
+            Some(t.len())
+        }
+        (false, true) => {
+            push_op(ops, q.len(), 'D');
+            Some(q.len())
+        }
+        (false, false) => {
+            let cap = crate::wfa_simd::default_max_s_cap(q.len(), t.len());
+            let (cigar, edit_distance) = crate::wfa_simd::fill_wfa(q, t, Some(cap))?;
+            for (n, op) in phraya_core::cigar::parse_ops(&cigar) {
+                push_op(ops, n, op);
+            }
+            Some(edit_distance)
+        }
+    }
+}
+
+/// The local alignment blocks of one chain: its segments joined by global gap fills.
+fn chain_blocks(seeds: &[crate::Seed], query: &[u8], target: &[u8], k: usize) -> Vec<LocalBlock> {
+    let finish = |first: Segment, last: Segment, ops: &[(usize, char)], edit_distance: usize| LocalBlock {
+        q_start: first.q,
+        q_end: last.q + last.len,
+        t_start: first.t,
+        t_end: last.t + last.len,
+        cigar: ops.iter().map(|(n, op)| format!("{n}{op}")).collect(),
+        edit_distance,
+    };
+    let mut blocks = Vec::new();
+    let mut ops: Vec<(usize, char)> = Vec::new();
+    let mut edit_distance = 0;
+    // (first, last) segment of the block being built.
+    let mut open: Option<(Segment, Segment)> = None;
+    for seg in chain_segments(seeds, query, target, k) {
+        open = match open {
+            None => Some((seg, seg)),
+            Some((first, last)) => {
+                let gap_q = &query[last.q + last.len..seg.q];
+                let gap_t = &target[last.t + last.len..seg.t];
+                match fill_gap(gap_q, gap_t, &mut ops) {
+                    Some(gap_ed) => {
+                        edit_distance += gap_ed;
+                        Some((first, seg))
+                    }
+                    None => {
+                        blocks.push(finish(first, last, &ops, edit_distance));
+                        ops.clear();
+                        edit_distance = 0;
+                        Some((seg, seg))
+                    }
+                }
+            }
+        };
+        push_op(&mut ops, seg.len, 'M');
+    }
+    if let Some((first, last)) = open {
+        blocks.push(finish(first, last, &ops, edit_distance));
+    }
+    blocks
+}
+
+/// `Strategy::Assembly` (ADR-0015): every chain in either orientation becomes local
+/// alignment blocks, replacing anchor selection, whole-query extension and the orientation
+/// winner. Blocks shorter than [`ASSEMBLY_MIN_BLOCK_LEN`] or below
+/// [`ASSEMBLY_MIN_BLOCK_IDENTITY`] are dropped; variants come from every kept block. Returns
+/// the result and the outcome to record (`Placed` iff a block is kept).
+#[allow(clippy::too_many_arguments)]
+fn align_assembly(
+    ctx: &TargetContext<'_>,
+    query: &Sequence,
+    prepared: &PreparedQuery,
+    plan: &PhrayaPlan,
+    config: &AlignConfig,
+    fwd_chains: &[crate::chaining::Chain],
+    rev_chains: &[crate::chaining::Chain],
+    had_seeds: bool,
+) -> (Option<AlignmentResult>, Outcome) {
+    let target = ctx.target.bases();
+    let orientations = [
+        (Strand::Forward, query.bases(), fwd_chains, Some(prepared.fwd_sketch.k)),
+        (Strand::Reverse, &prepared.rc_bases[..], rev_chains, prepared.rev_sketch.as_ref().map(|s| s.k)),
+    ];
+    let mut built = 0usize;
+    let mut kept: Vec<(Strand, LocalBlock, f64)> = Vec::new();
+    for (strand, bytes, chains, k) in orientations {
+        let Some(k) = k else { continue };
+        for chain in chains {
+            for block in chain_blocks(&chain.seeds, bytes, target, k) {
+                built += 1;
+                let identity =
+                    phraya_core::cigar::CigarStats::parse(&block.cigar).identity(block.edit_distance as u32);
+                if block.t_end - block.t_start >= ASSEMBLY_MIN_BLOCK_LEN && identity >= ASSEMBLY_MIN_BLOCK_IDENTITY {
+                    kept.push((strand, block, identity));
+                }
+            }
+        }
+    }
+    if kept.is_empty() {
+        let outcome = if !had_seeds {
+            Outcome::NoSeed
+        } else if built > 0 {
+            Outcome::BelowThreshold
+        } else {
+            Outcome::NoAlignment
+        };
+        return (None, outcome);
+    }
+
+    let raw_coverage: Vec<WindowedCoverage> = kept
+        .iter()
+        .map(|(_, b, _)| WindowedCoverage { start: b.t_start, counts: vec![1; b.t_end - b.t_start] })
+        .collect();
+    let mapq = query.mapq().unwrap_or(60);
+    let avg_base_quality = query.avg_quality().unwrap_or(60.0);
+    let mate_info = plan.mate_info.get(query.id());
+    let insert_stats: Option<(i64, u32)> = mate_info.map(|mi| (mi.insert_size.abs() as i64, 1u32));
+    let query_id: std::sync::Arc<str> = std::sync::Arc::from(query.id());
+    let query_len = query.len();
+
+    let mut variants = Vec::new();
+    let mut query_positions = Vec::with_capacity(kept.len());
+    let mut blocks = Vec::with_capacity(kept.len());
+    for (strand, b, identity) in &kept {
+        let bytes = match strand {
+            Strand::Forward => query.bases(),
+            Strand::Reverse => &prepared.rc_bases[..],
+        };
+        variants.extend(extract_variants_from_cigar(
+            &b.cigar,
+            b.t_start,
+            b.q_start,
+            bytes,
+            target,
+            b.edit_distance as u32,
+            query.id().to_string(),
+            &raw_coverage,
+            ctx.repeat_regions(),
+            mapq,
+            avg_base_quality,
+            *identity,
+            config.coverage_window_radius,
+            &plan.hotspot_intervals,
+            mate_info,
+            insert_stats,
+            *strand,
+        ));
+        query_positions.push((b.t_start as u32, *identity));
+        let (q_start, q_end) = match strand {
+            Strand::Forward => (b.q_start, b.q_end),
+            Strand::Reverse => (query_len - b.q_end, query_len - b.q_start),
+        };
+        blocks.push(AlignmentBlock {
+            query_id: query_id.clone(),
+            query_len: query_len as u32,
+            q_start: q_start as u32,
+            q_end: q_end as u32,
+            t_start: b.t_start as u32,
+            t_end: b.t_end as u32,
+            strand: *strand,
+            edit_distance: b.edit_distance as u32,
+            cigar: std::sync::Arc::from(b.cigar.as_str()),
+        });
+    }
+    let coverage = raw_coverage
+        .iter()
+        .map(|w| WindowedCoverage { start: w.start, counts: quantize_coverage(&w.counts) })
+        .collect();
+    (
+        Some(AlignmentResult { variants, coverage, raw_coverage, query_positions, blocks }),
+        Outcome::Placed,
+    )
 }
 
 /// Check if a position falls within any hotspot interval.
@@ -1160,10 +1451,12 @@ fn is_in_repeat_region(pos: usize, repeat_regions: &[phraya_core::RepeatRegion])
     idx > 0 && pos < repeat_regions[idx - 1].end
 }
 
-/// Parse CIGAR and extract VariantObservations at mismatch positions.
+/// Parse CIGAR and extract VariantObservations at mismatch positions. The CIGAR starts at
+/// `target_start` in `target` and at strand-local offset `query_start` in `query`.
 fn extract_variants_from_cigar(
     cigar: &str,
     target_start: usize,
+    query_start: usize,
     query: &[u8],
     target: &[u8],
     edit_distance: u32,
@@ -1182,7 +1475,7 @@ fn extract_variants_from_cigar(
     use std::sync::Arc;
 
     let mut variants = Vec::new();
-    let mut q_pos = 0usize;
+    let mut q_pos = query_start;
     let mut t_pos = target_start;
 
     // Share CIGAR and provenance allocations across all variants from this read
@@ -1439,13 +1732,11 @@ mod tests {
 
     fn make_plan() -> PhrayaPlan {
         PhrayaPlan::new(
-            phraya_io::plan::UseCase::ReadsWithRef,
-            vec!["test".to_string()],
-            "2026-06-01T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        )
+        vec!["test".to_string()],
+        "2026-06-01T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],)
     }
 
     #[test]
@@ -2416,5 +2707,151 @@ mod tests {
                 "WFA/Myers edit distance disagreement on protein bytes (seed={seed}, rate={rate})"
             );
         }
+    }
+
+    // ── Strategy::Assembly (ADR-0015) ────────────────────────────────────────────────
+
+    fn assembly_dna(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed;
+        (0..len)
+            .map(|_| {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                b"ACGT"[((x >> 33) & 3) as usize]
+            })
+            .collect()
+    }
+
+    fn with_snps(seq: &[u8], positions: &[usize]) -> Vec<u8> {
+        let mut out = seq.to_vec();
+        for &p in positions {
+            out[p] = match out[p] {
+                b'A' => b'C',
+                b'C' => b'G',
+                b'G' => b'T',
+                _ => b'A',
+            };
+        }
+        out
+    }
+
+    fn align_assembly_pair(query: &[u8], target: &[u8]) -> Option<AlignmentResult> {
+        let q = Sequence::new(query.to_vec(), None, "q".to_string(), None);
+        let t = Sequence::new(target.to_vec(), None, "t".to_string(), None);
+        align_task_with_config(&q, &t, &make_plan(), &AlignConfig::new(Strategy::Assembly))
+    }
+
+    fn block_spans(r: &AlignmentResult) -> Vec<(u32, u32, u32, u32)> {
+        r.blocks.iter().map(|b| (b.q_start, b.q_end, b.t_start, b.t_end)).collect()
+    }
+
+    #[test]
+    fn assembly_contained_query_is_one_exact_block() {
+        let target = assembly_dna(5_000, 1);
+        let r = align_assembly_pair(&target[1_000..4_000], &target).expect("contained query aligns");
+        assert_eq!(block_spans(&r), vec![(0, 3_000, 1_000, 4_000)]);
+        let b = &r.blocks[0];
+        assert_eq!((b.strand, b.edit_distance, &*b.cigar), (Strand::Forward, 0, "3000M"));
+        assert!(r.variants.is_empty());
+    }
+
+    #[test]
+    fn assembly_reports_every_interior_snp_with_its_allele() {
+        let target = assembly_dna(8_000, 2);
+        let snps: Vec<usize> = (150..7_850).step_by(97).collect();
+        let query = with_snps(&target, &snps);
+        let r = align_assembly_pair(&query, &target).expect("aligns");
+        assert_eq!(r.blocks.len(), 1, "one homologous region gives one block: {:?}", block_spans(&r));
+        let mut got: Vec<(u32, u8, u32)> = r
+            .variants
+            .iter()
+            .map(|v| {
+                assert_eq!(v.variant_type(), phraya_core::types::VariantType::Snp);
+                (v.position(), *v.all_alleles().keys().next().unwrap(), v.query_position())
+            })
+            .collect();
+        got.sort();
+        let want: Vec<(u32, u8, u32)> = snps.iter().map(|&p| (p as u32, query[p], p as u32)).collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn assembly_query_spanning_two_targets_gives_one_block_per_overlap() {
+        let a = assembly_dna(6_000, 3);
+        let b = assembly_dna(6_000, 4);
+        let mut query = a[4_000..].to_vec();
+        query.extend_from_slice(&b[..3_000]);
+        let ra = align_assembly_pair(&query, &a).expect("aligns to A");
+        let rb = align_assembly_pair(&query, &b).expect("aligns to B");
+        assert_eq!(block_spans(&ra), vec![(0, 2_000, 4_000, 6_000)]);
+        assert_eq!(block_spans(&rb), vec![(2_000, 5_000, 0, 3_000)]);
+    }
+
+    #[test]
+    fn assembly_reverse_complement_query_reports_forward_query_coordinates() {
+        let target = assembly_dna(6_000, 5);
+        let fwd = with_snps(&target[1_000..5_000], &[500, 2_000]);
+        let query = reverse_complement(&fwd);
+        let r = align_assembly_pair(&query, &target).expect("reverse-complemented query aligns");
+        assert_eq!(block_spans(&r), vec![(0, 4_000, 1_000, 5_000)]);
+        let b = &r.blocks[0];
+        assert_eq!(b.strand, Strand::Reverse);
+        let mut positions: Vec<u32> = r.variants.iter().map(|v| v.position()).collect();
+        positions.sort();
+        assert_eq!(positions, vec![1_500, 3_000]);
+        for v in &r.variants {
+            assert_eq!(v.strand(), Strand::Reverse);
+            assert!(b.contains_observation(v), "variant not attributed to its block: {v:?}");
+            // The alt allele is reported in reference orientation: the complement of the
+            // query base at the variant's forward query coordinate.
+            let fq = b.forward_query_position(v.query_position()) as usize;
+            let alt = *v.all_alleles().keys().next().unwrap();
+            assert_eq!(reverse_complement(&[query[fq]]), vec![alt]);
+        }
+    }
+
+    #[test]
+    fn assembly_small_indels_are_gap_filled_inside_one_block() {
+        let target = assembly_dna(6_000, 6);
+        let mut query = target[..2_000].to_vec();
+        query.extend_from_slice(&target[2_003..4_000]); // 3 bp deletion
+        query.extend_from_slice(b"GATTACA"); // 7 bp insertion
+        query.extend_from_slice(&target[4_000..]);
+        let r = align_assembly_pair(&query, &target).expect("aligns");
+        assert_eq!(block_spans(&r), vec![(0, 6_004, 0, 6_000)]);
+        assert_eq!(r.blocks[0].edit_distance, 10);
+        use phraya_core::types::VariantType;
+        let kinds: Vec<(VariantType, u32)> = r.variants.iter().map(|v| (v.variant_type(), v.position())).collect();
+        assert_eq!(kinds.len(), 2, "one deletion and one insertion: {kinds:?}");
+        assert!(kinds.iter().any(|&(k, p)| k == VariantType::Deletion && (1_995..=2_003).contains(&p)), "{kinds:?}");
+        assert!(kinds.iter().any(|&(k, p)| k == VariantType::Insertion && (3_995..=4_007).contains(&p)), "{kinds:?}");
+    }
+
+    #[test]
+    fn assembly_large_insertion_splits_the_block() {
+        let target = assembly_dna(6_000, 7);
+        let mut query = target[..3_000].to_vec();
+        query.extend(assembly_dna(400, 8));
+        query.extend_from_slice(&target[3_000..]);
+        let r = align_assembly_pair(&query, &target).expect("aligns");
+        assert_eq!(r.blocks.len(), 2, "a 400 bp insertion breaks the chain: {:?}", block_spans(&r));
+        let covered: u32 = r.blocks.iter().map(|b| b.t_end - b.t_start).sum();
+        assert!((5_990..=6_010).contains(&covered), "blocks cover {covered} bp: {:?}", block_spans(&r));
+        assert!(r.variants.is_empty(), "the insertion is a block boundary, not a variant");
+    }
+
+    #[test]
+    fn assembly_unrelated_sequences_have_no_block() {
+        assert!(align_assembly_pair(&assembly_dna(5_000, 9), &assembly_dna(5_000, 10)).is_none());
+    }
+
+    #[test]
+    fn assembly_long_divergent_contig_is_one_block() {
+        // 120 kb at 0.5% divergence: twice the length a whole-contig WFA survives (A1).
+        let target = assembly_dna(120_000, 11);
+        let snps: Vec<usize> = (100..119_900).step_by(200).collect();
+        let query = with_snps(&target, &snps);
+        let r = align_assembly_pair(&query, &target).expect("aligns");
+        assert_eq!(block_spans(&r), vec![(0, 120_000, 0, 120_000)]);
+        assert_eq!(r.variants.len(), snps.len());
     }
 }

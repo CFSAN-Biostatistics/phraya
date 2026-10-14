@@ -1,6 +1,6 @@
 use phraya_align::executor::{align_task_with_config, AlignConfig};
 use phraya_core::types::{Sequence, VariantObservation};
-use phraya_io::plan::{PhrayaPlan, UseCase};
+use phraya_io::plan::{PhrayaPlan};
 /// Issue #179: Share per-variant CIGAR/provenance to cut allocations (Tier 4)
 ///
 /// Tests verify that:
@@ -17,7 +17,6 @@ use std::sync::Arc;
 /// Helper: Create a simple test plan
 fn make_test_plan() -> PhrayaPlan {
     PhrayaPlan::new(
-        UseCase::ReadsWithRef,
         vec!["test".to_string()],
         "2026-07-13T00:00:00Z".to_string(),
         HashMap::new(),
@@ -184,13 +183,25 @@ fn issue_179_extract_variants_shares_arc_allocation() {
     let plan = make_test_plan();
     let config = AlignConfig::balanced();
 
-    // Create a query with many SNPs in a short region to generate multiple variants
+    fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed;
+        (0..len).map(|_| {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            b"ACGT"[((x >> 33) & 3) as usize]
+        }).collect()
+    }
+    // Use a shared diverse-DNA base (same seed for query and target prefix) so
+    // the alignment anchors at position 0 with real seeds. Poly-A alone causes
+    // no seeds and a 0.45 fallback score that suppresses all variants.
     let query_len = 100;
-    let mut query_bases = vec![b'A'; query_len];
-    let mut target_bases = vec![b'A'; query_len + 50];
+    let mut query_bases = diverse_dna(query_len, 42);
+    let mut target_bases = diverse_dna(query_len + 50, 42);  // same seed → prefix
 
-    // Insert 5 SNPs spread across the query
-    for pos in [10usize, 25, 40, 60, 80] {
+    // Insert 5 SNPs concentrated in a short region (positions 10-18) to generate
+    // multiple variants while leaving the query tail (19+) with shared minimizers
+    // for seeding — spreading them across the 100bp query at k=21 would make every
+    // 21-mer span a SNP, yielding zero shared minimizers and zero seeds.
+    for pos in [10usize, 12, 14, 16, 18] {
         query_bases[pos] = b'T';
         target_bases[pos] = b'C';
     }

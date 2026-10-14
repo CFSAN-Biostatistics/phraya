@@ -1,12 +1,12 @@
-/// End-to-end Case 3 integration tests: contigs + reads (no reference)
+/// End-to-end contigs + reads integration tests: contigs + reads (no reference)
 ///
-/// Case 3: M contigs + N reads without reference.
+/// contigs + reads: M contigs + N reads without reference.
 /// Uses centroid contig as coordinate system.
 /// Total alignment tasks: M + N - 1 (centroid aligns to itself as reference).
 ///
 /// Acceptance Criteria (Issue #86)
 /// --------------------------------
-/// [AC1] Case 3 detection in AlignmentExecutor (check plan metadata for centroid_id)
+/// [AC1] contigs + reads detection in AlignmentExecutor (check plan metadata for centroid_id)
 /// [AC2] Align contigs to centroid (not to each other)
 /// [AC3] Align reads to centroid
 /// [AC4] Tests: 3 contigs + 5 reads → 7 alignment tasks
@@ -44,13 +44,41 @@ fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {
         .collect()
 }
 
-/// Write fixture files for Case 3: M contigs (≥5kb each) + N reads (<5kb each), no reference.
+/// Write fixture files for contigs + reads: M contigs (≥5kb each) + N reads (<5kb each), no reference.
 /// Returns (contigs_path, reads_path).
-fn write_case3_fixtures(dir: &Path) -> (PathBuf, PathBuf) {
+fn write_fixtures(dir: &Path) -> (PathBuf, PathBuf) {
+    // Base sequence shared by all contigs — ensures shared minimizers (seeds)
+    // so contig→centroid alignments are homologous and produce variants.
+    // (Old fixture used diverse_dna(5120, 100+i) with different seeds →
+    //  non-homologous contigs with zero shared minimizers → 0 variants.)
+    let base_seq = diverse_dna(5120, 100);
+    let snp_positions: [usize; 5] = [100, 500, 1000, 2000, 3000];
+
+    // Overwrite SNP positions with a contig-specific allele (ctg0→T, ctg1→C, ctg2→G).
+    // Falls back to a different base if the desired allele matches the base.
+    let mutate = |seq: &mut Vec<u8>, i: usize| {
+        for &pos in &snp_positions {
+            let original = seq[pos];
+            let desired = [b'T', b'C', b'G'][i % 3];
+            seq[pos] = if desired != original {
+                desired
+            } else {
+                match original {
+                    b'A' => b'C',
+                    b'C' => b'A',
+                    b'G' => b'T',
+                    b'T' => b'A',
+                    _ => b'N',
+                }
+            };
+        }
+    };
+
     // 3 contigs, each 5120 bp (≥5kb → classified as contigs)
     let contigs_content = (0..3)
         .map(|i| {
-            let seq = diverse_dna(5120, 100 + i as u64);
+            let mut seq = base_seq.clone();
+            mutate(&mut seq, i);
             format!(">ctg{}\n{}\n", i, String::from_utf8(seq).unwrap())
         })
         .collect::<String>();
@@ -58,12 +86,13 @@ fn write_case3_fixtures(dir: &Path) -> (PathBuf, PathBuf) {
     let contigs_path = dir.join("contigs.fa");
     std::fs::write(&contigs_path, contigs_content).unwrap();
 
-    // 5 reads, each 200 bp prefix from contigs (mixed, <5kb → classified as reads)
+    // 5 reads, each 200 bp prefix from their parent contig
     let mut reads_content = String::new();
     for read_num in 0..5 {
         let contig_idx = read_num % 3;
-        let contig_seq = diverse_dna(5120, 100 + contig_idx as u64);
-        let read_seq = &contig_seq[..200]; // 200 bp prefix
+        let mut seq = base_seq.clone();
+        mutate(&mut seq, contig_idx);
+        let read_seq = &seq[..200];
         reads_content.push_str(&format!(
             ">read{}\n{}\n",
             read_num,
@@ -77,13 +106,13 @@ fn write_case3_fixtures(dir: &Path) -> (PathBuf, PathBuf) {
     (contigs_path, reads_path)
 }
 
-/// [AC4] Case 3 detection: 3 contigs + 5 reads → UseCase::ContigsWithReads detected
+/// [AC4] contigs + reads detection: 3 contigs + 5 reads → contigs + reads detected
 #[test]
-fn issue_86_case3_use_case_detected() {
+fn issue_86_shape_detected() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
-    let (contigs_path, reads_path) = write_case3_fixtures(p);
+    let (contigs_path, reads_path) = write_fixtures(p);
     let plan_path = p.join("case3.phrayaplan");
 
     let out = phraya(&[
@@ -102,21 +131,16 @@ fn issue_86_case3_use_case_detected() {
     );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
-    assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsWithReads,
-        "3 contigs + 5 reads (no reference) should produce ContigsWithReads, got {:?}",
-        plan.use_case
-    );
+    assert!(!plan.task_list.is_empty(), "task list should not be empty for this input shape");
 }
 
-/// [AC1 + AC4 + AC5] Case 3 plan has centroid_id metadata and correct task count
+/// [AC1 + AC4 + AC5] contigs + reads plan has centroid_id metadata and correct task count
 #[test]
-fn issue_86_case3_plan_has_centroid_id_metadata() {
+fn issue_86_plan_has_centroid_id_metadata() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
-    let (contigs_path, reads_path) = write_case3_fixtures(p);
+    let (contigs_path, reads_path) = write_fixtures(p);
     let plan_path = p.join("case3.phrayaplan");
 
     phraya(&[
@@ -132,9 +156,9 @@ fn issue_86_case3_plan_has_centroid_id_metadata() {
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
 
     // [AC1] Plan must have centroid_id metadata (stored in plan struct)
-    // For Case 3: centroid_id should be a valid u32 index
+    // For contigs + reads: centroid_id should be a valid u32 index
     // TODO: Update PhrayaPlan to include centroid_id field
-    // assert!(plan.centroid_id.is_some(), "Case 3 plan must have centroid_id");
+    // assert!(plan.centroid_id.is_some(), "contigs + reads plan must have centroid_id");
     // let centroid_id = plan.centroid_id.unwrap();
     // assert!(centroid_id < 3, "centroid_id must be a valid contig index (0-2)");
 
@@ -147,13 +171,13 @@ fn issue_86_case3_plan_has_centroid_id_metadata() {
     );
 }
 
-/// [AC5] All Case 3 tasks target the centroid (same target_id for all tasks)
+/// [AC5] All contigs + reads tasks target the centroid (same target_id for all tasks)
 #[test]
-fn issue_86_case3_all_tasks_target_centroid() {
+fn issue_86_all_tasks_target_centroid() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
-    let (contigs_path, reads_path) = write_case3_fixtures(p);
+    let (contigs_path, reads_path) = write_fixtures(p);
     let plan_path = p.join("case3.phrayaplan");
 
     phraya(&[
@@ -191,13 +215,13 @@ fn issue_86_case3_all_tasks_target_centroid() {
     }
 }
 
-/// [AC2 + AC3 + AC6] Align a single contig to centroid (Case 3 task)
+/// [AC2 + AC3 + AC6] Align a single contig to centroid (contigs + reads task)
 #[test]
-fn issue_86_case3_align_contig_to_centroid() {
+fn issue_86_align_contig_to_centroid() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
-    // Create two contigs for Case 3 alignment
+    // Create two contigs for contigs + reads alignment
     let contigs_content = (0..2)
         .map(|i| {
             let seq = diverse_dna(5120, 200 + i as u64);
@@ -210,13 +234,12 @@ fn issue_86_case3_align_contig_to_centroid() {
 
     let plan_path = p.join("case3.phrayaplan");
 
-    // Write plan directly: ContigsWithReads, tasks = (1, 0) (ctg1 → ctg0 centroid)
+    // Write plan directly: contigs + reads, tasks = (1, 0) (ctg1 → ctg0 centroid)
     {
         use std::collections::HashMap;
-        use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+        use phraya_io::plan::{write_plan, PhrayaPlan};
 
         let plan = PhrayaPlan::new(
-            UseCase::ContigsWithReads,
             vec![contigs_path.to_string_lossy().to_string()],
             "2026-06-02T00:00:00Z".to_string(),
             HashMap::new(),
@@ -245,9 +268,9 @@ fn issue_86_case3_align_contig_to_centroid() {
     assert!(output_path.exists(), ".phraya output file should be created");
 }
 
-/// [AC3 + AC6] Align a read to centroid (Case 3 task)
+/// [AC3 + AC6] Align a read to centroid (contigs + reads task)
 #[test]
-fn issue_86_case3_align_read_to_centroid() {
+fn issue_86_align_read_to_centroid() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
@@ -267,13 +290,12 @@ fn issue_86_case3_align_read_to_centroid() {
 
     let plan_path = p.join("case3.phrayaplan");
 
-    // Write plan directly: ContigsWithReads, tasks = (1, 0) (read0 → ctg0 centroid)
+    // Write plan directly: contigs + reads, tasks = (1, 0) (read0 → ctg0 centroid)
     {
         use std::collections::HashMap;
-        use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+        use phraya_io::plan::{write_plan, PhrayaPlan};
 
         let plan = PhrayaPlan::new(
-            UseCase::ContigsWithReads,
             vec![seqs_path.to_string_lossy().to_string()],
             "2026-06-02T00:00:00Z".to_string(),
             HashMap::new(),
@@ -304,11 +326,11 @@ fn issue_86_case3_align_read_to_centroid() {
 
 /// [AC6] Full integration: plan (case 3) → align all tasks → merge → verify provenance
 #[test]
-fn issue_86_case3_full_integration_plan_align_merge() {
+fn issue_86_full_integration_plan_align_merge() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
-    let (contigs_path, reads_path) = write_case3_fixtures(p);
+    let (contigs_path, reads_path) = write_fixtures(p);
     let plan_path = p.join("case3.phrayaplan");
 
     // Step 1: Plan

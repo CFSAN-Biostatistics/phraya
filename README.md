@@ -8,7 +8,7 @@ General-purpose pairwise sequence aligner for bacterial genomics. Short reads, l
 
 ## Status
 
-**Phase 1 MVP in development.** Architecture revision completed 2026-05-27. See [issue #58](https://github.com/CFSAN-Biostatistics/phraya/issues/58) for PRD.
+**Phase 1 MVP shipped (2026-06-06).** Architecture revision completed 2026-05-27. See [issue #58](https://github.com/CFSAN-Biostatistics/phraya/issues/58) for PRD.
 
 ## Installation
 
@@ -32,7 +32,7 @@ Most aligners force you to choose filtering parameters (mapping quality, coverag
 
 Phraya separates **alignment computation** from **filtering decisions**:
 
-1. **Plan**: Analyze inputs, detect use case, build k-mer evidence index
+1. **Plan**: Analyze inputs, detect input shape, build k-mer evidence index against content-hashed reference spaces
 2. **Align**: Execute alignments, store rich metadata (multi-mapping, CIGAR, coverage)
 3. **Filter**: Experiment with different parameters without re-aligning
 
@@ -41,7 +41,7 @@ Cache alignment results. Try different filters. Reuse for multiple downstream an
 ## Pipeline
 
 ```bash
-# 1. Create alignment plan (detects use case, builds k-mer evidence)
+# 1. Create alignment plan (detects input shape, builds k-mer evidence)
 phraya plan --inputs reads/*.fastq --reference ref.fasta --output cohort.phrayaplan
 
 # 2. Extract task list for parallel execution
@@ -56,17 +56,35 @@ phraya filter cohort_merged.phraya --min-coverage 10 --min-mapq 30 --format vcf 
 phraya filter cohort_merged.phraya --min-coverage 5 --max-multi-map-fraction 0.3 --format tsv > variants.tsv
 ```
 
-## Use Cases
+## Inputs
 
-Phraya automatically detects your workflow:
+Phraya aligns reads or contigs against one or more content-hashed reference spaces (a single
+reference is the degenerate case). The input shape — reads vs contigs, presence of a reference —
+is auto-detected at plan time.
 
-- **Case 2** (main use case): N reads + reference → traditional BWA-like alignment
-- **Case 3** (key innovation): M contigs + N reads, no reference → selects centroid, aligns all to it
-- **Case 4**: M contigs ± reference → minimap2-like contig alignment
+- **Reads + reference** (`reads-with-ref`): traditional BWA-like alignment
+- **Contigs + reads** (`contigs-with-reads`, no reference): selects a centroid contig, aligns all inputs to it
+- **Contigs** (`contigs-only`, with or without reference): minimap2-like contig-to-contig alignment
 
-All three work over DNA or protein sequences — `phraya plan --alphabet {auto|dna|protein}`
+All shapes work over DNA or protein sequences — `phraya plan --alphabet {auto|dna|protein}`
 auto-detects amino-acid input from content by default (ADR-0013); no separate command or
 workflow for protein alignment.
+
+### Assembly vs assembly (dnadiff-style SNP comparison)
+
+```bash
+phraya plan --reference ref_assembly.fasta --inputs query_assembly.fasta --output pair.phrayaplan
+phraya align --reference ref_assembly.fasta pair.phrayaplan --output aln/ --strategy assembly
+phraya filter aln/*.phraya --format snpdiffs \
+    --reference-fasta ref_assembly.fasta --query-fasta query_assembly.fasta \
+    --reference-id REF --query-id QRY --output pair.snpdiffs
+```
+
+`--strategy assembly` aligns every homologous region of each query contig as its own local
+block (one `.phraya` per reference contig). `--format snpdiffs` selects blocks one-to-one
+across all reference contigs (like `delta-filter -1`) and writes CSP2's `.snpdiffs` format:
+one BED row per kept block, `.` rows for uncovered regions, and one row per variant inside a
+kept block, with header coverage computed from those blocks (ADR-0015).
 
 ## Key Features
 
@@ -86,12 +104,12 @@ Workspace with 5 crates:
 - **phraya-io**: FASTA/FASTQ/BAM/CRAM parsing, `.phrayaplan`/`.phraya`/`.phraya.queries` formats (MessagePack + zstd)
 - **phraya-align**: WFA extension, SIMD diagonal fill (SSE4.2/NEON), seeding from minimizer sketches
 - **phraya-filter**: Filtering library (threshold/expression/preset), output formatters (VCF/TSV/phraya)
-- **phraya** (`phraya-cli/`): Binary CLI (plan/plan-tasks/align/filter subcommands)
+- **phraya** (`phraya-cli/`): Binary CLI (plan/plan-tasks/align/merge/filter/qc subcommands)
 
 ## File Formats
 
-- **`.phrayaplan`** (v2): Plan file (k-mer evidence + task list). Read-only during alignment. Binary MessagePack + zstd.
-- **`.phraya`**: Position index (variant observations + coverage track). Mergeable. Binary MessagePack + zstd.
+- **`.phrayaplan`** (v7): Plan file (k-mer evidence + task list + read/contig sketches). Read-only during alignment. Chunk-addressable, seekable zstd frames; workers load only the chunk they need.
+- **`.phraya`** (v2): Position index (variant observations + coverage track, plus the local alignment blocks of `--strategy assembly`). Mergeable. Binary MessagePack + zstd. v1 files still read.
 - **`.phraya.queries`**: Query index (multi-mapping alternatives per read). Sidecar file. Binary MessagePack + zstd.
 
 ## Installation
@@ -191,7 +209,7 @@ We use canonical minimizers with default parameters k=21, w=11 (appropriate for 
 - **Alphabet auto-detection**: content is classified `Protein` iff it contains any of E/F/I/L/P/Q — one-letter amino-acid codes with no IUPAC nucleotide meaning (every other amino-acid letter doubles as a valid DNA base or ambiguity code). `--alphabet {dna|protein}` overrides detection for the one genuine ambiguity: a short peptide spelled entirely in residues that are also valid nucleotide letters (e.g. only A/C/G/T-coding residues) is indistinguishable from DNA by content alone.
 - **Gap-affine scoring in `sensitive`** (ADR-0014): `gap_open=4, gap_extend=1, mismatch=2` (hard-coded). `gap_open+gap_extend=5 > mismatch` keeps an isolated SNP cheaper than opening any gap; `gap_extend=1` makes a run of ≥2 gap bases cheaper than the equivalent run of mismatches once a gap is open, so real multi-base indels consolidate into one CIGAR op instead of scattering across cost-tied mismatches. The affine cost only steers *which* alignment the search picks — reported `edit_distance` stays the traditional mismatches+indel-bases count either way. `balanced`/`fast` are unaffected (Myers-primary, no affine mode); `--gap-model linear` opts `sensitive` back into the old uniform-cost path.
 - **Coverage quantization**: Depths below 5 stored exact (the boundary that matters most for coverage-breadth thresholds); 5 and above round to nearest 5. Enables RLE compression with negligible precision loss for variant calling decisions.
-- **Sketch reuse**: Plan-time sketches stored in `.phrayaplan` (v2) keyed by sequence ID; alignment reuses them rather than recomputing.
+- **Sketch reuse**: Plan-time sketches stored in `.phrayaplan` (v7) keyed by sequence ID; alignment reuses them rather than recomputing.
 
 ## Inspired By
 
@@ -200,23 +218,31 @@ We use canonical minimizers with default parameters k=21, w=11 (appropriate for 
 Phraya differentiates on:
 - Richer intermediate format (more cacheable/reusable)
 - More deferred parameters (multi-mapping, coverage computed during alignment, filtered post-hoc)
-- Case 3 (contigs + reads without reference via centroid selection)
+- Contigs + reads without an explicit reference: auto-selects a centroid to establish the coordinate space
 
-## Phase 1 MVP Scope
+## Implementation Status
 
-**In scope:**
-- Cases 2 (reads + ref), 3 (contigs + reads), 4 (contigs only)
-- K-mer evidence (uniqueness only)
-- Threshold-based filtering
-- VCF/TSV/phraya output formats
-- Library API (phraya-filter)
+**Phase 1 MVP** (shipped 2026-06-06):
+
+- Reads + reference, contigs + reads (auto-centroid), contigs-only — all working end-to-end
+- Automatic centroid selection for contigs + reads without a reference; `--reference` overrides it
+- `.phrayaplan` v7 with sketch reuse (chunk-addressable, seekable zstd frames)
+- Real WFA O(s·n) alignment (wavefront-based)
+- SIMD-accelerated match extension (`count_matching_prefix`: SSE2/NEON/AVX2/AVX-512 with runtime dispatch)
+- Local coverage (±50bp window), mapq, avg base quality, confidence from input data
+- Tandem repeat detection: annotation on variants, `exclude_tandem_repeats` filter option
+- Variation hotspot detection (low k-mer-uniqueness regions) computed at plan time
+- `phraya filter`: threshold-based + named presets (strict / tolerant) + expression filters (`--expr`)
+- QC-layer filter fields: `identity`, `match_fraction`, `aligned_length`, `edge_distance`, `snp_density_15/125/1000`; `phraya qc` coverage-breadth report
+- `phraya merge` preserves per-observation QC fields (tandem repeat, variant type, k-mer uniqueness, strand, mate info)
 
 **Phase 2+:**
-- Case 1 (read MSA without reference)
-- Expression-based filters (`--expr`)
-- Named presets (`--preset strict|tolerant`)
-- Variation hotspot estimation
-- Python/R bindings
+
+- Reads-only MSA without a reference
+- Two-tier evidence (k-mer → alignment refinement)
+- Python / R bindings
+- Advanced coverage: per-base breakdown (not just ±50bp window)
+- CRAM parsing with external reference (currently only reference-free/unmapped CRAM records)
 - GPU acceleration
 
 ## For Maintainers

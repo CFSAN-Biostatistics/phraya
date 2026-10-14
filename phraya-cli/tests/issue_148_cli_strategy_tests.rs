@@ -3,13 +3,12 @@
 
 use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::Sequence;
-use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+use phraya_io::plan::{write_plan, PhrayaPlan};
 use std::collections::HashMap;
 use tempfile::TempDir;
 
 fn make_plan_with_fasta(fasta_path: &str) -> PhrayaPlan {
     PhrayaPlan::new(
-        UseCase::ReadsWithRef,
         vec![fasta_path.to_string()],
         "2026-06-06T00:00:00Z".to_string(),
         HashMap::new(),

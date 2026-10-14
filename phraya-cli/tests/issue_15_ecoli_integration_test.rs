@@ -108,7 +108,6 @@ fn issue_15_variant_count_within_tolerance() {
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
     let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
         vec![fasta_path.to_string_lossy().to_string()],
         "2026-06-07T00:00:00Z".to_string(),
         kmer_index,
@@ -188,7 +187,6 @@ fn issue_15_mean_confidence_exceeds_threshold() {
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
     let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
         vec![fasta_path.to_string_lossy().to_string()],
         "2026-06-07T00:00:00Z".to_string(),
         kmer_index,
@@ -261,7 +259,6 @@ fn issue_15_full_pipeline_with_plan_file() {
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
     let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
         vec![fasta_path.to_string_lossy().to_string()],
         "2026-06-07T00:00:00Z".to_string(),
         kmer_index,
@@ -357,7 +354,6 @@ fn issue_15_perfect_match_no_variants() {
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
     let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
         vec![fasta_path.to_string_lossy().to_string()],
         "2026-06-07T00:00:00Z".to_string(),
         kmer_index,
@@ -420,7 +416,6 @@ fn issue_15_coverage_track_valid() {
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
     let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
         vec![fasta_path.to_string_lossy().to_string()],
         "2026-06-07T00:00:00Z".to_string(),
         kmer_index,

@@ -366,7 +366,7 @@ pub(crate) fn default_max_s_cap(query_len: usize, target_len: usize) -> usize {
 /// tests and callers that need an exact, guaranteed result on bounded-size input).
 ///
 /// Returns `None` if the cap is exhausted before a fitting-end is found.
-fn fill_wfa(q: &[u8], t: &[u8], max_s_cap: Option<usize>) -> Option<(String, usize)> {
+pub(crate) fn fill_wfa(q: &[u8], t: &[u8], max_s_cap: Option<usize>) -> Option<(String, usize)> {
     let qn = q.len() as i32;
     let tn = t.len() as i32;
 
@@ -3247,6 +3247,7 @@ mod wfa_algorithm_tests {
     // edit_dist ≈ 10 edits, O(n×m) = 100M cells, WFA = O(s*n) = 100k ops → 1000x faster.
 
     #[test]
+    #[cfg_attr(debug_assertions, ignore = "10 ms wall-clock budget assumes an optimized build")]
     fn wfa_is_faster_than_on2_for_sparse_edits_windowed() {
         use std::time::Instant;
         // 150bp query vs 300bp windowed target (2% divergence → edit_dist ≈ 3)

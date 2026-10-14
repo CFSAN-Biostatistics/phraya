@@ -12,7 +12,7 @@
 /// 5. `align --strategy sensitive` on a `--sparse` plan errors rather than silently under-seeding.
 
 use std::collections::HashMap;
-use phraya_io::plan::{PhrayaPlan, UseCase, PHRAYAPLAN_VERSION};
+use phraya_io::plan::{PhrayaPlan, PHRAYAPLAN_VERSION};
 use phraya_core::types::{Sequence, sketch_sequence_default, DEFAULT_K, DEFAULT_W};
 use tempfile::NamedTempFile;
 use phraya_io::plan::{write_plan, read_plan, PlanError};
@@ -41,7 +41,6 @@ fn test_sequence_longer() -> Sequence {
 /// Create a minimal test plan
 fn minimal_plan() -> PhrayaPlan {
     PhrayaPlan::new(
-        UseCase::ReadsWithRef,
         vec!["test.fa".to_string()],
         "2026-07-03T00:00:00Z".to_string(),
         HashMap::new(),
@@ -194,24 +193,40 @@ fn issue_182_plan_version_bumped() {
 /// with a clear VersionMismatch error, not a silent data corruption.
 ///
 /// Expected: read_plan() returns PlanError::VersionMismatch with helpful message
-/// once PHRAYAPLAN_VERSION is bumped to 5.
 ///
-/// Old-format plans (pre-v7, no "PHR7" magic) must be hard-rejected.
-/// v7 uses a magic-byte header that old single-frame zstd files won't have.
+/// Old-format plans (pre-v8, no "PHR8" magic) must be hard-rejected.
+/// v8 uses a magic-byte header that old single-frame zstd files won't have.
 #[test]
 fn issue_182_old_plan_v4_rejected_with_clear_message() {
     // Simulate an old plan by writing bytes that start with zstd magic (0xFD2FB528)
-    // instead of PHR7. Any file without the PHR7 header is rejected as legacy format.
+    // instead of PHR8. Any file without the PHR8 header is rejected as legacy format.
     let temp = NamedTempFile::new().unwrap();
-    // Zstd magic bytes followed by garbage — triggers the "not v7" detection path
+    // Zstd magic bytes followed by garbage — triggers the "not v8" detection path
     std::fs::write(temp.path(), b"\xfd\x2f\xb5\x28\x00\x00\x00\x00garbage").unwrap();
 
     match read_plan(temp.path()) {
         Err(PlanError::VersionMismatch { expected, got }) => {
-            assert_eq!(expected, 7, "expected version should be 7 (current)");
-            assert_eq!(got, 6, "non-v7 files report as v6 (legacy format)");
+            assert_eq!(expected, PHRAYAPLAN_VERSION, "expected version should be current");
+            assert_eq!(got, 6, "non-v8 files report as v6 (legacy format)");
         }
         Ok(_) => panic!("old plan format should be rejected"),
+        Err(e) => panic!("unexpected error type: {:?}", e),
+    }
+}
+
+/// A plan written by the previous chunk-addressable format (`PHR7`) must be rejected
+/// and reported as version 7, not folded into the legacy "6" bucket.
+#[test]
+fn issue_182_phr7_plan_rejected_as_version_7() {
+    let temp = NamedTempFile::new().unwrap();
+    std::fs::write(temp.path(), b"PHR7\x0c\x00\x00\x00\x00\x00\x00\x00garbage").unwrap();
+
+    match read_plan(temp.path()) {
+        Err(PlanError::VersionMismatch { expected, got }) => {
+            assert_eq!(expected, PHRAYAPLAN_VERSION);
+            assert_eq!(got, 7, "PHR7 magic must be reported as version 7");
+        }
+        Ok(_) => panic!("PHR7 plan should be rejected"),
         Err(e) => panic!("unexpected error type: {:?}", e),
     }
 }

@@ -13,7 +13,7 @@ Phase 1 MVP is largely implemented and functional. Cases 2, 3, 4 work end-to-end
 ### 1.1 End-to-End Pipeline (Cases 2, 3, 4)
 - **Case 2** (N reads + ref → N alignments): `integration_test_e2e_case2.rs` — 8/8 tests pass (SNP calling, VCF output, coverage filters)
 - **Case 3** (M contigs + N reads, no ref → auto-centroid): `integration_test_e2e_case3.rs` — `issue_89_e2e_case3_pipeline_succeeds` passes (133s wall time)
-- **Case 4** (M contigs ± ref): `integration_test_plan.rs::issue_68_plan_case4_contigs_only` passes
+- **Case 4** (M contigs ± ref): `integration_test_plan.rs::issue_68_plan_contigs_only` passes
 
 ### 1.2 Real WFA Alignment
 - WFA O(s·n) algorithm implemented at `phraya-align/src/wfa_simd.rs:95` (`fill_wfa_fitting`).

@@ -177,6 +177,7 @@ fn multi_input_snpdiffs_merges_contig_files() {
         "--reference", ref_fasta.to_str().unwrap(),
         p.join("plan.phrayaplan").to_str().unwrap(),
         "--output", out_dir.to_str().unwrap(),
+        "--strategy", "assembly",
     ]);
     assert!(align_out.status.success(), "align failed: {}", String::from_utf8_lossy(&align_out.stderr));
 
@@ -206,14 +207,12 @@ fn multi_input_snpdiffs_merges_contig_files() {
     assert!(header.iter().any(|f| f == &"SNPs:4"), "header SNPs should be 4 (2 per contig), got: {:?}",
         header.iter().find(|f| f.starts_with("SNPs")));
 
-    // ── Two BED rows (one per reference contig) ──
+    // ── One BED block row per reference contig, each with its real query contig ──
     let bed1: Vec<&str> = lines[1].split('\t').collect();
-    assert_eq!(bed1[0], "##");
-    assert_eq!(bed1[1], "ref1");
+    assert_eq!((bed1[0], bed1[1], bed1[6]), ("##", "ref1", "query1"));
 
     let bed2: Vec<&str> = lines[2].split('\t').collect();
-    assert_eq!(bed2[0], "##");
-    assert_eq!(bed2[1], "ref2");
+    assert_eq!((bed2[0], bed2[1], bed2[6]), ("##", "ref2", "query2"));
 
     // ── Variant rows: 2 per contig, with correct Ref_Contig ──
     let var_lines: Vec<&str> = lines[3..]
