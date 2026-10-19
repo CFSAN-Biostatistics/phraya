@@ -72,12 +72,12 @@ echo "=== Phase 1: Plan Creation ===" >&2
 echo "=== Phase 2: Align with phraya --strategy long-read ===" >&2
 START_PHRAYA=$(date +%s.%N)
 "$PHRAYA" align --strategy long-read --reference "$REF" --output "$OUT_DIR/phraya" "$PLAN" 2>&1 | tee "$OUT_DIR/phraya_align.log" || PHRAYA_FAILED=1
-ELAPSED_PHRAYA=$(awk "BEGIN{printf \"%.3f\", \$(date +%s.%N) - $START_PHRAYA}")
+ELAPSED_PHRAYA=$(awk -v s="$START_PHRAYA" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
 
 echo "=== Phase 3: Align with minimap2 -ax map-ont ===" >&2
 START_MM2=$(date +%s.%N)
-"$MINIMAP2" -ax map-ont -t 1 "$MMI" "$READS" > "$OUT_DIR/minimap2.sam" 2>&1
-ELAPSED_MM2=$(awk "BEGIN{printf \"%.3f\", \$(date +%s.%N) - $START_MM2}")
+"$MINIMAP2" -ax map-ont -t 1 "$MMI" "$READS" > "$OUT_DIR/minimap2.sam" 2> "$OUT_DIR/minimap2.log"
+ELAPSED_MM2=$(awk -v s="$START_MM2" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
 
 echo "=== Phase 4: Placement Accuracy ===" >&2
 
