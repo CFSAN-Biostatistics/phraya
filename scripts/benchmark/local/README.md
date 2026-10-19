@@ -43,6 +43,29 @@ ADR-0013 ships; the script fails clearly at the `plan` step until then. Data
 generation (`gen_synthetic_protein.py`) works today and is independently
 useful for validating the generator.
 
+## Running on Reedling2
+
+Reedling2 provides third-party tools through environment modules (not on
+`PATH` by default). Inspect what is installed with `module avail`; load with
+`module load <name>/<version>`. Known-good for these scripts:
+
+| Tool | Module |
+|---|---|
+| minimap2 2.28 | `minimap2/2.28` |
+| samtools 1.20 | `samtools/1.20` |
+
+Non-interactive `ssh host "cmd"` shells don't define `module` until
+`/etc/profile` is sourced. `run_local_bench_long.sh` handles this itself: if
+`minimap2`/`samtools` aren't on `PATH` it sources `/etc/profile` and loads
+`MODULE_MINIMAP2` (default `minimap2/2.28`) / `MODULE_SAMTOOLS` (default
+`samtools/1.20`). Inside SLURM jobs the module system is unreliable, so
+`slurm/config/global.env` uses absolute micromamba paths instead.
+
+Build the binary with `cargo build --release -p phraya` (the package is
+`phraya`, not `phraya-cli`) and confirm the binary's mtime is newer than the
+last `git pull` before benchmarking — a failed build otherwise silently
+benchmarks the stale binary.
+
 ## Scripts
 
 | Script | Role |

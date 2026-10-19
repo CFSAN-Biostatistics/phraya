@@ -2,8 +2,10 @@
 # Local benchmark for long-read alignment (ONT/PacBio style)
 # Usage: run_local_bench_long.sh <label> [genome_size=5M] [num_reads=50] [min_len=10000] [max_len=30000]
 #
-# NOTE: Requires minimap2 and samtools to be installed and accessible in PATH.
-# Run on Reedling2 HPC for best results.
+# NOTE: Requires minimap2 and samtools. If they are not already on PATH, the
+# script loads them via the environment-modules system (Reedling2:
+# MODULE_MINIMAP2=minimap2/2.28, MODULE_SAMTOOLS=samtools/1.20; list others
+# with `module avail`). Override MINIMAP2/SAMTOOLS to use explicit binaries.
 set -euo pipefail
 
 LABEL="${1:?usage: run_local_bench_long.sh <label> [genome_size=5M] [num_reads=50] [min_len=10000] [max_len=30000]}"
@@ -13,9 +15,25 @@ MIN_LEN="${4:-10000}"
 MAX_LEN="${5:-30000}"
 
 BENCH_DIR="${BENCH_DIR:-${TMPDIR:-/tmp}/phraya-bench-long}"
-PHRAYA="${PHRAYA:-$(pwd)/target/release/phraya.exe}"
+if [[ -z "${PHRAYA:-}" ]]; then
+    PHRAYA="$(pwd)/target/release/phraya"
+    [[ -x "$PHRAYA" ]] || PHRAYA="$PHRAYA.exe"
+fi
+MODULE_MINIMAP2="${MODULE_MINIMAP2:-minimap2/2.28}"
+MODULE_SAMTOOLS="${MODULE_SAMTOOLS:-samtools/1.20}"
 MINIMAP2="${MINIMAP2:-minimap2}"
 SAMTOOLS="${SAMTOOLS:-samtools}"
+
+# Tools on Reedling2 are provided via `module`; non-interactive shells (ssh
+# command, batch) don't define it until /etc/profile is sourced.
+load_tool() {  # load_tool <binary> <module>
+    command -v "$1" >/dev/null 2>&1 && return 0
+    type module >/dev/null 2>&1 || source /etc/profile >/dev/null 2>&1 || true
+    type module >/dev/null 2>&1 && module load "$2" >/dev/null 2>&1 || true
+    command -v "$1" >/dev/null 2>&1 || { echo "ERROR: $1 not found and 'module load $2' failed (see 'module avail')" >&2; exit 1; }
+}
+load_tool "$MINIMAP2" "$MODULE_MINIMAP2"
+load_tool "$SAMTOOLS" "$MODULE_SAMTOOLS"
 PYTHON="${PYTHON3:-python3}"
 GEN_LONG="$(dirname "$0")/gen_synthetic_long.py"
 ACCURACY_PY="$(dirname "$0")/../slurm/utils/long_read_accuracy.py"
