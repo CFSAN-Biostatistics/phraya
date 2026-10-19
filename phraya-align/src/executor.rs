@@ -634,9 +634,15 @@ pub fn align_task_with_config(
 fn seed_and_chain(
     ctx: &TargetContext<'_>,
     query_sketch: &MinimizerSketch,
+    strategy: Strategy,
 ) -> (Vec<crate::Seed>, Vec<crate::chaining::Chain>) {
     let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
-    let chains = crate::chaining::chain_seeds(&seeds, &crate::chaining::ChainParams::default());
+    let params = if strategy == Strategy::Assembly {
+        crate::chaining::ChainParams::for_assembly()
+    } else {
+        crate::chaining::ChainParams::default()
+    };
+    let chains = crate::chaining::chain_seeds(&seeds, &params);
     (seeds, chains)
 }
 
@@ -975,12 +981,11 @@ pub fn align_read_prepared(
         }
     };
 
-    let (fwd_seeds, fwd_chains) = seed_and_chain(ctx, &prepared.fwd_sketch);
+    let (fwd_seeds, fwd_chains) = seed_and_chain(ctx, &prepared.fwd_sketch, config.strategy);
     let (rev_seeds, rev_chains) = match &prepared.rev_sketch {
-        Some(s) => seed_and_chain(ctx, s),
+        Some(s) => seed_and_chain(ctx, s, config.strategy),
         None => (Vec::new(), Vec::new()),
     };
-
     // Whether the read shared any minimizer with the target (in either orientation).
     // Distinguishes a seeding loss from an extension/divergence loss when classifying an
     // unplaced read.
@@ -1186,6 +1191,17 @@ struct LocalBlock {
     cigar: String,
     edit_distance: usize,
 }
+/// Drop exact duplicate `(strand, block)` entries, keeping the first occurrence of each.
+/// Full-scan (not `dedup_by`), so non-adjacent duplicates are also collapsed.
+fn dedup_blocks(kept: &mut Vec<(Strand, LocalBlock, f64)>) {
+    let mut out: Vec<(Strand, LocalBlock, f64)> = Vec::with_capacity(kept.len());
+    for e in kept.drain(..) {
+        if !out.iter().any(|o| o.0 == e.0 && o.1 == e.1) {
+            out.push(e);
+        }
+    }
+    *kept = out;
+}
 
 /// Turn a chain's seeds into ordered, non-overlapping exact-match segments.
 ///
@@ -1362,7 +1378,12 @@ fn align_assembly(
         };
         return (None, outcome);
     }
-
+    // ADR-0015 has no anchor selection, so every seed cluster grows to its maximal exact match;
+    // on a long near-identical contig, chaining's `max_dist_x`/`max_iter` back-scan bounds
+    // split one clean diagonal into several independent chains, each emitting the same
+    // `(strand, coords, cigar)` block. Collapse those duplicates here, before variant
+    // extraction and the coverage build. See §7 of the CSP2 assembly-verification handoff.
+    dedup_blocks(&mut kept);
     let raw_coverage: Vec<WindowedCoverage> = kept
         .iter()
         .map(|(_, b, _)| WindowedCoverage { start: b.t_start, counts: vec![1; b.t_end - b.t_start] })
@@ -2168,12 +2189,12 @@ mod tests {
             "q".to_string(),
             None,
         ));
-        let (fwd_seeds, fwd_chains) = seed_and_chain(&ctx, &fwd_sketch);
+        let (fwd_seeds, fwd_chains) = seed_and_chain(&ctx, &fwd_sketch, Strategy::Balanced);
 
         let rc_bytes = reverse_complement(&true_fwd_read);
         let rc_sketch =
             sketch_sequence_default(&Sequence::new(rc_bytes, None, "q_rc".to_string(), None));
-        let (rc_seeds, rc_chains) = seed_and_chain(&ctx, &rc_sketch);
+        let (rc_seeds, rc_chains) = seed_and_chain(&ctx, &rc_sketch, Strategy::Balanced);
 
         assert_eq!(
             fwd_seeds.len(),
@@ -2854,4 +2875,111 @@ mod tests {
         assert_eq!(block_spans(&r), vec![(0, 120_000, 0, 120_000)]);
         assert_eq!(r.variants.len(), snps.len());
     }
+
+    /// §7: on a long near-identical contig, `chain_seeds` (bounded by `max_dist_x`/`max_iter`)
+    /// can split one clean diagonal into several independent chains; each grows via
+    /// `chain_segments` to the same maximal exact match, so without dedup the same block would
+    /// repeat (observed: 16 identical blocks on a 615 kb self-match in Contig_28). The dedup
+    /// in `align_assembly` collapses them. This test asserts the dedup invariant — no two
+    /// emitted blocks are identical — which holds whether or not the diagonal splits on the
+    /// synthetic seed (it does not split at 50 kb, so the test also guards against a regression
+    /// that would *introduce* duplicates). The block itself is still correct.
+    #[test]
+    fn assembly_self_match_has_no_duplicate_blocks() {
+        let target = assembly_dna(50_000, 1);
+        let r = align_assembly_pair(&target, &target).expect("self-match aligns");
+        let spans: Vec<(u32, u32, u32, u32, &str)> = r
+            .blocks
+            .iter()
+            .map(|b| (b.q_start, b.q_end, b.t_start, b.t_end, &*b.cigar))
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for s in &spans {
+            assert!(seen.insert(*s), "duplicate block in self-match: {spans:?}");
+        }
+    }
+
+    fn block(coords: (usize, usize, usize, usize), cigar: &str) -> LocalBlock {
+        LocalBlock {
+            q_start: coords.0,
+            q_end: coords.1,
+            t_start: coords.2,
+            t_end: coords.3,
+            cigar: cigar.to_string(),
+            edit_distance: 0,
+        }
+    }
+
+    #[test]
+    fn dedup_blocks_is_order_preserving_and_handles_non_adjacent_duplicates() {
+
+        let a = block((0, 1000, 0, 1000), "1000M");
+        let b = block((1000, 2000, 1000, 2000), "1000M");
+        let cases: Vec<(Vec<(Strand, LocalBlock, f64)>, Vec<(Strand, LocalBlock, f64)>)> = vec![
+            // adjacent duplicates collapse to one
+            (
+                vec![(Strand::Forward, a.clone(), 1.0), (Strand::Forward, a.clone(), 1.0)],
+                vec![(Strand::Forward, a.clone(), 1.0)],
+            ),
+            // a non-adjacent third equal to the first is dropped, order kept
+            (
+                vec![
+                    (Strand::Forward, a.clone(), 1.0),
+                    (Strand::Forward, b.clone(), 1.0),
+                    (Strand::Forward, a.clone(), 1.0),
+                ],
+                vec![(Strand::Forward, a.clone(), 1.0), (Strand::Forward, b.clone(), 1.0)],
+            ),
+            // different strands are independent and both kept
+            (
+                vec![(Strand::Forward, a.clone(), 1.0), (Strand::Reverse, a.clone(), 1.0)],
+                vec![(Strand::Forward, a.clone(), 1.0), (Strand::Reverse, a.clone(), 1.0)],
+            ),
+            // dedup is on (strand, block) only; differing identity does not prevent a collapse
+            (
+                vec![(Strand::Forward, a.clone(), 1.0), (Strand::Forward, a.clone(), 0.9)],
+                vec![(Strand::Forward, a.clone(), 1.0)],
+            ),
+        ];
+        for (mut input, want) in cases {
+            dedup_blocks(&mut input);
+            assert_eq!(input, want, "got {input:?}, want deduped to first occurrences");
+        }
+    }
+
+    /// §4 spacing sweep: dense SNP clusters where no clean 21-mer anchor survives should still
+    /// recover every SNP once the chain spans the zero-drift gap. Probing several spacings
+    /// records where recovery holds and where the chain splits.
+    #[test]
+    fn assembly_cluster_spacing_sweep_calls_all_snps() {
+        use phraya_core::types::VariantType;
+        let target = assembly_dna(12_000, 3);
+        let center = 6_000usize;
+        let n = 8usize;
+        let mut results: Vec<(usize, usize)> = Vec::new();
+        for spacing in [5, 10, 20, 50] {
+            let pos: Vec<usize> = (0..n).map(|i| center + i * spacing).collect();
+            let query = with_snps(&target, &pos);
+            let r = align_assembly_pair(&query, &target).expect("sweep pair aligns");
+            let mut called: Vec<u32> = r
+                .variants
+                .iter()
+                .filter(|v| v.variant_type() == VariantType::Snp)
+                .map(|v| v.position())
+                .collect();
+            called.sort_unstable();
+            results.push((spacing, called.len()));
+            assert_eq!(
+                called.len(),
+                n,
+                "spacing={spacing} only {}/{} SNPs: {called:?} blocks={:?}",
+                called.len(),
+                n,
+                block_spans(&r)
+            );
+        }
+        let summary: Vec<String> = results.iter().map(|(s, c)| format!("{s}bp:{c}")).collect();
+        eprintln!("cluster spacing sweep: {}", summary.join(", "));
+    }
+
 }

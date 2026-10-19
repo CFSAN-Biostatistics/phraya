@@ -85,6 +85,36 @@ impl Default for ChainParams {
     }
 }
 
+impl ChainParams {
+    /// Chaining parameters for `Strategy::Assembly` (ADR-0015).
+    ///
+    /// Assembly seeds are exact 21-mers; the variants they skip sit in the *gap* between
+    /// seeds, not in the seeds themselves. The minibwa short-read default `max_dist_x = 100`
+    /// splits a clean diagonal when two flanking exact seeds are more than ~121 bp apart
+    /// (max_dist_x + seed_len), which happens across a SNP-dense cluster whose span exceeds
+    /// that gap. Reproduced synthetically: 8 SNPs at 10 bp spacing chain (gap ~91 bp); at 20 bp
+    /// spacing (gap ~141 bp) the chain splits and 0/8 SNPs are reported. Raising `max_dist_x`
+    /// lets the chain bridge such clusters.
+    ///
+    /// Only `max_dist_x` is widened; `max_band` stays at 100 so that a non-zero-diagonal-drift
+    /// event (a random insertion/deletion, which shifts the diagonal by its length) still
+    /// breaks the block (`assembly_large_insertion_splits_the_block`). This is a hypothesis
+    /// that is **unmeasured on real contigs**: a conservative caller would set 250–300.
+    ///
+    /// All other fields equal [`ChainParams::default`].
+    pub fn for_assembly() -> Self {
+        ChainParams {
+            seed_len: 21,
+            max_band: 100,
+            max_dist_x: 1000,
+            max_iter: 5000,
+            max_skip: 25,
+            gap_penalty: 0.21,
+            min_chain_score: 25,
+        }
+    }
+}
+
 /// Chaining score between a seed `i` and a candidate predecessor `j` (both already
 /// known to be strictly increasing in query_pos, `i` after `j`).
 ///

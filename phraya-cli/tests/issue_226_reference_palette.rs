@@ -21,7 +21,7 @@ fn write_fasta(dir: &Path, name: &str, records: &[(&str, &str)]) -> PathBuf {
 
 fn run(args: &[&str]) -> std::process::Output {
     let m = manifest();
-    let mut full = vec!["run", "--quiet", "--manifest-path", m.to_str().unwrap(), "--"];
+    let mut full = vec!["run", "--quiet", "--bin", "phraya", "--manifest-path", m.to_str().unwrap(), "--"];
     full.extend_from_slice(args);
     Command::new("cargo").args(&full).output().expect("cargo run failed")
 }
@@ -42,6 +42,22 @@ fn plan_with_ref(dir: &Path, plan_name: &str, reads: &Path, reference: &Path) {
         "--output",
         dir.join(plan_name).to_str().unwrap(),
     ]);
+    assert!(out.status.success(), "plan failed: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+fn plan_with_refs(dir: &Path, plan_name: &str, reads: &Path, references: &[&Path]) {
+    let mut args: Vec<String> = vec![
+        "plan".to_string(),
+        "--inputs".to_string(),
+        reads.to_str().unwrap().to_string(),
+    ];
+    for r in references {
+        args.push("--reference".to_string());
+        args.push(r.to_str().unwrap().to_string());
+    }
+    args.push("--output".to_string());
+    args.push(dir.join(plan_name).to_str().unwrap().to_string());
+    let out = run(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>());
     assert!(out.status.success(), "plan failed: {}", String::from_utf8_lossy(&out.stderr));
 }
 
@@ -325,4 +341,84 @@ fn non_homologous_space_yields_no_variants() {
         y.header.reference_length, 3_000,
         "a skipped space still reports its true reference length"
     );
-}
+    }
+
+    /// An input contig whose bytes are identical to a reference contig (and whose header is
+    /// renamed) must NOT be dropped from the read pool. This is the assembly-mode form of
+    /// issue-17's "identical contig" failure. With the old content-hash exclusion, such a contig
+    /// was dropped (log: `0 reads`); with source-based exclusion (`phraya plan` folds the first
+    /// reference to `input_files[0]`), only that folded file is skipped.
+    #[test]
+    fn assembly_identical_contig_is_aligned_not_dropped() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path();
+        // Reference: a ~4 kb seeded contig.
+        let ref_seq = dna(4_000, 7);
+        let refa = write_fasta(p, "refA.fa", &[("refA", ref_seq.as_str())]);
+        // Query is a byte-identical copy of a reference contig, header renamed.
+        let reads = write_fasta(p, "reads.fa", &[("identical_contig", ref_seq.as_str())]);
+        plan_with_ref(p, "plan.phrayaplan", &reads, &refa);
+
+        let out_dir = p.join("out");
+        let out = run(&[
+            "align",
+            "--reference",
+            refa.to_str().unwrap(),
+            p.join("plan.phrayaplan").to_str().unwrap(),
+            "--strategy",
+            "assembly",
+            "--output",
+            out_dir.to_str().unwrap(),
+        ]);
+        assert!(out.status.success(), "align failed: {}", String::from_utf8_lossy(&out.stderr));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // Source exclusion keeps the renamed contig; the log must count it as a read.
+        assert!(
+            stderr.contains("Reference-palette mode: 1 reference space(s), 1 reads"),
+            "byte-identical contig must enter the read pool; log was:\n{stderr}"
+        );
+    }
+
+    /// A query contig byte-identical to a contig in a *second* `--reference` file (which is
+    /// never folded into `input_files[0]`) must also be aligned, not dropped. Under the old
+    /// content-hash exclusion it matched the palette and was dropped; source exclusion skips
+    /// only `input_files[0]`, so it is a read and is placed in that space.
+    #[test]
+    fn identical_contig_matching_second_reference_is_aligned() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path();
+        let seq_b = dna(4_000, 5);
+        let refa = write_fasta(p, "refA.fa", &[("refA", dna(6_000, 7).as_str())]);
+        let refb = write_fasta(p, "refB.fa", &[("refB", seq_b.as_str())]);
+        // Query == refB exactly (renamed). refB is a space but not in input_files[0].
+        let reads = write_fasta(p, "reads.fa", &[("identical_to_B", seq_b.as_str())]);
+        plan_with_refs(p, "plan.phrayaplan", &reads, &[&refa, &refb]);
+
+        let out_dir = p.join("out");
+        let out = run(&[
+            "align",
+            p.join("plan.phrayaplan").to_str().unwrap(),
+            "--reference",
+            refa.to_str().unwrap(),
+            "--reference",
+            refb.to_str().unwrap(),
+            "--strategy",
+            "assembly",
+            "--output",
+            out_dir.to_str().unwrap(),
+        ]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // The query is NOT a present reference this invocation, so the read-path hash guard
+        // does not drop it; source exclusion skips only refA (input_files[0]), keeping the query.
+        assert!(
+            stderr.contains("Reference-palette mode: 2 reference space(s), 1 reads"),
+            "query identical to a 2nd reference must be a read; log was:\n{stderr}"
+        );
+        // And it must place in the refB space with zero variants (100% identity).
+        let ph = phraya_io::phraya::read_phraya(&out_dir.join("refB.phraya")).unwrap();
+        assert!(
+            !ph.alignments.is_empty(),
+            "identical-contig-to-B must place in the refB space"
+        );
+        assert_eq!(ph.observations.len(), 0, "100%-identical contig yields zero variants, got {}", ph.observations.len());
+    }

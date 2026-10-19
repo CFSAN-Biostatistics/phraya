@@ -609,6 +609,51 @@ mod tests {
         assert!(err.message.contains("--strategy assembly"), "{}", err.message);
     }
 
+    /// An observation whose stored query offset is not the offset the kept block's CIGAR pairs
+    /// with its reference position must be rejected. This is the §6 failure mode: an off-diagonal
+    /// local-repeat block emits an observation at a reference position that the kept full contig
+    /// block pairs with a *different* query offset, and the emitter must not adopt it. The spurious
+    /// observation is sorted before the true one to check the before-`seen.insert` ordering.
+    #[test]
+    fn off_diagonal_observation_is_rejected() {
+        // Kept block: 100M1X99M, forward. ref 100 (0-based) is the X column, paired with q 100.
+        // Off-diagonal observations carry ref 100 at q 130 — not what this block pairs.
+        let observations = vec![
+            // Spurious: ref 50 / q 130. Block pairs ref 50 with q 50 -> reject.
+            variant(VariantType::Snp, 50, b'G', b'A', "q0", 130, Strand::Forward),
+            // Spurious: ref 100 / q 130. True offset at ref 100 is q 100 -> reject.
+            variant(VariantType::Snp, 100, b'G', b'A', "q0", 130, Strand::Forward),
+            // True: ref 100 / q 100. Must survive (and not be deduped by the spurious above).
+            variant(VariantType::Snp, 100, b'G', b'A', "q0", 100, Strand::Forward),
+        ];
+        let files = [space("r0", 200, observations, vec![block("q0", 200, 0, 0, "100M1X99M", Strand::Forward)])];
+        let p = parse(&render(&files, None, None).unwrap());
+        assert_eq!((p.header["SNPs"].as_str(), p.variants.len()), ("1", 1));
+        let row: Vec<&str> = p.variants[0].split('\t').collect();
+        assert_eq!((row[0], row[1], row[4], row[5]), ("r0", "100", "100", "101"));
+    }
+
+    #[test]
+    fn indel_observations_are_accepted_at_consumer_coordinates() {
+        // Block "100M2I50M2D48M", t_start=0, q_start=0, forward:
+        //   M run t=0..100 q=0..100
+        //   I run t=100..102 q=100 (deletion of ref 100,101; obs carries q=100)
+        //   M run t=102..152 q=100..150
+        //   D run t=152 q=150 (insertion anchored at ref 152; obs carries q=150)
+        //   M run t=152..200 q=152..200
+        let b = block("q0", 200, 0, 0, "100M2I50M2D48M", Strand::Forward);
+        let files = [space("r0", 300, vec![
+            // Deletion: first deleted ref base t=100, q=100.
+            variant(VariantType::Deletion, 100, b'G', b'.', "q0", 100, Strand::Forward),
+            // Deletion off-diagonal (q=130): not the I run's offset -> reject.
+            variant(VariantType::Deletion, 100, b'G', b'.', "q0", 130, Strand::Forward),
+            // Insertion at anchor ref 152, q=150.
+            variant(VariantType::Insertion, 152, b'.', b'A', "q0", 150, Strand::Forward),
+        ], vec![b])];
+        let p = parse(&render(&files, None, None).unwrap());
+        assert_eq!((p.header["SNPs"].as_str(), p.header["Indels"].as_str()), ("0", "2"));
+    }
+
     #[test]
     fn nothing_aligned_is_an_empty_comparison() {
         let dir = tempfile::TempDir::new().unwrap();

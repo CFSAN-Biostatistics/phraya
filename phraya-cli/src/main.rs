@@ -989,23 +989,37 @@ fn run_align_reference(
         }
     }
 
-    // Read pool: every sequence in the plan's inputs that is not a reference — neither one
-    // presented this invocation nor any space already in the plan's palette. Excluding the
-    // whole palette (not just the presented subset) is what makes the read pool
-    // invocation-independent, hence composability: `phraya plan` folds its first reference
-    // into `input_files` for backward-compatible task generation, so a palette reference can
-    // reappear in the inputs; without this exclusion it would be aligned *as a read* whenever
-    // it is not the one being presented, and align({A,B}) != align({A}) ∪ align({B}).
-    let mut excluded_hashes: std::collections::HashSet<String> =
-        refs.iter().map(|r| r.hash.clone()).collect();
-    for space in &plan.reference_space {
-        excluded_hashes.insert(space.content_hash.clone());
-    }
+    // Read pool: every sequence in the plan's inputs that is not the reference.
+    //
+    // `phraya plan` folds its first reference file into `input_files[0]` for
+    // backward-compatible task generation (see `run_plan`), so in palette mode
+    // `input_files[0]` is the reference itself — skip it by source. Source-based
+    // exclusion (not content-hash) is what fixes the case where a query contig
+    // is byte-identical to a reference contig: a hash check would drop the query;
+    // a source check skips only the file that came from `--reference`. It still
+    // makes the read pool a function of the plan alone, so composability holds:
+    // `align({A,B}) = align({A}) ∪ align({B})`.
+    //
+    // Caveat: only the *first* `--reference` file is folded into `input_files[0]`.
+    // A second/third `--reference` file is not in `input_files`, so a query contig
+    // equal to one of its contigs is now aligned as a read. That is correct (it is
+    // a query and earns a 100%-identity block in that space) and rare in CSP2,
+    // but it changes behavior vs. the old hash exclusion. Covered by a test.
+    //
+    // Read path (no `--reference` this invocation): `reference_space` is empty,
+    // so we skip nothing and align all input files. We additionally drop any input
+    // sequence whose content hash matches a *presented* reference, so a reference
+    // file re-listed under `--inputs` is not aligned as a read against itself.
+    let is_palette = !plan.reference_space.is_empty();
     let mut reads: Vec<Sequence> = Vec::new();
-    for file_path in &plan.input_files {
+    for (i, file_path) in plan.input_files.iter().enumerate() {
+        // In palette mode, input_files[0] is the folded reference file; skip it.
+        if is_palette && i == 0 {
+            continue;
+        }
         let (sequences, _) = parse_sequences_from_file(std::path::Path::new(file_path))?;
         for seq in sequences {
-            if !excluded_hashes.contains(&content_hash_for_sequence(&seq)) {
+            if is_palette || !refs.iter().any(|r| r.hash == content_hash_for_sequence(&seq)) {
                 reads.push(seq);
             }
         }

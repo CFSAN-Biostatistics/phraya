@@ -116,6 +116,20 @@ pub struct AlignmentBlock {
     pub cigar: Arc<str>,
 }
 
+/// One run of this block's CIGAR in strand-local coordinates. See
+/// [`AlignmentBlock::cigar_runs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CigarRun {
+    /// Reference start of this run.
+    pub t: u32,
+    /// Strand-local query start of this run.
+    pub q: u32,
+    /// Run length in columns.
+    pub len: u32,
+    /// `M`, `X` (both axes), `I` (target-extra / deletion), or `D` (query-extra / insertion).
+    pub op: char,
+}
+
 impl AlignmentBlock {
     /// The query interval in the coordinates the CIGAR walks: forward coordinates for
     /// `Forward`, reverse-complement coordinates for `Reverse`. This is the coordinate space
@@ -141,14 +155,74 @@ impl AlignmentBlock {
         crate::cigar::CigarStats::parse(&self.cigar).identity(self.edit_distance)
     }
 
-    /// Whether `obs` was extracted from this block: same query and strand, reference
-    /// position inside the block, and query position inside its strand-local interval.
+    /// Whether `obs` was extracted from this block: same query and strand, and the block's CIGAR
+    /// pairs the observation's reference position with its query offset.
+    ///
+    /// A range-only check was insufficient (false variants on near-clonal assemblies): the kept
+    /// full-length block's ranges swallowed the offsets of observations extracted from off-diagonal
+    /// repeat blocks, accepting query offsets the block does not pair with that reference position.
+    /// The real test is geometric, by variant type (see [`AlignmentBlock::cigar_runs`]).
     pub fn contains_observation(&self, obs: &VariantObservation) -> bool {
-        obs.provenance() == &*self.query_id
-            && obs.strand() == self.strand
-            && (self.t_start..self.t_end).contains(&obs.position())
-            && self.strand_local_query_range().contains(&obs.query_position())
+        if obs.provenance() != &*self.query_id || obs.strand() != self.strand {
+            return false;
+        }
+        let runs = self.cigar_runs();
+        match obs.variant_type() {
+            // SNP: the X (mismatch) column must cover this reference position and pair it with
+            // the observation's query offset.
+            VariantType::Snp => runs.iter().any(|r| {
+                r.op == 'X'
+                    && r.t <= obs.position()
+                    && obs.position() < r.t + r.len
+                    && r.q + (obs.position() - r.t) == obs.query_position()
+            }),
+            // Deletion (I = target-extra): the first deleted reference base sits at the I run's
+            // start; the observation carries that run's query offset.
+            VariantType::Deletion => runs.iter().any(|r| {
+                r.op == 'I' && r.t <= obs.position() && obs.position() < r.t + r.len && r.q == obs.query_position()
+            }),
+            // Insertion (D = query-extra): the anchor reference base is the column just before the
+            // D run, carried at the run's query start.
+            VariantType::Insertion => runs.iter().any(|r| {
+                r.op == 'D' && r.t == obs.position() && r.q == obs.query_position()
+            }),
+        }
     }
+
+    /// Run-length view of this block's CIGAR in strand-local coordinates (the space of
+    /// [`VariantObservation::query_position`]). `M`/`X` runs consume both axes; `I`
+    /// (target-extra / deletion) consumes only the reference; `D` (query-extra / insertion)
+    /// consumes only the query.
+    #[must_use]
+    pub fn cigar_runs(&self) -> Vec<CigarRun> {
+        let mut runs = Vec::new();
+        let mut t = self.t_start;
+        let mut q = self.strand_local_query_range().start;
+        for (n, op) in crate::cigar::parse_ops(&self.cigar) {
+            let n = n as u32;
+            match op {
+                'M' | 'X' => { runs.push(CigarRun { t, q, len: n, op }); t += n; q += n; }
+                'I' => { runs.push(CigarRun { t, q, len: n, op }); t += n; }
+                'D' => { runs.push(CigarRun { t, q, len: n, op }); q += n; }
+                _ => {}
+            }
+        }
+        runs
+    }
+
+    /// Strand-local query offset that this block pairs with reference position `t_pos`, or
+    /// `None` if `t_pos` falls in a deletion gap (`I` run) or outside the block's aligned
+    /// reference span.
+    pub fn strand_local_query_at(&self, t_pos: u32) -> Option<u32> {
+        for r in self.cigar_runs() {
+            if r.op == 'I' || r.op == 'D' { continue; }
+            if t_pos >= r.t && t_pos < r.t + r.len {
+                return Some(r.q + (t_pos - r.t));
+            }
+        }
+        None
+    }
+
 }
 
 /// Reverse-complement a DNA byte string.
