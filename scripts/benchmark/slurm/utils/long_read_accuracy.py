@@ -22,6 +22,7 @@ Usage:
 """
 import argparse
 import csv
+import io
 import sys
 import msgpack
 import zstandard
@@ -54,7 +55,7 @@ def load_phraya_queries(queries_path: str) -> dict:
     dctx = zstandard.ZstdDecompressor()
     with open(queries_path, "rb") as f:
         compressed = f.read()
-    decompressed = dctx.decompress(compressed)
+    decompressed = dctx.stream_reader(io.BytesIO(compressed)).read()
     data = msgpack.unpackb(decompressed, raw=False)
     return data
 

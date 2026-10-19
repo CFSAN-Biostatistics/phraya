@@ -93,7 +93,8 @@ if [[ -f "$OUT_DIR/phraya/cross_space.phraya.queries" ]]; then
     N_MAPPED_PHRAYA=$("$PYTHON" -c "
 import msgpack, zstandard
 dctx = zstandard.ZstdDecompressor()
-data = dctx.decompress(open('$OUT_DIR/phraya/cross_space.phraya.queries','rb').read())
+with open('$OUT_DIR/phraya/cross_space.phraya.queries','rb') as f:
+    data = dctx.stream_reader(f).read()
 result = msgpack.unpackb(data, raw=False)
 print(sum(len(v) for v in result.values()))
 " 2>/dev/null || echo 0)
