@@ -163,8 +163,8 @@ def main():
 
     # Detect file format
     with open(args.queries, "rb") as f:
-        magic = f.read(3)
-    if magic == b"B9\x01" or (len(magic) >= 3 and magic[:3] == b"SM"):
+        magic = f.read(4)
+    if magic == b"\x28\xb5\x2f\xfd":  # zstd frame magic -> phraya queries sidecar
         # Likely zstd-compressed msgpack (phraya) or SAM
         # Try phraya first by checking extension/content
         try:
