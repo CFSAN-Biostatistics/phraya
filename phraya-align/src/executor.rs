@@ -827,43 +827,6 @@ fn extend_chains_longread(
     Some(score_alignments(&alignments, query_bytes.len()))
 }
 
-/// Result of fitting `query[..]` against a target window: CIGAR ops (read order), edit
-/// distance, and the number of target bases consumed.
-struct FitEnd {
-    ops: Vec<(usize, char)>,
-    edit_distance: usize,
-    target_consumed: usize,
-}
-
-/// Fitting alignment of `query` against `window` (target end free). The query is fully
-/// consumed; soft-clips `query` if WFA hits its `default_max_s_cap` (or the query is
-/// empty) so the caller always gets a complete, full-length alignment.
-fn fit_end(query: &[u8], window: &[u8]) -> FitEnd {
-    if query.is_empty() {
-        return FitEnd {
-            ops: Vec::new(),
-            edit_distance: 0,
-            target_consumed: 0,
-        };
-    }
-    let cap = crate::wfa_simd::default_max_s_cap(query.len(), window.len());
-    match crate::wfa_simd::fill_wfa_fitting_impl(query, window, Some(cap)) {
-        Some((cigar, ed, consumed)) => FitEnd {
-            ops: phraya_core::cigar::parse_ops(&cigar),
-            edit_distance: ed,
-            target_consumed: consumed,
-        },
-        None => {
-            // Cap exhausted: soft-clip the unaligned query tail as an S-run.
-            FitEnd {
-                ops: vec![(query.len(), 'S')],
-                edit_distance: query.len(),
-                target_consumed: 0,
-            }
-        }
-    }
-}
-
 /// Align one long-read locus: exact k-mer segments stitched by global Myers gap-fills,
 /// with fitting WFA end-extensions at the two read ends. `seeds` are co-linear in query_pos
 /// (chaining's DP guarantees it).
@@ -880,18 +843,12 @@ fn align_long_locus(
 ) -> Option<crate::Alignment> {
     let query_len = query.len();
     let segs = chain_segments(seeds, query, target, k);
-    if std::env::var("LR7_DEBUG").is_ok() {
-        eprintln!("LR7 segs={} first_t={} first_q={} first_len={} n_seeds={} qlen={}", segs.len(), segs.first().map(|s| s.t).unwrap_or(0), segs.first().map(|s| s.q).unwrap_or(0), segs.first().map(|s| s.len).unwrap_or(0), seeds.len(), query_len);
-    }
     if segs.is_empty() {
         // No exact k-mer survived validation (cross-strand minimizer hit). Fall back to a
         // single fitting extension from the seed's projected target position — one call,
         // not a chunked WFA loop.
         if seeds.is_empty() {
             return None;
-        }
-        if std::env::var("LR7_DEBUG").is_ok() {
-            eprintln!("LR7 EMPTY-SEGS fallback: tp={}", (seeds[0].target_pos as i64 - seeds[0].query_pos as i64).max(0) as usize);
         }
         let tp = (seeds[0].target_pos as i64 - seeds[0].query_pos as i64).max(0) as usize;
         let window_end = (tp + query_len * 2).min(target.len());
@@ -917,21 +874,34 @@ fn align_long_locus(
     let mut target_start = (first.t as i64 - first.q as i64).max(0) as usize;
 
     // --- Prefix: query[0..first.q] into target ending at first.t. ---
-    // Fitting alignment (target end free) against a ~1.3x-prefix target window ending
-    // exactly at the first exact segment — bounded so WFA doesn't scan the whole genome.
+    // Global Myers alignment of the prefix against exactly prefix.len() target bases
+    // ending at first.t. Global (not fitting): the seed diagonal already fixes the locus,
+    // so the prefix must consume a fixed target span — a fitting WFA's free end was
+    // measured to drift ~122 bp onto a wrong higher-scoring match (longread_7 on Reedling2).
+    // Myers global alignment has no freedom to slide, so target_start is anchored to first.t.
     let prefix = &query[..first.q];
     if !prefix.is_empty() && first.t > 0 {
-        let win = prefix.len() * 16 / 10 + 16;
-        let t_start = first.t.saturating_sub(win);
+        let t_start = first.t.saturating_sub(prefix.len());
         let t_window = &target[t_start..first.t.min(target.len())];
-        let end = fit_end(prefix, t_window);
-        for (n, op) in &end.ops {
-            push_op(&mut ops, *n, *op);
+        if t_window.len() == prefix.len() {
+            let (ed, cigar) = myers_edit_distance(prefix, t_window);
+            for (n, op) in phraya_core::cigar::parse_ops(&cigar) {
+                push_op(&mut ops, n, op);
+            }
+            edit_distance += ed;
+        } else {
+            // Window shorter than prefix (near target start): align what fits, hard-clip rest.
+            let avail = t_window.len();
+            let (ed, cigar) = myers_edit_distance(&prefix[..avail], t_window);
+            for (n, op) in phraya_core::cigar::parse_ops(&cigar) {
+                push_op(&mut ops, n, op);
+            }
+            edit_distance += ed;
+            push_op(&mut ops, prefix.len() - avail, 'S');
+            edit_distance += prefix.len() - avail;
         }
-        edit_distance += end.edit_distance;
-        target_start = first.t.saturating_sub(end.target_consumed);
     } else if !prefix.is_empty() {
-        // No target before the first segment: soft-clip.
+        // first.t == 0: no target before the segment; soft-clip the prefix.
         push_op(&mut ops, prefix.len(), 'S');
         edit_distance += prefix.len();
     }
@@ -952,7 +922,11 @@ fn align_long_locus(
         ops.push((next.len, 'M'));
     }
 
-    // --- Suffix: query[last_end..] from last.t+last.len, fitting extension. ---
+    // --- Suffix: query[last_end..] from last.t+last.len, fitting WFA. ---
+    // The suffix has no segment downstream to anchor against, so fitting (target end free)
+    // is correct here — target_end isn't used for a placement position check (only
+    // target_start/primary is), and the end extension is cheap. Window sized to stay in
+    // the fitting branch (> 1.5x query + 10).
     let suffix_len = query_len - (last.q + last.len);
     let mut target_end = last.t + last.len;
     let suffix = &query[last.q + last.len..];
@@ -960,12 +934,21 @@ fn align_long_locus(
         let win = suffix_len * 16 / 10 + 16;
         let t_end = (last.t + last.len + win).min(target.len());
         let t_window = &target[last.t + last.len..t_end];
-        let end = fit_end(suffix, t_window);
-        for (n, op) in &end.ops {
-            push_op(&mut ops, *n, *op);
+        let cap = crate::wfa_simd::default_max_s_cap(suffix.len(), t_window.len());
+        match crate::wfa_simd::fill_wfa_fitting_impl(suffix, t_window, Some(cap)) {
+            Some((cigar, ed, consumed)) => {
+                for (n, op) in phraya_core::cigar::parse_ops(&cigar) {
+                    push_op(&mut ops, n, op);
+                }
+                edit_distance += ed;
+                target_end = (last.t + last.len) + consumed;
+            }
+            None => {
+                // Cap exhausted: soft-clip the suffix.
+                push_op(&mut ops, suffix.len(), 'S');
+                edit_distance += suffix.len();
+            }
         }
-        edit_distance += end.edit_distance;
-        target_end = (last.t + last.len) + end.target_consumed;
     } else if !suffix.is_empty() {
         push_op(&mut ops, suffix.len(), 'S');
         edit_distance += suffix.len();
