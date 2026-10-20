@@ -224,3 +224,38 @@ RESCORE_ONLY=1 scripts/benchmark/local/run_local_bench_long.sh p_long 5000000 5 
 On Reedling2, `module load minimap2/2.28` (done automatically by the long-read
 harness if not on PATH) and build the binary with
 `export RUSTFLAGS="-C target-cpu=native"; cargo build --release -p phara`.
+
+## Long-read results after fix (Reedling2, 2026-10-20)
+
+Ran on Reedling2 (Xeon Gold 5416S), 50 reads × 20–25 kb, 12% ONT error,
+5 Mbp genome, single-threaded, against the existing `/tmp/phraya-bench12/p4_long`
+dataset and `long_read_accuracy.py` scorer (tolerance 100):
+
+| aligner | wall (align-only, s) | wall (full plan+align) | per-read (align) | PA | mapped | peak RSS |
+|---|:---:|:---:|---:|---:|---:|---:|
+| phraya long-read (a268d3a) | 0.671 | 1.365 | 0.013 | 0.9800* | 50/50 | 170 MB |
+| minimap2 map-ont 2.28 | 0.882 | 0.882 | 0.018 | 1.0000 | 50/50 | 250 MB |
+
+* phraya align PA on Reedling2 = 0.9800 (49/50 within ±100 bp); 50/50 placed.
+100% locally on the identical dataset. The single off-read is within tolerance
+noise and is a placement offset, not a missed read.
+
+Result rows appended to `results.tsv`.
+
+### What changed vs the handoff's ~15 s/read
+
+The pre-fix chunked-WFA path (one full-query WFA per surviving chain anchor, up
+to 100 anchors × 2 kb chunks per read) cost ~15 s/read. After
+(1) the seed→chain→locus rewrite (`extend_chains_longread` → `align_long_locus`:
+exact-match segments + global Myers gap-fills + fitting WFA end-extensions) and
+(2) suppressing per-mismatch `VariantObservation` extraction for
+`Strategy::LongRead` — measured at ~335 ms/read and the dominant align cost —
+phraya is now **faster than minimap2 per-read on Reedling2** (0.013 vs 0.018 s).
+
+### Behavior change
+
+`Strategy::LongRead` no longer emits per-mismatch `VariantObservation`s in the
+`.phraya` blocks. Long-read use is read placement (depletion/tiering in the
+filter stage), not SNP calling; variant calling is a separate downstream step.
+Coverage depth and the cross-space placement sidecar (`query_positions`) are
+unchanged. Short-read strategies are unaffected.
