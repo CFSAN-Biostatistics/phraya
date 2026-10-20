@@ -1255,7 +1255,16 @@ pub fn align_read_prepared(
     //
     // Seeded alignments (had_seeds == true) are never gated here — even a low-scoring seeded
     // alignment has positional evidence from shared minimizers.
-    let suppress_variants = !had_seeds && primary_score < FALLBACK_ONLY_MIN_IDENTITY;
+    let mut suppress_variants = !had_seeds && primary_score < FALLBACK_ONLY_MIN_IDENTITY;
+    // Long-read alignments (ONT/PacBio, 10-50 kb at ~12% error) are placements, not SNP
+    // calls: a 25 kb read yields ~3000 mismatch VariantObservations each, allocating a
+    // HashMap + coverage window — ~0.34 s/read, the dominant align cost (measured). Variant
+    // extraction is a short-read use case; the filter stage decides what to call from the
+    // superposition. Suppress observations (keep placement + query_positions + coverage)
+    // to stay fast. (Long-read use case: depletion/tiering by placement, never SNP calling.)
+    if config.strategy == Strategy::LongRead {
+        suppress_variants = true;
+    }
 
     // Raw (un-quantized) coverage over just the aligned span, for local_coverage
     // lookups in variants; quantized separately for the stored coverage track.
