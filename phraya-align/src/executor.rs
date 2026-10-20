@@ -915,7 +915,7 @@ fn align_long_locus(
     // exactly at the first exact segment — bounded so WFA doesn't scan the whole genome.
     let prefix = &query[..first.q];
     if !prefix.is_empty() && first.t > 0 {
-        let win = prefix.len() + prefix.len() / 10 + 16;
+        let win = prefix.len() * 16 / 10 + 16;
         let t_start = first.t.saturating_sub(win);
         let t_window = &target[t_start..first.t.min(target.len())];
         let end = fit_end(prefix, t_window);
@@ -951,7 +951,7 @@ fn align_long_locus(
     let mut target_end = last.t + last.len;
     let suffix = &query[last.q + last.len..];
     if !suffix.is_empty() && last.t + last.len < target.len() {
-        let win = suffix_len + suffix_len / 10 + 16;
+        let win = suffix_len * 16 / 10 + 16;
         let t_end = (last.t + last.len + win).min(target.len());
         let t_window = &target[last.t + last.len..t_end];
         let end = fit_end(suffix, t_window);
@@ -1012,8 +1012,7 @@ mod longread_locus_tests {
         // prefix=300, del=50, suffix=300 -> read 600, ref 650
         let (read, ref_seq, seeds) = read_with_indel(300, 50, 300);
         let k = 21;
-        let aln = align_long_locus(&read, &ref_seq, &seeds, k)
-            .expect("locus must align");
+        let aln = align_long_locus(&read, &ref_seq, &seeds, k).expect("locus must align");
         let (q, t) = cigar_query_target(&aln.cigar);
         assert_eq!(q, read.len(), "CIGAR query length must equal read length");
         assert_eq!(t, aln.target_end - aln.target_start,
@@ -1027,11 +1026,43 @@ mod longread_locus_tests {
         // First seed at query 200, so prefix=200 must be extended, not dropped.
         let (read, ref_seq, seeds) = read_with_indel(200, 50, 300);
         let k = 21;
-        let aln = align_long_locus(&read, &ref_seq, &seeds, k)
-            .expect("locus must align");
+        let aln = align_long_locus(&read, &ref_seq, &seeds, k).expect("locus must align");
         let (q, _t) = cigar_query_target(&aln.cigar);
         assert_eq!(q, read.len(), "CIGAR must consume the full read including the prefix");
         assert!(aln.target_end > aln.target_start, "alignment must have span");
+    }
+
+    #[test]
+    fn locus_long_prefix_no_target_drift() {
+        // Long prefix (4000 bp) before the first exact seed, perfect match. Verifies the
+        // 1.6x end window keeps fit_end in fitting mode (not global) and that target_start
+        // anchors at 0 rather than drifting by the window slack.
+        let k = 15;
+        let prefix_len = 4000;
+        let suffix_len = 4000;
+        let mut ref_seq = Vec::new();
+        for i in 0..prefix_len {
+            ref_seq.push(if i % 2 == 0 { b'A' } else { b'T' });
+        }
+        // Clean exact seed region (k*2 bases) then a G-run suffix.
+        ref_seq.extend(std::iter::repeat(b'C').take(k * 2));
+        ref_seq.extend(std::iter::repeat(b'G').take(suffix_len - k));
+        let read = ref_seq.clone();
+        let seed_left = prefix_len;
+        let seeds = vec![crate::Seed {
+            query_pos: seed_left as u32,
+            target_pos: seed_left as u32,
+            minimizer: 0,
+        }];
+        let aln = align_long_locus(&read, &ref_seq, &seeds, k)
+            .expect("locus must align");
+        let (q, t) = cigar_query_target(&aln.cigar);
+        assert_eq!(q, read.len(), "CIGAR query length must equal read length");
+        assert_eq!(t, aln.target_end - aln.target_start,
+            "CIGAR target length must equal target_end - target_start");
+        assert_eq!(aln.target_start, 0, "perfect prefix must anchor at ref start, not drift");
+        assert_eq!(aln.target_end, ref_seq.len());
+        assert_eq!(aln.edit_distance, 0, "perfect match must have 0 edits");
     }
 }
 
