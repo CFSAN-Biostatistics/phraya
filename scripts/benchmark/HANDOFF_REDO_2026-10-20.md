@@ -227,7 +227,7 @@ harness if not on PATH) and build the binary with
 
 ## Long-read results after fix (Reedling2, 2026-10-20)
 
-Measured on Reedling2 (`lscpu`: Intel Xeon Gold 5416S, 64 cores), against the
+Measured on Reedling2 (`lscpu`: Intel Xeon Gold 5416S), against the
 existing `/tmp/phraya-bench12/p4_long` dataset (50 reads × 20–25 kb, 12% ONT
 error, 5 Mbp genome), scorer `long_read_accuracy.py` (tolerance 100), single
 threaded (`RAYON_NUM_THREADS=1`), binary built with
@@ -244,15 +244,17 @@ a268d3a. minimap2 2.28 from `module minimap2/2.28` (env
 | metric | phraya | minimap2 |
 |---|---:|---:|
 | reads placed | 50/50 | 50/50 |
-| PA (±100 bp, primary) | 0.9800 | 1.0000 |
-| PA (±100 bp, any placement) | 1.0000 | 1.0000 |
+|| PA (±100 bp, primary) | 0.9800 | 1.0000 |
+|| PA (±100 bp, best identity) | 0.9800 | 1.0000 |
 
 phraya `plan` + `align` total 1.365 s. Align-only per-read is 0.671/50 = 0.013 s
 (minimap2 0.882/50 = 0.018 s, including its FM-index build in the 0.882 s).
-The single Reedling2 PA miss is `longread_7`, placed at 1846148 vs truth 1846026
-(offset +122, just past the 100-bp tolerance; identity 0.805, 1 placement). It is
-placed 50/50 and scores PA 1.0000 on the identical dataset on a local Windows
-(12th Gen Intel Core i7-1265U) host — a platform-dependent offset, not a code bug.
+The single Reedling2 PA miss (primary, ±100 bp) is `longread_7`, placed at
+1846148 vs truth 1846026 (offset +122, just past tolerance; identity 0.805,
+1 placement) — cause uninvestigated. Note: the local Windows run used a separately
+generated dataset (seed 42, 5 reads), not `p4_long`, so its PA 1.0000 does not
+counterfactual this read. This is approximate: wall times on this shared host were
+noisy (align measured 0.67–0.68 s across two runs).
 
 Note: the handoff's ~15 s/read figure was on the old chunked-WFA path (commit
 f758d73). The numbers above are on the rewritten seed→chain→locus path.
