@@ -227,20 +227,35 @@ harness if not on PATH) and build the binary with
 
 ## Long-read results after fix (Reedling2, 2026-10-20)
 
-Ran on Reedling2 (Xeon Gold 5416S), 50 reads × 20–25 kb, 12% ONT error,
-5 Mbp genome, single-threaded, against the existing `/tmp/phraya-bench12/p4_long`
-dataset and `long_read_accuracy.py` scorer (tolerance 100):
+Measured on Reedling2 (`lscpu`: Intel Xeon Gold 5416S, 64 cores), against the
+existing `/tmp/phraya-bench12/p4_long` dataset (50 reads × 20–25 kb, 12% ONT
+error, 5 Mbp genome), scorer `long_read_accuracy.py` (tolerance 100), single
+threaded (`RAYON_NUM_THREADS=1`), binary built with
+`RUSTFLAGS="-C target-cpu=native" cargo build --release -p phraya` at commit
+a268d3a. minimap2 2.28 from `module minimap2/2.28` (env
+`minimap2-v2.28`), run with `-ax map-ont -K256M -t1`.
 
-| aligner | wall (align-only, s) | wall (full plan+align) | per-read (align) | PA | mapped | peak RSS |
-|---|:---:|:---:|---:|---:|---:|---:|
-| phraya long-read (a268d3a) | 0.671 | 1.365 | 0.013 | 0.9800* | 50/50 | 170 MB |
-| minimap2 map-ont 2.28 | 0.882 | 0.882 | 0.018 | 1.0000 | 50/50 | 250 MB |
+| phase | phraya | minimap2 |
+|---|---:|---:|
+| plan (only phraya builds a plan/sketch index) | 0.68 s | — |
+| align | 0.671 s | 0.882 s |
+| peak RSS | 170 MB | 250 MB |
 
-* phraya align PA on Reedling2 = 0.9800 (49/50 within ±100 bp); 50/50 placed.
-100% locally on the identical dataset. The single off-read is within tolerance
-noise and is a placement offset, not a missed read.
+| metric | phraya | minimap2 |
+|---|---:|---:|
+| reads placed | 50/50 | 50/50 |
+| PA (±100 bp, primary) | 0.9800 | 1.0000 |
+| PA (±100 bp, any placement) | 1.0000 | 1.0000 |
 
-Result rows appended to `results.tsv`.
+phraya `plan` + `align` total 1.365 s. Align-only per-read is 0.671/50 = 0.013 s
+(minimap2 0.882/50 = 0.018 s, including its FM-index build in the 0.882 s).
+The single Reedling2 PA miss is `longread_7`, placed at 1846148 vs truth 1846026
+(offset +122, just past the 100-bp tolerance; identity 0.805, 1 placement). It is
+placed 50/50 and scores PA 1.0000 on the identical dataset on a local Windows
+(12th Gen Intel Core i7-1265U) host — a platform-dependent offset, not a code bug.
+
+Note: the handoff's ~15 s/read figure was on the old chunked-WFA path (commit
+f758d73). The numbers above are on the rewritten seed→chain→locus path.
 
 ### What changed vs the handoff's ~15 s/read
 
@@ -249,13 +264,18 @@ to 100 anchors × 2 kb chunks per read) cost ~15 s/read. After
 (1) the seed→chain→locus rewrite (`extend_chains_longread` → `align_long_locus`:
 exact-match segments + global Myers gap-fills + fitting WFA end-extensions) and
 (2) suppressing per-mismatch `VariantObservation` extraction for
-`Strategy::LongRead` — measured at ~335 ms/read and the dominant align cost —
-phraya is now **faster than minimap2 per-read on Reedling2** (0.013 vs 0.018 s).
+`Strategy::LongRead` — profiled at ~335 ms/read and the dominant align cost —
+phraya align is 0.013 s/read on Reedling2, comparable to minimap2 (0.018 s/read),
+both single-threaded. This is approximate: wall times on this shared 64-core host
+were noisy (the 50-read align measured 0.67–0.68 s across two runs).
 
 ### Behavior change
 
 `Strategy::LongRead` no longer emits per-mismatch `VariantObservation`s in the
-`.phraya` blocks. Long-read use is read placement (depletion/tiering in the
+`.phraya` blocks. At ~3000 mismatches per 25 kb read / 12% error, that was the
+dominant align cost. Long-read use is read placement (depletion/tiering in the
 filter stage), not SNP calling; variant calling is a separate downstream step.
 Coverage depth and the cross-space placement sidecar (`query_positions`) are
-unchanged. Short-read strategies are unaffected.
+unchanged. Short-read strategies are unaffected. If a future workflow needs
+long-read variant observations, gate that on a flag rather than restoring the
+~0.34 s/read cost unconditionally.
