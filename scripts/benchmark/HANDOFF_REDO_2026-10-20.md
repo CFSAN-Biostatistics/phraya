@@ -227,36 +227,39 @@ harness if not on PATH) and build the binary with
 
 ## Long-read results after fix (Reedling2, 2026-10-20)
 
-Measured on Reedling2 (`lscpu`: Intel Xeon Gold 5416S), against the
-existing `/tmp/phraya-bench12/p4_long` dataset (50 reads × 20–25 kb, 12% ONT
-error, 5 Mbp genome), scorer `long_read_accuracy.py` (tolerance 100), single
-threaded (`RAYON_NUM_THREADS=1`), binary built with
+Measured on Reedling2 (`lscpu`: Intel Xeon Gold 5416S), against the existing
+`/tmp/phraya-bench12/p4_long` dataset (50 reads × 20–25 kb, 12% ONT error, 5 Mbp
+genome), scorer `long_read_accuracy.py` (tolerance 100), single-threaded
+(`RAYON_NUM_THREADS=1`). Binary built with
 `RUSTFLAGS="-C target-cpu=native" cargo build --release -p phraya` at commit
-a268d3a. minimap2 2.28 from `module minimap2/2.28` (env
-`minimap2-v2.28`), run with `-ax map-ont -K256M -t1`.
+4cd725c. minimap2 2.28 from `module minimap2/2.28` (env `minimap2-v2.28`), run
+with `-ax map-ont -K256M -t1`. Peak RSS via `/usr/bin/time -v`.
 
 | phase | phraya | minimap2 |
-|---|---:|---:|
-| plan (only phraya builds a plan/sketch index) | 0.68 s | — |
-| align | 0.671 s | 0.882 s |
-| peak RSS | 170 MB | 250 MB |
+|---|:---:|:---:|
+| plan / index | plan 0.69 s | — (index in map time below) |
+| align (single run) | 0.67 s | 0.88–0.95 s |
+| align per-read | 0.013 s | 0.018 s |
+| peak RSS | ~137 MB | ~249 MB |
 
 | metric | phraya | minimap2 |
-|---|---:|---:|
+|---|:---:|:---:|
 | reads placed | 50/50 | 50/50 |
-| PA (±100 bp, primary) | 0.9800 | 1.0000 |
+| PA (±100 bp) | 1.0000 | 1.0000 |
 
-phraya `plan` + `align` total 1.365 s. Align-only per-read is 0.671/50 = 0.013 s
-(minimap2 0.882/50 = 0.018 s, including its FM-index build in the 0.882 s).
-The single Reedling2 PA miss (primary, ±100 bp) is `longread_7`, placed at
-1846148 vs truth 1846026 (offset +122, just past tolerance; identity 0.805,
-1 placement) — cause uninvestigated. Note: the local Windows run used a separately
-generated dataset (seed 42, 5 reads), not `p4_long`, so its PA 1.0000 does not
-counterfactual this read. This is approximate: wall times on this shared host were
-noisy (align measured 0.67–0.68 s across two runs).
+Full-pipeline wall: phraya `plan` + `align` ≈ 1.36 s vs minimap2 ≈ 0.95 s.
+Align-only per-read phraya ≈ minimap2 (0.013 vs 0.018 s; minimap2's figure
+includes its ~0.2 s FM-index build). RSS is in the same ballpark.
 
-Note: the handoff's ~15 s/read figure was on the old chunked-WFA path (commit
-f758d73). The numbers above are on the rewritten seed→chain→locus path.
+The pre-fix run scored PA 0.98: `longread_7` (1 placement) was placed +122 bp
+off by prefix-fitting WFA drift (free target end slid onto a wrong match). Fix:
+prefix now uses global Myers anchored at the seed diagonal (commit 4cd725c),
+bringing Reedling2 PA to 1.0000. The local Windows run used a separately
+generated 5-read dataset (different from `p4_long`), so it is not a
+counterfactual for that read.
+
+Note: the handoff's ~15 s/read figure was on the old chunked-WFA path
+(commit f758d73). The numbers above are on the rewritten seed→chain→locus path.
 
 ### What changed vs the handoff's ~15 s/read
 
