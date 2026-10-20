@@ -1,5 +1,5 @@
 use crate::seeding::{find_seeds_indexed_capped, seed_occurrence_cap, MinimizerIndex};
-use crate::{myers_extend, score_alignments, wfa_extend, SeedAnchor};
+use crate::{myers_edit_distance, myers_extend, score_alignments, wfa_extend, SeedAnchor};
 use phraya_core::types::{
     reverse_complement, sketch_sequence_default, sketch_sequence_default_for, Alphabet,
     AlignmentBlock, MinimizerSketch, Sequence, Strand, VariantObservation,
@@ -639,6 +639,8 @@ fn seed_and_chain(
     let seeds = find_seeds_indexed_capped(query_sketch, &ctx.minimizer_index, ctx.seed_max_occ);
     let params = if strategy == Strategy::Assembly {
         crate::chaining::ChainParams::for_assembly()
+    } else if strategy == Strategy::LongRead {
+        crate::chaining::ChainParams::for_long_read()
     } else {
         crate::chaining::ChainParams::default()
     };
@@ -690,8 +692,13 @@ pub fn fallback_anchor_applies(query_len: usize, target_len: usize, alphabet: Al
 /// alignments — or `None` if there was nothing worth extending.
 ///
 /// The expensive half of what was [`align_oriented`] before it was split so
-/// [`align_read`] could skip this step entirely for an orientation [`seed_and_chain`]
-/// found implausible.
+/// [`align_read`] could decide which orientation(s) are worth the expensive extend step
+/// before paying for it.
+///
+/// `seed_k` is the minimizer length of the orientation's sketch (`fwd_sketch.k` for the
+/// forward orientation, the reverse-complement sketch's `k` for the reverse one). It is
+/// passed through to the `Strategy::LongRead` path, which would otherwise have no way to
+/// recover the k-mer length needed to validate a chain's seeds.
 fn extend_chains(
     strategy: Strategy,
     gap_model: GapModel,
@@ -700,9 +707,16 @@ fn extend_chains(
     chains: &[crate::chaining::Chain],
     seeds: &[crate::Seed],
     alphabet: Alphabet,
+    seed_k: usize,
 ) -> Option<crate::ScoredAlignments> {
     let target = ctx.target;
     let query_len = query_bytes.len();
+
+    // LongRead: bypass select_anchors (which projects chains to query_pos=0 and drops the
+    // seeds needed for gap-fill) and dispatch to the chain-seed-based path directly.
+    if strategy == Strategy::LongRead {
+        return extend_chains_longread(query_bytes, chains, target, seed_k);
+    }
 
     let anchors = select_anchors(
         chains,
@@ -715,10 +729,6 @@ fn extend_chains(
     if anchors.is_empty() {
         return None;
     }
-    if strategy == Strategy::LongRead {
-        return extend_chains_longread(query_bytes, &anchors, target, ctx);
-    }
-
 
     // Extend every anchor with the strategy's engine, uniformly across Fast/Balanced/
     // Sensitive (ADR-0012 — chaining's structural collapse of repeat families into one
@@ -749,123 +759,173 @@ fn extend_chains(
 
     Some(score_alignments(&alignments, query_bytes.len()))
 }
+
 /// Chunked WFA extension for long reads (ONT/PacBio, 10-50kb).
 ///
-/// The standard WFA path (wfa_extend on the full query) hits default_max_s_cap's
-/// 512 MB wavefront-memory ceiling and abandons alignments once the edit distance
-/// exceeds ~700-2300 (depending on query/target window sizes). At 12% ONT error,
-/// a 20kb read has ~2400 expected edits - far beyond the cap.
+/// Replaces the old whole-query-per-anchor chunked-WFA path that made one O(qn) WFA call
+/// per surviving anchor (up to [`chain_cap`] = 100 for `LongRead`, 2kb chunks each). That
+/// was the ~15 s/read long-read cost the 2026-10-20 handoff flagged: at 12% ONT error a
+/// single locus fragments into many near-duplicate chains (starts within ±2 bp,
+/// identities ~0.817), and each was aligned in full. This path instead does a minimap2-
+/// style seed→chain→align: deduplicate chains to one locus, then align that locus by
+/// turning its seeds into exact-match segments and stitching them with global Myers
+/// gap-fills between consecutive segments plus fitting WFA end-extensions.
 ///
-/// This function splits each query into 5kb non-overlapping chunks, extends each
-/// chunk independently via WFA (each chunk stays well under the cap), and stitches
-/// the per-chunk CIGARs into a single alignment.
+/// Cost is one alignment per locus (not per anchor-chunk). At 12% error the inter-seed
+/// gaps are ~100s of bp with ~12 edits — Myers is O(gq·gt/64) and terminates there, so
+/// each gap is sub-ms; WFA fitting runs only on the two read ends. No 2kb chunking, no
+/// per-anchor full-read WFA.
+///
+/// Retention stays per-space and per-strand (the strand is already fixed by the caller):
+/// a read's placement at locus X is judged against X alone, never globally — composable
+/// align({A,B}) = align({A}) ∪ align({B}).
 fn extend_chains_longread(
     query_bytes: &[u8],
-    anchors: &[crate::SeedAnchor],
+    chains: &[crate::chaining::Chain],
     target: &Sequence,
-    _ctx: &TargetContext<'_>,
+    seed_k: usize,
 ) -> Option<crate::ScoredAlignments> {
-    use crate::long_read::LongReadAligner;
-
-    // Use 2kb chunks for ONT/PacBio reads with realistic error rates.
-    // At 12% error, a 2kb chunk has ~240 expected edits, well under
-    // default_max_s_cap(2000, 40000) ≈ 811 — the 512MB wavefront cap.
-    // The default 10kb chunk_size fails at 12% (1200 edits > ~682 cap).
-    let aligner = LongReadAligner::with_config(
-        1_000,   // min_read_len
-        2_000,   // chunk_size — keeps per-chunk edits under WFA cap
-        0,       // chunk_overlap — non-overlapping for simple CIGAR stitching
-        0,       // band_width — unbanded (WFA handles this internally)
-        15,      // kmer_k
-        5,       // kmer_w
-    );
+    let target_bases = target.bases();
     let query_len = query_bytes.len();
-    let _chunks = aligner.chunk_read(query_len); // validates chunk boundaries
 
-    let mut merged_alignments: Vec<crate::Alignment> = Vec::with_capacity(anchors.len());
-    let mut best_combined_ed: usize = usize::MAX;
-    let mut best_alignment: Option<crate::Alignment> = None;
-
-    for anchor in anchors {
-        let margin = query_len * 2;
-        let window_end = (anchor.target_pos as usize + margin).min(target.bases().len());
-        let target_window = &target.bases()[..window_end];
-
-        let chunk_start = anchor.query_pos as usize;
-        let chunk_end = query_len;
-
-        let mut combined_cigar = String::new();
-        let mut total_ed = 0usize;
-        let mut first_target_start = anchor.target_pos as usize;
-        let mut last_target_end = anchor.target_pos as usize;
-        let mut running_target_pos = anchor.target_pos as usize;
-
-        let mut cs = chunk_start;
-        while cs < chunk_end {
-            let ce = (cs + aligner.chunk_size).min(chunk_end);
-            if ce - cs < aligner.min_chunk_len {
-                break;
-            }
-            let chunk = &query_bytes[cs..ce];
-            if running_target_pos >= target_window.len() {
-                break;
-            }
-            let chunk_anchor = crate::SeedAnchor {
-                query_pos: 0,
-                target_pos: running_target_pos,
-            };
-            match wfa_extend(chunk, target_window, chunk_anchor) {
-                Ok(aln) => {
-                    if combined_cigar.is_empty() {
-                        first_target_start = aln.target_start;
-                    }
-                    combined_cigar.push_str(&aln.cigar);
-                    total_ed += aln.edit_distance;
-                    running_target_pos = aln.target_end;
-                    last_target_end = aln.target_end;
-                }
-                Err(_) => break,
-            }
-            cs = ce;
-        }
-
-        if combined_cigar.is_empty() {
+    // Deduplicate chains into loci. At 12% error one true locus fragments into many
+    // chains whose projected starts (Chain::target_start) land within ±2 bp; collapses
+    // them to one alignment per locus. merge_tol = query_len/10 swallows indel drift
+    // (tens of bp at 12% over 20 kb) while leaving distinct tandem/repeat copies —
+    // separated by more — as separate loci. Chains come sorted by score desc from
+    // chain_seeds, so the first chain at each locus is the best.
+    let merge_tol = (query_len / 10).max(256);
+    let mut loci: Vec<&crate::chaining::Chain> = Vec::with_capacity(chains.len());
+    for chain in chains {
+        let tp = chain.target_start();
+        if loci
+            .last()
+            .map(|c| tp <= c.target_start() + merge_tol && c.target_start() <= tp + merge_tol)
+            .unwrap_or(false)
+        {
             continue;
         }
+        loci.push(chain);
+    }
+    // (chaining already caps chains at chain_cap via select_anchors upstream; this dedup
+    // pass never grows the count, only shrinks it.)
 
-        let combined = crate::Alignment {
-            cigar: combined_cigar,
-            edit_distance: total_ed,
-            query_start: anchor.query_pos as usize,
-            query_end: query_len,
-            target_start: first_target_start,
-            target_end: last_target_end,
-        };
-
-        if total_ed < best_combined_ed {
-            best_combined_ed = total_ed;
-            best_alignment = Some(combined.clone());
+    let mut alignments: Vec<crate::Alignment> = Vec::with_capacity(loci.len());
+    for chain in &loci {
+        if let Some(aln) = align_long_locus(query_bytes, target_bases, &chain.seeds, seed_k, query_len) {
+            alignments.push(aln);
         }
-        merged_alignments.push(combined);
+    }
+    if alignments.is_empty() {
+        return None;
     }
 
-    let best = best_alignment?;
-    let scored = score_alignments(&merged_alignments, query_bytes.len());
+    // score_alignments keeps the primary (min edit distance) + alternatives within the
+    // 0.95 score-ratio band — the same surface the rest of the pipeline reads, so
+    // cross-space superposition and the 0.95 filter behave unchanged.
+    Some(score_alignments(&alignments, query_bytes.len()))
+}
 
-    let primary = if scored.primary.edit_distance == best_combined_ed {
-        scored.primary
-    } else {
-        best.clone()
-    };
+/// Align one long-read locus: exact k-mer segments stitched by global Myers gap-fills,
+/// with fitting WFA end-extensions only at the two read ends.
+///
+/// `seeds` are co-linear in query_pos — chaining's DP guarantees it, and
+/// [`crate::chaining::chain_segments`] preserves it. Each gap between consecutive
+/// segments is the real indel/noise between two anchors; Myers' bit-parallel global
+/// alignment is O(q·t/64) with ~no allocation, so even a ~5 kb gap (ChainParams::max_dist_x)
+/// is ~1.6M word-ops — sub-ms. Fitting WFA runs once per read end (not per gap).
+fn align_long_locus(
+    query: &[u8],
+    target: &[u8],
+    seeds: &[crate::Seed],
+    k: usize,
+    query_len: usize,
+) -> Option<crate::Alignment> {
+    let segs = chain_segments(seeds, query, target, k);
+    if segs.is_empty() {
+        // No exact k-mer survived validation (cross-strand minimizer hit). Fall back to a
+        // single fitting extension from the seed's projected target position — one call,
+        // not a chunked WFA loop. Mirrors the old (0,0)-fallback cost shape only when
+        // anchoring truly has no exact seed to gap-fill between.
+        if seeds.is_empty() {
+            return None;
+        }
+        let tp = (seeds[0].target_pos as i64 - seeds[0].query_pos as i64).max(0) as usize;
+        let window_end = (tp + query_len * 2).min(target.len());
+        let window = &target[..window_end];
+        let anchor = crate::SeedAnchor { query_pos: 0, target_pos: tp };
+        return match wfa_extend(query, window, anchor) {
+            Ok(aln) => Some(aln),
+            Err(e) => {
+                log::warn!("long-read locus fitting extension failed: {e:?}");
+                None
+            }
+        };
+    }
 
-    let alternatives: Vec<crate::Alignment> = merged_alignments
-        .into_iter()
-        .filter(|a| *a != primary)
-        .collect();
+    let mut ops: Vec<(usize, char)> = Vec::new();
+    let mut edit_distance = 0usize;
+    let first = &segs[0];
 
-    Some(crate::ScoredAlignments {
-        primary,
-        alternatives,
+    // Prefix: query[0..first.q], aligned to the target ending at the first segment.
+    // Reversed (query suffix + target suffix before the segment) so the fitting WFA's
+    // free end lands at the read head; parsed strand-forward directly.
+    let prefix = &query[..first.q];
+    if !prefix.is_empty() {
+        let t_start = first.t.saturating_sub(prefix.len());
+        let t_end = (first.t + query_len * 2).min(target.len());
+        let twin = &target[t_start..t_end];
+        let rev_q: Vec<u8> = prefix.iter().rev().copied().collect();
+        let rev_t: Vec<u8> = twin.iter().rev().copied().collect();
+        let cap = crate::wfa_simd::default_max_s_cap(rev_q.len(), rev_t.len());
+        let (cigar, ed, _) = crate::wfa_simd::fill_wfa_fitting_impl(&rev_q, &rev_t, Some(cap))?;
+        for (n, op) in phraya_core::cigar::parse_ops(&cigar) {
+            push_op(&mut ops, n, op);
+        }
+        edit_distance += ed;
+    }
+    push_op(&mut ops, first.len, 'M');
+
+    // Gaps between consecutive exact segments: global Myers fill. Bounded by
+    // ChainParams::max_dist_x (5000 bp), so Myers' ~6 MB worst case is acceptable.
+    for w in segs.windows(2) {
+        let prev = &w[0];
+        let next = &w[1];
+        let gap_q = &query[prev.q + prev.len..next.q];
+        let gap_t = &target[prev.t + prev.len..next.t];
+        let (ed, cigar) = myers_edit_distance(gap_q, gap_t);
+        for (n, op) in phraya_core::cigar::parse_ops(&cigar) {
+            push_op(&mut ops, n, op);
+        }
+        edit_distance += ed;
+        push_op(&mut ops, next.len, 'M');
+    }
+
+    // Suffix: query[last_end..], fitting WFA from the last segment's end.
+    let last = segs.last().unwrap();
+    let suffix = &query[last.q + last.len..];
+    if !suffix.is_empty() && last.t + last.len < target.len() {
+        let t_end = (last.t + last.len + query_len * 2).min(target.len());
+        let twin = &target[last.t + last.len..t_end];
+        let cap = crate::wfa_simd::default_max_s_cap(suffix.len(), twin.len());
+        let (cigar, ed, _) = crate::wfa_simd::fill_wfa_fitting_impl(suffix, twin, Some(cap))?;
+        for (n, op) in phraya_core::cigar::parse_ops(&cigar) {
+            push_op(&mut ops, n, op);
+        }
+        edit_distance += ed;
+    }
+
+    let cigar: String = ops.iter().map(|(n, op)| format!("{n}{op}")).collect();
+    let target_start = (first.t as i64 - first.q as i64).max(0) as usize;
+    let target_end = segs.last().map(|l| l.t + l.len).unwrap_or(target_start);
+
+    Some(crate::Alignment {
+        cigar,
+        edit_distance,
+        query_start: 0,
+        query_end: query_len,
+        target_start,
+        target_end,
     })
 }
 
@@ -1018,18 +1078,18 @@ pub fn align_read_prepared(
     // both, exactly as before.
     let (fwd, rev) = if !fwd_chains.is_empty() && rev_chains.is_empty() {
         (
-            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds, plan.alphabet),
+            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds, plan.alphabet, prepared.fwd_sketch.k),
             None,
         )
     } else if fwd_chains.is_empty() && !rev_chains.is_empty() {
         (
             None,
-            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds, plan.alphabet),
+            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds, plan.alphabet, prepared.rev_sketch.as_ref().map_or(0, |s| s.k)),
         )
     } else {
         (
-            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds, plan.alphabet),
-            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds, plan.alphabet),
+            extend_chains(config.strategy, config.gap_model, ctx, query.bases(), &fwd_chains, &fwd_seeds, plan.alphabet, prepared.fwd_sketch.k),
+            extend_chains(config.strategy, config.gap_model, ctx, &prepared.rc_bases, &rev_chains, &rev_seeds, plan.alphabet, prepared.rev_sketch.as_ref().map_or(0, |s| s.k)),
         )
     };
 

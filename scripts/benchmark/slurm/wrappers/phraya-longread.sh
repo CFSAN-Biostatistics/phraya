@@ -2,14 +2,12 @@
 # Phraya --strategy long-read wrapper (ONT/PacBio CLR)
 # Usage: phraya-longread.sh <ref.fasta> <reads.fq> <out_dir> <threads>
 #
-# NOTE: This uses unbanded WFA via the standard wfa_extend() path.
-# The 512 MB wavefront memory cap (default_max_s_cap) causes alignment
-# abandonment for reads with edit distance >~1% divergence (~700 edits on 50kb reads).
-# The LongReadAligner module in long_read.rs provides correct chunked logic but
-# is NOT wired into the alignment pipeline.
-set -euo pipefail
+# Uses the minimap2-style seed→chain→align long-read path in phraya-align/src/executor.rs:
+# minimizer seeding → chain dedup by locus → exact-segment gap-fill with global Myers fills
+# between seeds and fitting end-extensions. No chunked whole-query WFA, so the 512 MB
+# wavefront-memory cap no longer bounds long-read length.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+set -euo pipefail
 source "$SCRIPT_DIR/config/global.env"
 
 REF=$1; READS=$2; OUT_DIR=$3; THREADS=$4

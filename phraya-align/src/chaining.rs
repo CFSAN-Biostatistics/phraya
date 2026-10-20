@@ -113,6 +113,26 @@ impl ChainParams {
             min_chain_score: 25,
         }
     }
+
+    /// Chaining parameters for `Strategy::LongRead` — minimap2's `map-ont` preset
+    /// (`bw = 500`, `max_gap = 5000`, `min_chain_score = 40`).
+    ///
+    /// At ONT-scale error (~12%) only ~7% of 21-mers survive intact, so consecutive exact
+    /// seeds on one true locus are routinely hundreds of bp apart and drift by tens of bp
+    /// in diagonal. The short-read `max_dist_x = 100` / `max_band = 100` shred such a locus
+    /// into dozens of fragment chains; these values keep it one chain whose seeds the
+    /// long-read extension gap-fills between.
+    pub fn for_long_read() -> Self {
+        ChainParams {
+            seed_len: 21,
+            max_band: 500,
+            max_dist_x: 5000,
+            max_iter: 5000,
+            max_skip: 25,
+            gap_penalty: 0.21,
+            min_chain_score: 40,
+        }
+    }
 }
 
 /// Chaining score between a seed `i` and a candidate predecessor `j` (both already
