@@ -807,8 +807,16 @@ fn extend_chains_longread(
         }
         loci.push(chain);
     }
-    // (chaining already caps chains at chain_cap via select_anchors upstream; this dedup
-    // pass never grows the count, only shrinks it.)
+    // Locus dedup collapses near-duplicate chains; distinct loci are rare, so
+    // this stays small even though chain_seeds returns all chains sorted by score.
+    // (select_anchors caps chains at chain_cap for the other strategies; the LongRead path
+    // dispatches around it, so cap loci here if needed — left uncapped for now since dedup
+    // alone keeps the locus count small on real data.)
+
+    // Safety cap: chain_cap (100 for LongRead) is the documented locus upper bound.
+    // Dedup alone is enough on real data, but this guards pathological repeat landscapes.
+    let cap = chain_cap(Strategy::LongRead);
+    if loci.len() > cap { loci.truncate(cap); }
 
     let mut alignments: Vec<crate::Alignment> = Vec::with_capacity(loci.len());
     for chain in &loci {
