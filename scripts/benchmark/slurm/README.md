@@ -2,6 +2,18 @@
 
 Production-grade SLURM benchmarking suite for comparing BWA-MEM2 and minimap2 across 16 benchmark targets with proper hardware normalization (STREAM Triad), 3-replicate averaging, and score.py-compatible output.
 
+## Reporting rule
+
+Benchmark write-ups (`benchmarking-N.md`, handoff results sections) are produced **only after
+the entire suite has run on Reedling2** (the full targets × aligners × 3-replicate SLURM matrix
+for the alphabet being reported). Do not substitute local or single-dataset spot checks, even
+when they are quicker to run. If Reedling2 is unreachable, the data is missing, or the run
+fails, stop and report the failure rather than falling back to a smaller local result.
+
+Note: `config/targets.conf` also lists long-read and assembly-pair targets, which the default
+DNA invocation would include; pass `--targets` with the 9 small/medium DNA targets (T1-T7b, T8a)
+and set `DATA_ROOT` to the staged data (`/nfs/scratch/Justin.Payne/data-commons/test/benchmarking/alignment`).
+
 ## Quick Start
 
 ```bash
