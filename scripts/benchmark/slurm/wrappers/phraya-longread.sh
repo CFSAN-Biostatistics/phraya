@@ -42,28 +42,19 @@ PLAN_FILE="$OUT_DIR/plan.phrayaplan"
 START=$(date +%s.%N)
 "$PYTHON" "$MEASURE" "$OUT_DIR/time_verbose.txt" -- \
     bash -c "RAYON_NUM_THREADS=$THREADS '$PHRAYA' align --strategy long-read --reference '$REF' --output '$OUT_DIR' '$PLAN_FILE' >'$OUT_DIR/align.log' 2>&1"
-ELAPSED=$(awk "BEGIN{printf \"%.3f\", \$(date +%s.%N) - $START}")
+ELAPSED=$(awk -v s="$START" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
 
 # Parse timing output
 PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" 2>/dev/null | grep -oP '\d+' | tail -1 || echo "0")
 PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")
 
-# Count aligned reads from queries file
-N_TOTAL=0
-N_ALIGNED=0
-if [[ -f "$OUT_DIR/phraya/cross_space.phraya.queries" ]]; then
-    N_TOTAL=$("$PYTHON" -c "
-import msgpack, zstandard
-dctx = zstandard.ZstdDecompressor()
-with open('$OUT_DIR/phraya/cross_space.phraya.queries','rb') as f:
-    data = dctx.stream_reader(f).read()
-result = msgpack.unpackb(data, raw=False)
-print(sum(len(v) for v in result.values()))
-" 2>/dev/null || echo 0)
-    N_ALIGNED=$N_TOTAL
-fi
-
-UNALIGNED_FRAC=$(awk "BEGIN{if($N_TOTAL>0) printf \"%.4f\", max(0,($N_TOTAL-$N_ALIGNED)/$N_TOTAL); else print \"0.0000\"}")
+# Count reads with >=1 placement (and total reads) from the queries sidecar.
+# `align --output $OUT_DIR` writes the sidecar directly under $OUT_DIR.
+QUERIES="$OUT_DIR/cross_space.phraya.queries"
+[[ -f "$QUERIES" ]] || { echo "ERROR: queries sidecar not found: $QUERIES" >&2; exit 1; }
+N_ALIGNED=$("$PYTHON" "$SCRIPT_DIR/utils/count_phraya_aligned.py" "$QUERIES")
+N_TOTAL=$(awk 'NR%4==1' "$READS" | wc -l)
+UNALIGNED_FRAC=$(awk -v t="$N_TOTAL" -v a="$N_ALIGNED" 'BEGIN{if(t>0) printf "%.4f", (t-a)/t; else print "0.0000"}')
 
 cat > "$OUT_DIR/timing.txt" <<EOF
 wall_seconds=$ELAPSED

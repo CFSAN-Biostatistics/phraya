@@ -2,10 +2,12 @@
 # Local benchmark for long-read alignment (ONT/PacBio style)
 # Usage: run_local_bench_long.sh <label> [genome_size=5M] [num_reads=50] [min_len=10000] [max_len=30000]
 #
-# NOTE: Requires minimap2 and samtools. If they are not already on PATH, the
-# script loads them via the environment-modules system (Reedling2:
-# MODULE_MINIMAP2=minimap2/2.28, MODULE_SAMTOOLS=samtools/1.20; list others
-# with `module avail`). Override MINIMAP2/SAMTOOLS to use explicit binaries.
+# NOTE: Requires minimap2. If it is not already on PATH, the script loads it via
+# the environment-modules system (Reedling2: MODULE_MINIMAP2=minimap2/2.28; list
+# others with `module avail`). Override MINIMAP2 to use an explicit binary.
+# Both aligners are scored against the generator's ground truth with the same
+# script (slurm/utils/long_read_accuracy.py), tolerance TOLERANCE bp (default 100).
+# RESCORE_ONLY=1 reuses existing alignment outputs and re-runs scoring only.
 set -euo pipefail
 
 LABEL="${1:?usage: run_local_bench_long.sh <label> [genome_size=5M] [num_reads=50] [min_len=10000] [max_len=30000]}"
@@ -20,20 +22,20 @@ if [[ -z "${PHRAYA:-}" ]]; then
     [[ -x "$PHRAYA" ]] || PHRAYA="$PHRAYA.exe"
 fi
 MODULE_MINIMAP2="${MODULE_MINIMAP2:-minimap2/2.28}"
-MODULE_SAMTOOLS="${MODULE_SAMTOOLS:-samtools/1.20}"
 MINIMAP2="${MINIMAP2:-minimap2}"
-SAMTOOLS="${SAMTOOLS:-samtools}"
+TOLERANCE="${TOLERANCE:-100}"
 
 # Tools on Reedling2 are provided via `module`; non-interactive shells (ssh
 # command, batch) don't define it until /etc/profile is sourced.
 load_tool() {  # load_tool <binary> <module>
     command -v "$1" >/dev/null 2>&1 && return 0
+    set +u  # module/profile scripts reference unset variables
     type module >/dev/null 2>&1 || source /etc/profile >/dev/null 2>&1 || true
     type module >/dev/null 2>&1 && module load "$2" >/dev/null 2>&1 || true
+    set -u
     command -v "$1" >/dev/null 2>&1 || { echo "ERROR: $1 not found and 'module load $2' failed (see 'module avail')" >&2; exit 1; }
 }
 load_tool "$MINIMAP2" "$MODULE_MINIMAP2"
-load_tool "$SAMTOOLS" "$MODULE_SAMTOOLS"
 PYTHON="${PYTHON3:-python3}"
 GEN_LONG="$(dirname "$0")/gen_synthetic_long.py"
 ACCURACY_PY="$(dirname "$0")/../slurm/utils/long_read_accuracy.py"
@@ -69,60 +71,59 @@ echo "=== Phase 1: Plan Creation ===" >&2
 "$PHRAYA" plan --inputs "$READS" --reference "$REF" --output "$PLAN" 2>&1 | tee "$OUT_DIR/plan.log"
 [[ -f "$PLAN" ]] || { echo "ERROR: Plan file not created" >&2; exit 1; }
 
-echo "=== Phase 2: Align with phraya --strategy long-read ===" >&2
-START_PHRAYA=$(date +%s.%N)
-"$PHRAYA" align --strategy long-read --reference "$REF" --output "$OUT_DIR/phraya" "$PLAN" 2>&1 | tee "$OUT_DIR/phraya_align.log" || PHRAYA_FAILED=1
-ELAPSED_PHRAYA=$(awk -v s="$START_PHRAYA" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
-
-echo "=== Phase 3: Align with minimap2 -ax map-ont ===" >&2
-START_MM2=$(date +%s.%N)
-"$MINIMAP2" -ax map-ont -t 1 "$MMI" "$READS" > "$OUT_DIR/minimap2.sam" 2> "$OUT_DIR/minimap2.log"
-ELAPSED_MM2=$(awk -v s="$START_MM2" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
-
-echo "=== Phase 4: Placement Accuracy ===" >&2
-
-# Count total reads from truth file (subtract header line)
-N_TOTAL=$(tail -n +2 "$TRUTH" | wc -l)
-
-# Get mapped counts from minimap2
-N_MAPPED_MM2=$("$SAMTOOLS" view -c -F4 "$OUT_DIR/minimap2.sam" 2>/dev/null || echo 0)
-
-# Get phraya mapped count from queries file
-N_MAPPED_PHRAYA=0
-if [[ -f "$OUT_DIR/phraya/cross_space.phraya.queries" ]]; then
-    N_MAPPED_PHRAYA=$("$PYTHON" -c "
-import msgpack, zstandard
-dctx = zstandard.ZstdDecompressor()
-with open('$OUT_DIR/phraya/cross_space.phraya.queries','rb') as f:
-    data = dctx.stream_reader(f).read()
-result = msgpack.unpackb(data, raw=False)
-print(sum(len(v) for v in result.values()))
-" 2>/dev/null || echo 0)
-fi
-
-# Compute PA for each aligner independently
-if [[ "${PHRAYA_FAILED:-0}" == "1" ]]; then
-    PA_PHRAYA="FAILED"
+if [[ "${RESCORE_ONLY:-0}" == "1" ]]; then
+    # Reuse existing alignment outputs; only re-run scoring. Walls come from the prior results.txt.
+    echo "=== RESCORE_ONLY: skipping phases 2-3 ===" >&2
+    ELAPSED_PHRAYA=$(sed -n 's/^phraya_wall_seconds=//p' "$OUT_DIR/results.txt")
+    ELAPSED_MM2=$(sed -n 's/^minimap2_wall_seconds=//p' "$OUT_DIR/results.txt")
 else
-    PA_PHRAYA=$("$PYTHON" "$ACCURACY_PY" \
-        "$OUT_DIR/phraya/cross_space.phraya.queries" "$TRUTH" --tolerance 100 2>/dev/null | cut -f1 || echo "0.0000")
+    echo "=== Phase 2: Align with phraya --strategy long-read ===" >&2
+    START_PHRAYA=$(date +%s.%N)
+    "$PHRAYA" align --strategy long-read --reference "$REF" --output "$OUT_DIR/phraya" "$PLAN" 2>&1 | tee "$OUT_DIR/phraya_align.log" || PHRAYA_FAILED=1
+    ELAPSED_PHRAYA=$(awk -v s="$START_PHRAYA" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
+
+    echo "=== Phase 3: Align with minimap2 -ax map-ont ===" >&2
+    START_MM2=$(date +%s.%N)
+    "$MINIMAP2" -ax map-ont -t 1 "$MMI" "$READS" > "$OUT_DIR/minimap2.sam" 2> "$OUT_DIR/minimap2.log"
+    ELAPSED_MM2=$(awk -v s="$START_MM2" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
 fi
-PA_MM2=$(awk "BEGIN{if($N_TOTAL>0) printf \"%.4f\", $N_MAPPED_MM2/$N_TOTAL; else print \"0.0000\"}")
+
+echo "=== Phase 4: Placement Accuracy (vs ground truth, tolerance ${TOLERANCE}bp) ===" >&2
+# Both aligners are scored by the same script against the same truth. No stderr
+# suppression or fallbacks: a scoring failure aborts the run (set -e).
+if [[ "${PHRAYA_FAILED:-0}" == "1" ]]; then
+    SCORE_PHRAYA="FAILED"
+else
+    SCORE_PHRAYA=$("$PYTHON" "$ACCURACY_PY" "$OUT_DIR/phraya/cross_space.phraya.queries" "$TRUTH" --tolerance "$TOLERANCE")
+fi
+SCORE_MM2=$("$PYTHON" "$ACCURACY_PY" "$OUT_DIR/minimap2.sam" "$TRUTH" --tolerance "$TOLERANCE")
+
+# score fields: pa precision n_truth n_mapped n_correct n_correct_any
+field() { echo "$1" | cut -f"$2"; }
 
 echo "=== Results ===" >&2
-echo "phraya-longread: wall=${ELAPSED_PHRAYA}s, mapped=${N_MAPPED_PHRAYA}/${N_TOTAL}, PA=${PA_PHRAYA}"
-echo "minimap2-ont:    wall=${ELAPSED_MM2}s, mapped=${N_MAPPED_MM2}/${N_TOTAL}, PA=${PA_MM2}"
+printf '%-16s %10s %8s %10s %9s %9s %12s\n' aligner wall_s PA precision mapped correct correct_any
+if [[ "$SCORE_PHRAYA" == "FAILED" ]]; then
+    echo "phraya-longread  FAILED"
+else
+    printf '%-16s %10s %8s %10s %6s/%-3s %9s %12s\n' phraya-longread "$ELAPSED_PHRAYA" \
+        "$(field "$SCORE_PHRAYA" 1)" "$(field "$SCORE_PHRAYA" 2)" "$(field "$SCORE_PHRAYA" 4)" \
+        "$(field "$SCORE_PHRAYA" 3)" "$(field "$SCORE_PHRAYA" 5)" "$(field "$SCORE_PHRAYA" 6)"
+fi
+printf '%-16s %10s %8s %10s %6s/%-3s %9s %12s\n' minimap2-ont "$ELAPSED_MM2" \
+    "$(field "$SCORE_MM2" 1)" "$(field "$SCORE_MM2" 2)" "$(field "$SCORE_MM2" 4)" \
+    "$(field "$SCORE_MM2" 3)" "$(field "$SCORE_MM2" 5)" "$(field "$SCORE_MM2" 6)"
 echo ""
-echo "Results file: $BENCH_DIR/$LABEL/results.txt"
+echo "Results file: $OUT_DIR/results.txt"
 {
     echo "label=$LABEL"
     echo "genome_size=$GENOME_SIZE"
     echo "num_reads=$NUM_READS"
     echo "read_len_range=$MIN_LEN-$MAX_LEN"
+    echo "tolerance=$TOLERANCE"
     echo "phraya_wall_seconds=$ELAPSED_PHRAYA"
-    echo "phraya_mapped=$N_MAPPED_PHRAYA"
-    echo "phraya_pa=$PA_PHRAYA"
+    echo "phraya_score=$SCORE_PHRAYA"
     echo "minimap2_wall_seconds=$ELAPSED_MM2"
-    echo "minimap2_mapped=$N_MAPPED_MM2"
-    echo "minimap2_pa=$PA_MM2"
+    echo "minimap2_score=$SCORE_MM2"
+    echo "score_fields=pa precision n_truth n_mapped n_correct n_correct_any"
 } > "$OUT_DIR/results.txt"
