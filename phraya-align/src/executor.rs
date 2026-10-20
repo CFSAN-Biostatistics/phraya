@@ -880,12 +880,18 @@ fn align_long_locus(
 ) -> Option<crate::Alignment> {
     let query_len = query.len();
     let segs = chain_segments(seeds, query, target, k);
+    if std::env::var("LR7_DEBUG").is_ok() {
+        eprintln!("LR7 segs={} first_t={} first_q={} first_len={} n_seeds={} qlen={}", segs.len(), segs.first().map(|s| s.t).unwrap_or(0), segs.first().map(|s| s.q).unwrap_or(0), segs.first().map(|s| s.len).unwrap_or(0), seeds.len(), query_len);
+    }
     if segs.is_empty() {
         // No exact k-mer survived validation (cross-strand minimizer hit). Fall back to a
         // single fitting extension from the seed's projected target position — one call,
         // not a chunked WFA loop.
         if seeds.is_empty() {
             return None;
+        }
+        if std::env::var("LR7_DEBUG").is_ok() {
+            eprintln!("LR7 EMPTY-SEGS fallback: tp={}", (seeds[0].target_pos as i64 - seeds[0].query_pos as i64).max(0) as usize);
         }
         let tp = (seeds[0].target_pos as i64 - seeds[0].query_pos as i64).max(0) as usize;
         let window_end = (tp + query_len * 2).min(target.len());
