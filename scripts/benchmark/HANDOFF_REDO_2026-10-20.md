@@ -244,8 +244,7 @@ a268d3a. minimap2 2.28 from `module minimap2/2.28` (env
 | metric | phraya | minimap2 |
 |---|---:|---:|
 | reads placed | 50/50 | 50/50 |
-|| PA (±100 bp, primary) | 0.9800 | 1.0000 |
-|| PA (±100 bp, best identity) | 0.9800 | 1.0000 |
+| PA (±100 bp, primary) | 0.9800 | 1.0000 |
 
 phraya `plan` + `align` total 1.365 s. Align-only per-read is 0.671/50 = 0.013 s
 (minimap2 0.882/50 = 0.018 s, including its FM-index build in the 0.882 s).
