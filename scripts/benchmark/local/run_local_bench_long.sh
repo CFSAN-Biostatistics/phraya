@@ -51,35 +51,42 @@ mkdir -p "$OUT_DIR"
 
 echo "=== Long-Read Benchmark: $LABEL ===" >&2
 
-echo "Generating long-read data..."
-python3 "$GEN_LONG" \
-    --genome-size "$GENOME_SIZE" \
-    --num-reads "$NUM_READS" \
-    --min-len "$MIN_LEN" \
-    --max-len "$MAX_LEN" \
-    --seed "$SEED" \
-    --ref-out "$REF" \
-    --reads-out "$READS"
-
-echo "Building minimap2 index..."
-MMI="${REF%.fasta}.mmi"
-if [[ ! -f "$MMI" ]]; then
-    "$MINIMAP2" -d "$MMI" "$REF"
-fi
-
-echo "=== Phase 1: Plan Creation ===" >&2
-"$PHRAYA" plan --inputs "$READS" --reference "$REF" --output "$PLAN" 2>&1 | tee "$OUT_DIR/plan.log"
-[[ -f "$PLAN" ]] || { echo "ERROR: Plan file not created" >&2; exit 1; }
-
+PHRAYA_FAILED=0
 if [[ "${RESCORE_ONLY:-0}" == "1" ]]; then
-    # Reuse existing alignment outputs; only re-run scoring. Walls come from the prior results.txt.
-    echo "=== RESCORE_ONLY: skipping phases 2-3 ===" >&2
+    # Reuse existing data + alignment outputs; only re-run scoring. Walls come from the prior results.txt.
+    echo "=== RESCORE_ONLY: skipping data generation, plan, and alignment ===" >&2
+    for f in "$TRUTH" "$OUT_DIR/results.txt" "$OUT_DIR/phraya/cross_space.phraya.queries" "$OUT_DIR/minimap2.sam"; do
+        [[ -f "$f" ]] || { echo "ERROR: RESCORE_ONLY needs existing $f (run once without RESCORE_ONLY)" >&2; exit 1; }
+    done
     ELAPSED_PHRAYA=$(sed -n 's/^phraya_wall_seconds=//p' "$OUT_DIR/results.txt")
     ELAPSED_MM2=$(sed -n 's/^minimap2_wall_seconds=//p' "$OUT_DIR/results.txt")
 else
+    echo "Generating long-read data..."
+    python3 "$GEN_LONG" \
+        --genome-size "$GENOME_SIZE" \
+        --num-reads "$NUM_READS" \
+        --min-len "$MIN_LEN" \
+        --max-len "$MAX_LEN" \
+        --seed "$SEED" \
+        --ref-out "$REF" \
+        --reads-out "$READS"
+
+    # Always rebuild (~0.2s for 5 Mbp): the reference is regenerated each run, so a cached index could be stale.
+    echo "Building minimap2 index..."
+    MMI="$REF.mmi"
+    "$MINIMAP2" -d "$MMI" "$REF" 2> "$OUT_DIR/minimap2_index.log"
+
+    echo "=== Phase 1: Plan Creation ===" >&2
+    "$PHRAYA" plan --inputs "$READS" --reference "$REF" --output "$PLAN" 2>&1 | tee "$OUT_DIR/plan.log"
+    [[ -f "$PLAN" ]] || { echo "ERROR: Plan file not created" >&2; exit 1; }
+
     echo "=== Phase 2: Align with phraya --strategy long-read ===" >&2
     START_PHRAYA=$(date +%s.%N)
-    "$PHRAYA" align --strategy long-read --reference "$REF" --output "$OUT_DIR/phraya" "$PLAN" 2>&1 | tee "$OUT_DIR/phraya_align.log" || PHRAYA_FAILED=1
+    # Capture phraya's own exit status, not tee's; don't let set -e abort before scoring minimap2.
+    set +e
+    "$PHRAYA" align --strategy long-read --reference "$REF" --output "$OUT_DIR/phraya" "$PLAN" 2>&1 | tee "$OUT_DIR/phraya_align.log"
+    [[ "${PIPESTATUS[0]}" == "0" ]] || PHRAYA_FAILED=1
+    set -e
     ELAPSED_PHRAYA=$(awk -v s="$START_PHRAYA" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
 
     echo "=== Phase 3: Align with minimap2 -ax map-ont ===" >&2

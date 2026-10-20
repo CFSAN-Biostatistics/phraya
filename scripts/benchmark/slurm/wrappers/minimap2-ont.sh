@@ -6,7 +6,7 @@
 # For PacBio CLR (~10% error), use -ax map-pb; for HiFi (~1% error), use -ax map-pb-fast.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config/global.env"
 
 REF=$1; READS=$2; OUT_DIR=$3; THREADS=$4

@@ -9,7 +9,7 @@
 # is NOT wired into the alignment pipeline.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/config/global.env"
 
 REF=$1; READS=$2; OUT_DIR=$3; THREADS=$4
