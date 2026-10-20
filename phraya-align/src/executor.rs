@@ -1024,8 +1024,8 @@ mod longread_locus_tests {
     #[test]
     fn locus_long_prefix_no_target_drift() {
         // Long prefix (4000 bp) before the first exact seed, perfect match. Verifies the
-        // 1.6x end window keeps fit_end in fitting mode (not global) and that target_start
-        // anchors at 0 rather than drifting by the window slack.
+        // prefix uses global Myers against exactly prefix.len() target bases ending at the
+        // first segment (no free-end drift), so target_start anchors to the seed diagonal.
         let k = 15;
         let prefix_len = 4000;
         let suffix_len = 4000;
