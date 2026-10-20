@@ -45,7 +45,8 @@ START=$(date +%s.%N)
 ELAPSED=$(awk -v s="$START" -v e="$(date +%s.%N)" 'BEGIN{printf "%.3f", e - s}')
 
 # Parse timing output
-PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" 2>/dev/null | grep -oP '\d+' | tail -1 || echo "0")
+PEAK_RSS_KB=$(grep 'Maximum resident' "$OUT_DIR/time_verbose.txt" | grep -oP '\d+' | tail -1)
+[[ -n "$PEAK_RSS_KB" ]] || { echo "ERROR: no RSS reading in $OUT_DIR/time_verbose.txt (measure_rss.py failed?)" >&2; exit 1; }
 PEAK_RSS_GB=$(awk "BEGIN{printf \"%.3f\", ${PEAK_RSS_KB:-0}/1048576}")
 
 # Count reads with >=1 placement (and total reads) from the queries sidecar.

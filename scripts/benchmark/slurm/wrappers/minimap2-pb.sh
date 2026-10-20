@@ -45,3 +45,6 @@ total_reads=${N_TOTAL}
 n_aligned=${N_MAPPED}
 n_unmapped=${N_UNMAPPED}
 unaligned_frac=${UNALIGNED_FRAC}
+EOF
+
+echo "Elapsed: ${ELAPSED}s, RSS=${PEAK_RSS_GB}GB, aligned=${N_MAPPED}/${N_TOTAL}" >&2
