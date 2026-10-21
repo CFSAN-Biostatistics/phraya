@@ -95,6 +95,10 @@ def load_rep_timing(rep_dir: Path) -> Optional[dict]:
     out["unaligned_frac"] = float(raw.get("unaligned_frac") or 0)
     out["n_variants"] = raw.get("n_variants")
     out["alphabet"] = raw.get("alphabet", "dna")  # older runs predate this field
+    out["threads"] = int(raw.get("threads") or 0)
+    # Optional long-read fields (null/absent for other alphabets).
+    out["plan_seconds"] = float(raw["plan_seconds"]) if raw.get("plan_seconds") else None
+    out["total_bases"] = int(raw["total_bases"]) if raw.get("total_bases") else None
     return out
 
 
@@ -201,6 +205,37 @@ def compute_pa_protein(queries_file: Path, truth_file: Path, total_queries: int 
         return float(parts[0])
     except Exception as e:
         print(f"WARNING: PA (phraya-protein) failed for {queries_file}: {e}", file=sys.stderr)
+        return None
+
+
+LONG_READ_SCORE_FIELDS = ("pa", "precision", "n_truth", "n_mapped", "n_correct", "n_correct_any")
+
+
+def compute_long_read_scores(alignments: Path, truth_file: Path, tolerance: int = 100) -> dict | None:
+    """Long-read placement scores via long_read_accuracy.py: one scorer for both the phraya
+    `.queries` sidecar and minimap2 `.sam`, so aligners are compared on identical rules.
+    Returns {pa, precision, n_truth, n_mapped, n_correct, n_correct_any}, or None with a
+    warning on any failure (never a fabricated 0.0)."""
+    helper = SCRIPT_DIR / "long_read_accuracy.py"
+    if not helper.exists():
+        print(f"WARNING: {helper} not found — long-read PA will be null", file=sys.stderr)
+        return None
+    try:
+        python3 = os.environ.get("PYTHON3_BIN", "python3")
+        result = subprocess.run(
+            [python3, str(helper), str(alignments), str(truth_file), f"--tolerance={tolerance}"],
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            print(f"WARNING: long_read_accuracy.py failed for {alignments}: {result.stderr[-300:]}", file=sys.stderr)
+            return None
+        parts = result.stdout.strip().split("\t")
+        if len(parts) != len(LONG_READ_SCORE_FIELDS):
+            print(f"WARNING: unexpected long_read_accuracy.py output for {alignments}: {result.stdout[:200]!r}", file=sys.stderr)
+            return None
+        return {k: float(v) if k in ("pa", "precision") else int(v) for k, v in zip(LONG_READ_SCORE_FIELDS, parts)}
+    except Exception as e:
+        print(f"WARNING: long-read PA failed for {alignments}: {e}", file=sys.stderr)
         return None
 
 
@@ -317,11 +352,14 @@ def aggregate(run_dir_str: str) -> dict:
     stream_triad_gbps = read_stream_triad(run_dir)
     genome_sizes, dna_target_paths = load_targets_conf(run_dir)
     proteome_residues, protein_target_paths = load_targets_protein_conf(run_dir)
+    longread_sizes, longread_target_paths = load_targets_conf(run_dir, filename="targets_longread.conf")
     # PA for SAM/BAM aligners uses sam_accuracy.py (wgsim read-name parsing),
     # not paftools.js mapeval (which expects dwgsim format, not wgsim format).
     paftools = "unused"  # kept for compatibility with call site below
 
-    data_root = Path.home() / "data-commons" / "test" / "benchmarking" / "alignment"
+    # DATA_ROOT (exported by global.env / the orchestrator) wins over the home-directory default,
+    # so truth sidecars resolve on clusters where the data lives on scratch.
+    data_root = Path(os.environ.get("DATA_ROOT") or (Path.home() / "data-commons" / "test" / "benchmarking" / "alignment"))
 
     # results[aligner][target_id] = list of per-rep dicts
     results: dict[str, dict[str, list]] = {}
@@ -393,7 +431,19 @@ def aggregate(run_dir_str: str) -> dict:
             alphabet = reps[0].get("alphabet", "dna")
             gap_model = gap_model_from_aligner(aligner)
 
-            if is_phraya and alphabet == "protein":
+            lr_scores = None
+            if alphabet == "long-read":
+                truth_file = data_root / longread_target_paths.get(target_id, "") / "data" / "reads" / "reads_1.fq.truth.tsv"
+                aln_file = rep0_dir / ("cross_space.phraya.queries" if is_phraya else "alignment.sam")
+                if aln_file.exists() and truth_file.exists():
+                    print(f"Computing PA (long-read) for {aligner} {target_id}...", file=sys.stderr)
+                    lr_scores = compute_long_read_scores(aln_file, truth_file)
+                    pa = lr_scores["pa"] if lr_scores else None
+                else:
+                    print(f"WARNING: long-read PA skipped for {aligner} {target_id}: "
+                          f"{'missing ' + str(truth_file) if not truth_file.exists() else 'missing ' + str(aln_file)}",
+                          file=sys.stderr)
+            elif is_phraya and alphabet == "protein":
                 queries_file = rep0_dir / "alignment.phraya.queries"
                 truth_file = data_root / protein_target_paths.get(target_id, "") / "data" / "protein" / "queries.fasta.truth.tsv"
                 if queries_file.exists():
@@ -468,6 +518,22 @@ def aggregate(run_dir_str: str) -> dict:
                 # apply to a proteome-scale workload).
                 denom = mean_wall * 8 * stream_triad_gbps / 1000  # GB/s
                 entry["rnt"] = round(total_reads / denom, 4) if denom > 0 else None
+            elif alphabet == "long-read":
+                entry["genome_size_gb"] = longread_sizes.get(target_id, 0.0)
+                entry["threads"] = reps[0]["threads"] or entry["threads"]
+                # The generic mean above drops 0.0 fractions; for long reads 0.0 is a real result.
+                entry["unaligned_frac"] = round(mean(r["unaligned_frac"] for r in reps), 4)
+                if len(wall_times) > 1 and mean_wall > 0:
+                    entry["wall_cv_pct"] = round(stdev(wall_times) / mean_wall * 100, 1)
+                bases = [r["total_bases"] for r in reps if r["total_bases"]]
+                if bases and mean_wall > 0:
+                    entry["bases_per_s"] = round(mean(bases) / mean_wall, 1)
+                plans = [r["plan_seconds"] for r in reps if r["plan_seconds"] is not None]
+                if plans:
+                    entry["plan_time_s"] = round(mean(plans), 2)
+                if lr_scores is not None:
+                    for k in ("precision", "n_truth", "n_mapped", "n_correct", "n_correct_any"):
+                        entry[k] = round(lr_scores[k], 4) if k == "precision" else lr_scores[k]
             else:
                 entry["genome_size_gb"] = genome_sizes.get(target_id, 0.0)
             if gap_model is not None:

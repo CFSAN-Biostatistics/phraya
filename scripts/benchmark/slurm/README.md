@@ -330,6 +330,33 @@ truth sidecar — no wgsim-style encoding exists for protein). DIAMOND/BLASTP
 write tabular output, not SAM, and don't have a PA helper yet; their `pa` field
 is `null`, not a fabricated `0.0`.
 
+## Long-read benchmarking
+
+`--alphabet long-read` runs `minimap2-ont` (`-x map-ont`), `minimap2-pb` (`-x map-pb`) and
+`phraya-longread` (`phraya align --strategy long-read`) against `config/targets_longread.conf`
+on single-end reads (4-arg wrapper contract `<ref> <reads.fq> <out_dir> <threads>`).
+
+```bash
+DATA_ROOT=/nfs/scratch/Justin.Payne/data-commons/test/benchmarking/alignment \
+  ./run_benchmark.sh --alphabet long-read                 # 8 threads
+THREADS=1 DATA_ROOT=... ./run_benchmark.sh --alphabet long-read   # single-thread pass
+```
+
+Per target the data must provide `data/reference/reference.fasta`, `data/reads/reads_1.fq` and
+the generator's truth sidecar `data/reads/reads_1.fq.truth.tsv` (`gen_synthetic_long.py` format).
+
+- `wall_seconds` is the aligner step only for every tool: `phraya align`, `minimap2` with a prebuilt
+  index. `phraya plan` (read + reference sketching) is the analogue of minimap2's index build and is
+  reported separately as `plan_time_s`. minimap2 indices are preset-specific
+  (`reference.map-ont.mmi`, `reference.map-pb.mmi`) and built atomically.
+- PA / precision / `n_correct_any` come from `utils/long_read_accuracy.py` for both phraya
+  (`cross_space.phraya.queries`) and minimap2 (`alignment.sam`, primary records), tolerance ±100 bp.
+- `results.json` long-read entries add `bases_per_s`, `plan_time_s`, `wall_cv_pct`, `precision`,
+  `n_truth`, `n_mapped`, `n_correct`, `n_correct_any`. `score.py` (short-read CAS/CBS) does not
+  apply to long-read runs.
+- If any task fails, the dependent aggregation job never starts; run
+  `utils/aggregate_results.py <run_dir> > <run_dir>/results.json` by hand (with `DATA_ROOT` set).
+
 ## Gap-affine scoring benchmarking (ADR-0014)
 
 `phraya-sensitive-linear` and `phraya-sensitive-affine` (once ADR-0014 ships;

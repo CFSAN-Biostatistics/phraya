@@ -1,6 +1,6 @@
 #!/bin/bash
 # Main orchestrator for HPC aligner benchmark
-# Usage: ./run_benchmark.sh [--targets targets.conf] [--large] [--dry-run] [--alphabet {dna|protein|both}]
+# Usage: ./run_benchmark.sh [--targets targets.conf] [--large] [--dry-run] [--alphabet {dna|protein|both|long-read}]
 
 set -euo pipefail
 
@@ -40,11 +40,16 @@ Options:
                         dna, config/targets_protein.conf for protein). Not valid
                         with --alphabet both (ambiguous which alphabet it targets)
                         — run dna and protein separately with their own --targets.
-  --alphabet MODE      dna (default) | protein | both. See ADR-0013;
+  --alphabet MODE      dna (default) | protein | both | long-read. See ADR-0013;
                         --alphabet protein exercises DIAMOND/BLASTP + phraya
                         --alphabet protein instead of the DNA aligner set, on
                         a 4-arg <proteome> <query> <out_dir> <threads> wrapper
                         contract (no paired reads) — see BENCHMARK_EXPANSION.md.
+                        --alphabet long-read runs minimap2-ont, minimap2-pb and
+                        phraya --strategy long-read on single-end reads (4-arg
+                        <ref> <reads.fq> <out_dir> <threads>); default targets
+                        file config/targets_longread.conf. `both` still means
+                        dna + protein only; long-read is always run on its own.
   --large              Include large targets (T8b 17Gb, T8c 4.3Gb) (dna only)
   --dry-run            Show what would be run without submitting jobs
   -h, --help           Show this help message
@@ -67,9 +72,9 @@ EOF
 done
 
 case "$ALPHABET" in
-    dna|protein|both) ;;
+    dna|protein|both|long-read) ;;
     *)
-        echo "ERROR: --alphabet must be dna, protein, or both (got: $ALPHABET)" >&2
+        echo "ERROR: --alphabet must be dna, protein, both, or long-read (got: $ALPHABET)" >&2
         exit 1
         ;;
 esac
@@ -87,6 +92,7 @@ fi
 # on data its wrapper contract can't accept.
 ALIGNERS_DNA=("bwa-mem2" "minimap2" "bwa-pipeline" "phraya" "phraya-sensitive" "phraya-sensitive-linear" "phraya-fast" "bowtie2" "minibwa" "rammap")
 ALIGNERS_PROTEIN=("diamond-blastp" "blastp" "phraya-protein" "phraya-protein-sensitive")
+ALIGNERS_LONGREAD=("minimap2-ont" "minimap2-pb" "phraya-longread")
 
 # Generate run timestamp (shared across both alphabets when --alphabet both)
 RUN_ID="run_$(date +%Y%m%d_%H%M%S)"
@@ -238,6 +244,7 @@ submit_alphabet_run() {
 
 TARGETS_DNA="${TARGETS_FILE_OVERRIDE:-$SCRIPT_DIR/config/targets.conf}"
 TARGETS_PROTEIN="${TARGETS_FILE_OVERRIDE:-$SCRIPT_DIR/config/targets_protein.conf}"
+TARGETS_LONGREAD="${TARGETS_FILE_OVERRIDE:-$SCRIPT_DIR/config/targets_longread.conf}"
 
 case "$ALPHABET" in
     dna)
@@ -245,6 +252,9 @@ case "$ALPHABET" in
         ;;
     protein)
         submit_alphabet_run protein "$TARGETS_PROTEIN" ALIGNERS_PROTEIN
+        ;;
+    long-read)
+        submit_alphabet_run long-read "$TARGETS_LONGREAD" ALIGNERS_LONGREAD
         ;;
     both)
         submit_alphabet_run dna "$TARGETS_DNA" ALIGNERS_DNA
@@ -262,6 +272,9 @@ echo "After completion, score results:"
 if [[ "$ALPHABET" == "both" ]]; then
     echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/dna/results.json --sensitivity"
     echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/protein/results.json --sensitivity"
+elif [[ "$ALPHABET" == "long-read" ]]; then
+    echo "  (long-read: $RUN_DIR_ROOT/results.json carries pa/precision/bases_per_s/plan_time_s per target;"
+    echo "   score.py is short-read specific (CAS/CBS) and is not applied to long-read runs)"
 else
     echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/results.json --sensitivity"
 fi

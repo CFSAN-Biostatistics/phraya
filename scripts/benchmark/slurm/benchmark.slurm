@@ -198,6 +198,8 @@ if [[ -f "$OUT_DIR/timing.txt" ]]; then
     TOTAL_READS=$(_get total_reads)
     N_ALIGNED=$(_get n_aligned)
     UNALIGNED_FRAC=$(_get unaligned_frac)
+    PLAN_SECONDS=$(_get plan_seconds || true)   # optional (long-read phraya: sketch/plan time, excluded from wall_seconds)
+    TOTAL_BASES=$(_get total_bases || true)     # optional (long-read: input bases, for bases/s)
     cat > "$OUT_DIR/timing.json" <<JSON
 {
   "aligner":         "$ALIGNER",
@@ -210,6 +212,8 @@ if [[ -f "$OUT_DIR/timing.txt" ]]; then
   "total_reads":     ${TOTAL_READS:-0},
   "n_aligned":       ${N_ALIGNED:-0},
   "unaligned_frac":  ${UNALIGNED_FRAC:-null},
+  "plan_seconds":    ${PLAN_SECONDS:-null},
+  "total_bases":     ${TOTAL_BASES:-null},
   "threads":         $THREADS,
   "node":            "$SLURM_JOB_NODELIST"
 }
