@@ -208,7 +208,10 @@ def compute_pa_protein(queries_file: Path, truth_file: Path, total_queries: int 
         return None
 
 
-LONG_READ_TOLERANCE_BP = 100  # long_read_accuracy.py default; recorded per target as pa_tolerance_bp
+# Long-read PA is reported at two start tolerances (see long_read_accuracy.py): the locus-correct
+# one drives `pa` (and so CAS); the tight one is `pa_start_100bp`, which also penalises soft-clipping.
+LONG_READ_PA_TOLERANCE_BP = 2000
+LONG_READ_START_TOLERANCE_BP = 100
 
 
 def load_target_manifest(target_dir: Path) -> dict:
@@ -220,34 +223,49 @@ def load_target_manifest(target_dir: Path) -> dict:
 
 
 LONG_READ_SCORE_FIELDS = ("pa", "precision", "n_truth", "n_mapped", "n_correct", "n_correct_any")
+LONG_READ_SEGDUP_FIELDS = ("n_repeat_inside", "n_repeat_both_copies", "n_overhang", "n_overhang_correct")
+LONG_READ_AGREE_FIELDS = ("n_both", "n_agree", "n_only_this", "n_only_ref")
 
 
-def compute_long_read_scores(alignments: Path, truth_file: Path, tolerance: int = LONG_READ_TOLERANCE_BP) -> dict | None:
-    """Long-read placement scores via long_read_accuracy.py: one scorer for both the phraya
-    `.queries` sidecar and minimap2 `.sam`, so aligners are compared on identical rules.
-    Returns {pa, precision, n_truth, n_mapped, n_correct, n_correct_any}, or None with a
-    warning on any failure (never a fabricated 0.0)."""
+def _run_long_read_scorer(args: list[str], label: str, fields: tuple, float_fields: tuple = ()) -> dict | None:
+    """Run long_read_accuracy.py; return {field: value} or None with a warning (never a fabricated 0.0)."""
     helper = SCRIPT_DIR / "long_read_accuracy.py"
     if not helper.exists():
-        print(f"WARNING: {helper} not found — long-read PA will be null", file=sys.stderr)
+        print(f"WARNING: {helper} not found — long-read scores will be null", file=sys.stderr)
         return None
     try:
         python3 = os.environ.get("PYTHON3_BIN", "python3")
-        result = subprocess.run(
-            [python3, str(helper), str(alignments), str(truth_file), f"--tolerance={tolerance}"],
-            capture_output=True, text=True, timeout=600,
-        )
+        result = subprocess.run([python3, str(helper), *args], capture_output=True, text=True, timeout=1800)
         if result.returncode != 0:
-            print(f"WARNING: long_read_accuracy.py failed for {alignments}: {result.stderr[-300:]}", file=sys.stderr)
+            print(f"WARNING: long_read_accuracy.py failed for {label}: {result.stderr[-300:]}", file=sys.stderr)
             return None
         parts = result.stdout.strip().split("\t")
-        if len(parts) != len(LONG_READ_SCORE_FIELDS):
-            print(f"WARNING: unexpected long_read_accuracy.py output for {alignments}: {result.stdout[:200]!r}", file=sys.stderr)
+        if len(parts) != len(fields):
+            print(f"WARNING: unexpected long_read_accuracy.py output for {label}: {result.stdout[:200]!r}", file=sys.stderr)
             return None
-        return {k: float(v) if k in ("pa", "precision") else int(v) for k, v in zip(LONG_READ_SCORE_FIELDS, parts)}
+        return {k: float(v) if k in float_fields else int(v) for k, v in zip(fields, parts)}
     except Exception as e:
-        print(f"WARNING: long-read PA failed for {alignments}: {e}", file=sys.stderr)
+        print(f"WARNING: long-read scoring failed for {label}: {e}", file=sys.stderr)
         return None
+
+
+def compute_long_read_scores(alignments: Path, truth_file: Path, tolerance: int,
+                             segdup_bed: Path | None = None) -> dict | None:
+    """Long-read placement scores via long_read_accuracy.py: one scorer and one rule for both the
+    phraya `.queries` sidecar and minimap2 `.sam`. Returns {pa, precision, n_truth, n_mapped,
+    n_correct, n_correct_any} (+ the four repeat fields when segdup_bed is given), or None."""
+    args = [str(alignments), str(truth_file), f"--tolerance={tolerance}"]
+    fields = LONG_READ_SCORE_FIELDS
+    if segdup_bed is not None:
+        args.append(f"--segdup-bed={segdup_bed}")
+        fields = fields + LONG_READ_SEGDUP_FIELDS
+    return _run_long_read_scorer(args, str(alignments), fields, ("pa", "precision"))
+
+
+def compute_long_read_agreement(alignments: Path, reference_sam: Path, tolerance: int) -> dict | None:
+    """No-truth targets (real reads): agreement of this aligner's best placement with minimap2's primary."""
+    return _run_long_read_scorer([str(alignments), f"--agree-with={reference_sam}", f"--tolerance={tolerance}"],
+                                 str(alignments), LONG_READ_AGREE_FIELDS)
 
 
 def compute_iec(phraya_file: Path, truth_file: Path) -> float | None:
@@ -443,19 +461,30 @@ def aggregate(run_dir_str: str) -> dict:
             gap_model = gap_model_from_aligner(aligner)
 
             lr_scores = None
+            lr_strict = None
+            lr_agree = None
             lr_manifest: dict = {}
             if alphabet == "long-read":
                 lr_target_dir = data_root / longread_target_paths.get(target_id, "")
                 lr_manifest = load_target_manifest(lr_target_dir)
                 truth_file = lr_target_dir / "data" / "reads" / "reads_1.fq.truth.tsv"
+                bed_file = lr_target_dir / "data" / "reference" / "segdup_truth.bed"
                 aln_file = rep0_dir / ("cross_space.phraya.queries" if is_phraya else "alignment.sam")
                 if aln_file.exists() and truth_file.exists():
                     print(f"Computing PA (long-read) for {aligner} {target_id}...", file=sys.stderr)
-                    lr_scores = compute_long_read_scores(aln_file, truth_file)
+                    lr_scores = compute_long_read_scores(aln_file, truth_file, LONG_READ_PA_TOLERANCE_BP,
+                                                         bed_file if bed_file.exists() else None)
+                    lr_strict = compute_long_read_scores(aln_file, truth_file, LONG_READ_START_TOLERANCE_BP)
                     pa = lr_scores["pa"] if lr_scores else None
                 elif not truth_file.exists() and (lr_manifest.get("truth") or {}).get("none"):
                     # Real reads: no ground truth by design (manifest truth.none); PA stays null.
-                    print(f"INFO: {target_id} has no truth by design; PA null for {aligner}", file=sys.stderr)
+                    # Report agreement with minimap2-ont's primary placements instead.
+                    ref_sam = run_dir / target_id / "minimap2-ont" / "rep_0" / "alignment.sam"
+                    if aligner != "minimap2-ont" and aln_file.exists() and ref_sam.exists():
+                        print(f"Computing agreement with minimap2-ont for {aligner} {target_id}...", file=sys.stderr)
+                        lr_agree = compute_long_read_agreement(aln_file, ref_sam, LONG_READ_PA_TOLERANCE_BP)
+                    else:
+                        print(f"INFO: {target_id} has no truth by design; PA null for {aligner}", file=sys.stderr)
                 else:
                     print(f"WARNING: long-read PA skipped for {aligner} {target_id}: "
                           f"{'missing ' + str(truth_file) if not truth_file.exists() else 'missing ' + str(aln_file)}",
@@ -537,7 +566,7 @@ def aggregate(run_dir_str: str) -> dict:
                 entry["rnt"] = round(total_reads / denom, 4) if denom > 0 else None
             elif alphabet == "long-read":
                 entry["genome_size_gb"] = longread_sizes.get(target_id, 0.0)
-                entry["pa_tolerance_bp"] = LONG_READ_TOLERANCE_BP
+                entry["pa_tolerance_bp"] = LONG_READ_PA_TOLERANCE_BP
                 if lr_manifest.get("sweep_of"):
                     entry["sweep_of"] = lr_manifest["sweep_of"]
                 entry["threads"] = reps[0]["threads"] or entry["threads"]
@@ -552,8 +581,15 @@ def aggregate(run_dir_str: str) -> dict:
                 if plans:
                     entry["plan_time_s"] = round(mean(plans), 2)
                 if lr_scores is not None:
-                    for k in ("precision", "n_truth", "n_mapped", "n_correct", "n_correct_any"):
-                        entry[k] = round(lr_scores[k], 4) if k == "precision" else lr_scores[k]
+                    for k in LONG_READ_SCORE_FIELDS[1:] + LONG_READ_SEGDUP_FIELDS:
+                        if k in lr_scores:
+                            entry[k] = round(lr_scores[k], 4) if k == "precision" else lr_scores[k]
+                if lr_strict is not None:
+                    entry["pa_start_100bp"] = lr_strict["pa"]
+                    entry["pa_start_tolerance_bp"] = LONG_READ_START_TOLERANCE_BP
+                if lr_agree is not None:
+                    entry.update(lr_agree)
+                    entry["agree_frac"] = round(lr_agree["n_agree"] / lr_agree["n_both"], 4) if lr_agree["n_both"] else None
             else:
                 entry["genome_size_gb"] = genome_sizes.get(target_id, 0.0)
             if gap_model is not None:
