@@ -353,8 +353,11 @@ the generator's truth sidecar `data/reads/reads_1.fq.truth.tsv` (`gen_synthetic_
 - PA / precision / `n_correct_any` come from `utils/long_read_accuracy.py` for both phraya
   (`cross_space.phraya.queries`) and minimap2 (`alignment.sam`, primary records), tolerance ±100 bp.
 - `results.json` long-read entries add `bases_per_s`, `plan_time_s`, `wall_cv_pct`, `precision`,
-  `n_truth`, `n_mapped`, `n_correct`, `n_correct_any`. `score.py` (short-read CAS/CBS) does not
-  apply to long-read runs.
+  `n_truth`, `n_mapped`, `n_correct`, `n_correct_any`, `pa_tolerance_bp`, and `sweep_of` (read from the
+  target's data-commons `manifest.json`). `data-commons/.../score.py` auto-detects long-read results and
+  scores them separately: BNT is bases-based (bases/s per thread per GB/s), CAS is the geometric mean of
+  PA (MCS is unimplemented; a null PA, e.g. real reads, is left out of CAS), and `sweep_of` targets go to
+  an amortization table instead of the aggregates. It refuses files that mix long-read with other alphabets.
 - If any task fails, the dependent aggregation job never starts; run
   `utils/aggregate_results.py <run_dir> > <run_dir>/results.json` by hand (with `DATA_ROOT` set).
 

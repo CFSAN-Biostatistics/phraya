@@ -208,10 +208,21 @@ def compute_pa_protein(queries_file: Path, truth_file: Path, total_queries: int 
         return None
 
 
+LONG_READ_TOLERANCE_BP = 100  # long_read_accuracy.py default; recorded per target as pa_tolerance_bp
+
+
+def load_target_manifest(target_dir: Path) -> dict:
+    """data-commons manifest.json beside a target's data/ dir ({} if absent or unreadable)."""
+    try:
+        return json.loads((target_dir / "manifest.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 LONG_READ_SCORE_FIELDS = ("pa", "precision", "n_truth", "n_mapped", "n_correct", "n_correct_any")
 
 
-def compute_long_read_scores(alignments: Path, truth_file: Path, tolerance: int = 100) -> dict | None:
+def compute_long_read_scores(alignments: Path, truth_file: Path, tolerance: int = LONG_READ_TOLERANCE_BP) -> dict | None:
     """Long-read placement scores via long_read_accuracy.py: one scorer for both the phraya
     `.queries` sidecar and minimap2 `.sam`, so aligners are compared on identical rules.
     Returns {pa, precision, n_truth, n_mapped, n_correct, n_correct_any}, or None with a
@@ -432,13 +443,19 @@ def aggregate(run_dir_str: str) -> dict:
             gap_model = gap_model_from_aligner(aligner)
 
             lr_scores = None
+            lr_manifest: dict = {}
             if alphabet == "long-read":
-                truth_file = data_root / longread_target_paths.get(target_id, "") / "data" / "reads" / "reads_1.fq.truth.tsv"
+                lr_target_dir = data_root / longread_target_paths.get(target_id, "")
+                lr_manifest = load_target_manifest(lr_target_dir)
+                truth_file = lr_target_dir / "data" / "reads" / "reads_1.fq.truth.tsv"
                 aln_file = rep0_dir / ("cross_space.phraya.queries" if is_phraya else "alignment.sam")
                 if aln_file.exists() and truth_file.exists():
                     print(f"Computing PA (long-read) for {aligner} {target_id}...", file=sys.stderr)
                     lr_scores = compute_long_read_scores(aln_file, truth_file)
                     pa = lr_scores["pa"] if lr_scores else None
+                elif not truth_file.exists() and (lr_manifest.get("truth") or {}).get("none"):
+                    # Real reads: no ground truth by design (manifest truth.none); PA stays null.
+                    print(f"INFO: {target_id} has no truth by design; PA null for {aligner}", file=sys.stderr)
                 else:
                     print(f"WARNING: long-read PA skipped for {aligner} {target_id}: "
                           f"{'missing ' + str(truth_file) if not truth_file.exists() else 'missing ' + str(aln_file)}",
@@ -520,6 +537,9 @@ def aggregate(run_dir_str: str) -> dict:
                 entry["rnt"] = round(total_reads / denom, 4) if denom > 0 else None
             elif alphabet == "long-read":
                 entry["genome_size_gb"] = longread_sizes.get(target_id, 0.0)
+                entry["pa_tolerance_bp"] = LONG_READ_TOLERANCE_BP
+                if lr_manifest.get("sweep_of"):
+                    entry["sweep_of"] = lr_manifest["sweep_of"]
                 entry["threads"] = reps[0]["threads"] or entry["threads"]
                 # The generic mean above drops 0.0 fractions; for long reads 0.0 is a real result.
                 entry["unaligned_frac"] = round(mean(r["unaligned_frac"] for r in reps), 4)

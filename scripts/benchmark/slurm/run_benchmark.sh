@@ -272,9 +272,6 @@ echo "After completion, score results:"
 if [[ "$ALPHABET" == "both" ]]; then
     echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/dna/results.json --sensitivity"
     echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/protein/results.json --sensitivity"
-elif [[ "$ALPHABET" == "long-read" ]]; then
-    echo "  (long-read: $RUN_DIR_ROOT/results.json carries pa/precision/bases_per_s/plan_time_s per target;"
-    echo "   score.py is short-read specific (CAS/CBS) and is not applied to long-read runs)"
 else
     echo "  python ~/data-commons/test/benchmarking/alignment/score.py $RUN_DIR_ROOT/results.json --sensitivity"
 fi
