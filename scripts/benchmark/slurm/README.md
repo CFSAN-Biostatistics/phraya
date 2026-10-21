@@ -10,9 +10,10 @@ for the alphabet being reported). Do not substitute local or single-dataset spot
 when they are quicker to run. If Reedling2 is unreachable, the data is missing, or the run
 fails, stop and report the failure rather than falling back to a smaller local result.
 
-Note: `config/targets.conf` also lists long-read and assembly-pair targets, which the default
-DNA invocation would include; pass `--targets` with the 9 small/medium DNA targets (T1-T7b, T8a)
-and set `DATA_ROOT` to the staged data (`/nfs/scratch/Justin.Payne/data-commons/test/benchmarking/alignment`).
+Note: `config/targets.conf` is the short-read DNA set only (T1-T7b, T8a; T8b/T8c with `--large`), so
+a plain `./run_benchmark.sh` is the 9-target matrix. Long-read, protein and assembly-pair targets
+live in `targets_longread.conf`, `targets_protein.conf` and `targets_assembly.conf`. Set `DATA_ROOT`
+to the staged data (`/nfs/scratch/Justin.Payne/data-commons/test/benchmarking/alignment`).
 
 ## Quick Start
 

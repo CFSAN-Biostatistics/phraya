@@ -12,10 +12,14 @@ for f in "$REF" "$READS_1" "$READS_2"; do
     [[ -f "$f" ]] || { echo "ERROR: not found: $f" >&2; exit 1; }
 done
 
-# Build .mmi index (flock-protected, one-time per reference)
-INDEX="${REF%.fasta}.mmi"
+# Build a preset-specific .mmi index (flock-protected, one-time per reference). The preset
+# MUST be passed at index time: minimap2 overrides -k/-w with the prebuilt index's values
+# ("Indexing parameters (-k, -w or -H) overridden by parameters used in the prebuilt index"),
+# so the former preset-less `reference.mmi` ran `-ax sr` with k=15,w=10 instead of sr's k=21,w=11.
+# Built to a temp name and renamed so a concurrent task never reads a half-written index.
+INDEX="${REF%.fasta}.sr.mmi"
 if [[ ! -f "$INDEX" ]]; then
-    (flock -x 200; [[ -f "$INDEX" ]] || $MINIMAP2_BIN -d "$INDEX" "$REF") 200>"${REF}.mmi.lock"
+    (flock -x 200; [[ -f "$INDEX" ]] || { $MINIMAP2_BIN -x sr -d "$INDEX.tmp.$$" "$REF" && mv "$INDEX.tmp.$$" "$INDEX"; }) 200>"${INDEX}.lock"
 fi
 
 PYTHON="${PYTHON3_BIN:-python3}"
