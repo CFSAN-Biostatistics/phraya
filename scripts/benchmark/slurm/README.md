@@ -351,9 +351,18 @@ the generator's truth sidecar `data/reads/reads_1.fq.truth.tsv` (`gen_synthetic_
   reported separately as `plan_time_s`. minimap2 indices are preset-specific
   (`reference.map-ont.mmi`, `reference.map-pb.mmi`) and built atomically.
 - PA / precision / `n_correct_any` come from `utils/long_read_accuracy.py` for both phraya
-  (`cross_space.phraya.queries`) and minimap2 (`alignment.sam`, primary records), tolerance ±100 bp.
+  (`cross_space.phraya.queries`) and minimap2 (`alignment.sam`; best = primary record, retained
+  placements = primary + secondary) under one rule: the best placement's start is within a tolerance
+  of `true_start` (soft-clip-adjusted for SAM). Because noisy read ends are soft-clipped, a tight start
+  test penalises clipping, so two tolerances are reported: `pa` at **2000 bp** (locus-correct; drives CAS)
+  and `pa_start_100bp` (start precision). Planted-repeat targets (`data/reference/segdup_truth.bed`) add
+  `n_repeat_inside`, `n_repeat_both_copies`, `n_overhang`, `n_overhang_correct`. Targets with no truth by
+  design (real reads) get `agree_frac` etc.: agreement of each aligner's best placement with
+  `minimap2-ont`'s primary, never PA.
+- Run one pass per thread count (`THREADS=8` default, `THREADS=1`), each its own run directory. Long-read
+  tasks can exceed the script's 4 h limit at 1 thread: `export SBATCH_TIMELIMIT=12:00:00` before submitting.
 - `results.json` long-read entries add `bases_per_s`, `plan_time_s`, `wall_cv_pct`, `precision`,
-  `n_truth`, `n_mapped`, `n_correct`, `n_correct_any`, `pa_tolerance_bp`, and `sweep_of` (read from the
+  `n_truth`, `n_mapped`, `n_correct`, `n_correct_any`, `pa_tolerance_bp`, `pa_start_100bp`, and `sweep_of` (read from the
   target's data-commons `manifest.json`). `data-commons/.../score.py` auto-detects long-read results and
   scores them separately: BNT is bases-based (bases/s per thread per GB/s), CAS is the geometric mean of
   PA (MCS is unimplemented; a null PA, e.g. real reads, is left out of CAS), and `sweep_of` targets go to
