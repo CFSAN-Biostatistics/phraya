@@ -225,6 +225,12 @@ On Reedling2, `module load minimap2/2.28` (done automatically by the long-read
 harness if not on PATH) and build the binary with
 `export RUSTFLAGS="-C target-cpu=native"; cargo build --release -p phara`.
 
+> **Superseded 2026-10-22 for realistic data.** The "comparable to minimap2" result below is a 50-read, 5 Mbp,
+> 12%-total-error spot check and does not generalize. On the full T9 suite (Reedling2, benchmarking-12.md),
+> `phraya align` costs 63-450 ms/read vs minimap2's 2-13 ms/read (12x-722x slower, worst on chr21 and 50-100 kb
+> reads), and phraya places 0 of 2000 reads on the 18% event-rate set (T9e). Placement accuracy where it places
+> reads is on par with minimap2. Treat the numbers below as development evidence only.
+
 ## Long-read results after fix (Reedling2, 2026-10-20)
 
 Measured on Reedling2 (`lscpu`: Intel Xeon Gold 5416S), against the existing
