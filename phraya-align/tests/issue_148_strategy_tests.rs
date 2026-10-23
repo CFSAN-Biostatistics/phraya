@@ -12,17 +12,14 @@
 
 use std::collections::HashMap;
 use phraya_core::types::Sequence;
-use phraya_io::plan::{PhrayaPlan, UseCase};
+use phraya_io::plan::PhrayaPlan;
 
 fn make_plan() -> PhrayaPlan {
-    PhrayaPlan::new(
-        UseCase::ReadsWithRef,
-        vec!["test".to_string()],
-        "2026-06-01T00:00:00Z".to_string(),
-        HashMap::new(),
-        HashMap::new(),
-        vec![],
-    )
+    PhrayaPlan::new(vec!["test".to_string()],
+    "2026-06-01T00:00:00Z".to_string(),
+    HashMap::new(),
+    HashMap::new(),
+    vec![],)
 }
 
 /// Test that AlignConfig struct exists and carries strategy information.

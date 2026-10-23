@@ -10,18 +10,15 @@
 
 use phraya_align::executor::{align_task_with_config, AlignConfig, Strategy};
 use phraya_core::types::Sequence;
-use phraya_io::plan::{PhrayaPlan, UseCase};
+use phraya_io::plan::PhrayaPlan;
 use std::collections::HashMap;
 
 fn make_plan() -> PhrayaPlan {
-    PhrayaPlan::new(
-        UseCase::ReadsWithRef,
-        vec!["test".to_string()],
-        "2026-07-10T00:00:00Z".to_string(),
-        HashMap::new(),
-        HashMap::new(),
-        vec![],
-    )
+    PhrayaPlan::new(vec!["test".to_string()],
+    "2026-07-10T00:00:00Z".to_string(),
+    HashMap::new(),
+    HashMap::new(),
+    vec![],)
 }
 
 /// Deterministic pseudo-random DNA (LCG), matching the pattern used throughout the

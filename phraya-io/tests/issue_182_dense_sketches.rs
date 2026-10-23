@@ -12,7 +12,7 @@
 /// 5. `align --strategy sensitive` on a `--sparse` plan errors rather than silently under-seeding.
 
 use std::collections::HashMap;
-use phraya_io::plan::{PhrayaPlan, UseCase, PHRAYAPLAN_VERSION};
+use phraya_io::plan::{PhrayaPlan, PHRAYAPLAN_VERSION};
 use phraya_core::types::{Sequence, sketch_sequence_default, DEFAULT_K, DEFAULT_W};
 use tempfile::NamedTempFile;
 use phraya_io::plan::{write_plan, read_plan, PlanError};
@@ -40,14 +40,11 @@ fn test_sequence_longer() -> Sequence {
 
 /// Create a minimal test plan
 fn minimal_plan() -> PhrayaPlan {
-    PhrayaPlan::new(
-        UseCase::ReadsWithRef,
-        vec!["test.fa".to_string()],
-        "2026-07-03T00:00:00Z".to_string(),
-        HashMap::new(),
-        HashMap::new(),
-        vec![],
-    )
+    PhrayaPlan::new(vec!["test.fa".to_string()],
+    "2026-07-03T00:00:00Z".to_string(),
+    HashMap::new(),
+    HashMap::new(),
+    vec![],)
 }
 
 // ============================================================================
@@ -208,7 +205,7 @@ fn issue_182_old_plan_v4_rejected_with_clear_message() {
 
     match read_plan(temp.path()) {
         Err(PlanError::VersionMismatch { expected, got }) => {
-            assert_eq!(expected, 7, "expected version should be 7 (current)");
+            assert_eq!(expected, PHRAYAPLAN_VERSION, "expected version should match current PHRAYAPLAN_VERSION");
             assert_eq!(got, 6, "non-v7 files report as v6 (legacy format)");
         }
         Ok(_) => panic!("old plan format should be rejected"),

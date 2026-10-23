@@ -11,7 +11,7 @@ use phraya_filter::{vcf, FilterBuilder, FilterPreset};
 use phraya_io::{
     bam_cram::BamCramParser,
     phraya,
-    plan::{self, read_content_hash, write_plan, InsertSizeDistribution, PhrayaPlan, UseCase},
+    plan::{self, read_content_hash, write_plan, InsertSizeDistribution, PhrayaPlan},
     queries, SequenceParser,
 };
 use std::collections::HashMap;
@@ -79,14 +79,6 @@ enum Commands {
         /// switches minimizer seeding to non-canonical at protein-scale k/w.
         #[arg(long, value_name = "MODE", default_value = "auto")]
         alphabet: String,
-
-        /// Override use-case auto-detection (CSP2 spike finding B1): auto (default),
-        /// reads-with-ref (Case 2), contigs-with-reads (Case 3, centroid selection),
-        /// or contigs-only (Case 4, direct/all-pairs contig comparison). Auto-detection
-        /// is a heuristic (contig-length majority by base count) and can misclassify
-        /// inputs it wasn't tuned for — this flag is the escape hatch.
-        #[arg(long, value_name = "MODE", default_value = "auto")]
-        use_case: String,
 
         /// Minimum minimizer-sketch Jaccard similarity two contigs must share to
         /// generate a Case-4 (contigs-only, no reference) all-pairs task between them
@@ -350,7 +342,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_output_pattern,
             chunks,
             alphabet,
-            use_case,
             min_homology,
             no_homology_gate,
         } => {
@@ -370,7 +361,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 batch_output_pattern.as_deref(),
                 chunks,
                 &alphabet,
-                &use_case,
                 if no_homology_gate { None } else { Some(min_homology) },
             )?;
         }
@@ -1436,11 +1426,9 @@ fn run_plan(
     batch_output_pattern: Option<&str>,
     chunks: Option<usize>,
     alphabet_flag: &str,
-    use_case_flag: &str,
     min_homology: Option<f64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use phraya_core::types::{detect_alphabet, sketch_sequence_default_for, Alphabet};
-
     // None = "auto" (resolve from content on first sight of a sequence, below);
     // Some(_) = explicit --alphabet dna/protein override.
     let mut alphabet: Option<Alphabet> = match alphabet_flag {
@@ -1540,44 +1528,25 @@ fn run_plan(
         .map(|(seq, _)| sketch_sequence_default_for(seq, alphabet))
         .collect();
 
-    // Detect use case, unless overridden (CSP2 spike finding B1: auto-detection is a
-    // heuristic and needs an escape hatch for inputs it wasn't tuned for).
-    let use_case = match use_case_flag {
-        "auto" => detect_use_case(num_ref_seqs, input_paths.len(), &sketches, &all_sequences),
-        "reads-with-ref" => UseCase::ReadsWithRef,
-        "contigs-with-reads" => UseCase::ContigsWithReads,
-        "contigs-only" => UseCase::ContigsOnly,
-        other => {
-            return Err(format!(
-                "--use-case must be auto, reads-with-ref, contigs-with-reads, or \
-                 contigs-only (got: {other})"
-            )
-            .into())
-        }
-    };
-
-    eprintln!(
-        "Detected Case {}: {:?}",
-        use_case_number(&use_case),
-        format!("{:?}", use_case)
+    // Generate task list: derive from input shape directly (read/contig classification,
+    // single vs multiple files, reference presence) — no stored UseCase enum in the plan
+    // (AGENTS.md: Case 2/3/4 are teaching labels, not a type).
+    let task_list = generate_task_list(
+        num_ref_seqs,
+        input_paths.len(),
+        &sketches,
+        &sequence_to_file_index,
+        &all_sequences,
+        min_homology,
     );
+
+    eprintln!("Generated {} alignment tasks", task_list.len());
 
     // Compute k-mer uniqueness
     let kmer_uniqueness = compute_kmer_uniqueness(&sketches);
 
     // Detect hotspot intervals from k-mer uniqueness (threshold 0.5)
     let hotspot_intervals = detect_hotspot_intervals(&kmer_uniqueness, 0.5);
-
-    // Generate task list based on use case
-    let task_list = generate_task_list(
-        &use_case,
-        input_paths.len(),
-        num_ref_seqs,
-        &sketches,
-        &sequence_to_file_index,
-        min_homology,
-    );
-
     // Build HashMap kmer_index keyed by sequence ID for reuse during alignment
     let kmer_index: HashMap<String, MinimizerSketch> = all_sequences
         .iter()
@@ -1599,14 +1568,11 @@ fn run_plan(
     }
 
     // Create and write plan
-    let mut plan = PhrayaPlan::new(
-        use_case,
-        input_file_list,
-        output_timestamp(),
-        kmer_index,
-        kmer_uniqueness,
-        task_list,
-    );
+    let mut plan = PhrayaPlan::new(input_file_list,
+    output_timestamp(),
+    kmer_index,
+    kmer_uniqueness,
+    task_list,);
     plan.hotspot_intervals = hotspot_intervals;
     plan.read_byte_offsets = read_byte_offsets;
     plan.reads_per_file = reads_per_file;
@@ -1876,193 +1842,137 @@ fn is_contig_like<'a>(records: impl Iterator<Item = &'a (Sequence, String)>) -> 
     total_bases > 0 && (contig_bases as f64) >= CONTIG_BASE_MAJORITY * (total_bases as f64)
 }
 
-/// Detect the use case from input characteristics
-fn detect_use_case(
+/// Generate the task list directly from input shape — no stored `UseCase` enum
+/// (AGENTS.md: Case 2/3/4 are teaching labels, not a type).
+///
+/// With a reference, every query is tasked against every reference record (reference
+/// indices are always 0..num_ref_seqs), matching the align-time superposition
+/// semantics (ADR-0011): align surfaces possibilities, filter decides.
+///
+/// Without a reference, input shape determines the strategy:
+/// - All-files-contigs → gated all-pairs (Case 4 MSA, CSP2 spike finding B3)
+/// - Mixed contig + read files → centroid selection (Case 3)
+/// - Reads-only, no reference → not supported (empty task list)
+fn generate_task_list(
     num_ref_seqs: usize,
     num_input_files: usize,
-    _sketches: &[MinimizerSketch],
-    all_sequences: &[(Sequence, String)],
-) -> UseCase {
-    // Count sequences from input files only (exclude reference records, however many).
-    let num_input_sequences = all_sequences.len() - num_ref_seqs;
-
-    if num_ref_seqs > 0 {
-        // Reference record(s) are stored first; check whether the remaining inputs are
-        // contigs as a whole (base-weighted majority, not per-record unanimity).
-        let inputs_are_contigs = is_contig_like(all_sequences.iter().skip(num_ref_seqs));
-
-        if inputs_are_contigs && num_input_sequences > 0 {
-            UseCase::ContigsOnly // Case 4: contigs + reference
-        } else {
-            UseCase::ReadsWithRef // Case 2: reads + reference
-        }
-    } else if num_input_files > 1 || (num_input_files == 1 && num_input_sequences > 1) {
-        if num_input_files > 1 {
-            // Multiple files, no reference. Group records by source file (preserving
-            // first-seen order) and classify each file as contigs or reads
-            // independently, rather than assuming "multiple files ⇒ contigs + reads"
-            // (CSP2 spike finding B1: two draft assemblies passed as plain positional
-            // inputs — neither flagged `--reference` — is CSP2's actual invocation
-            // shape, and the old file-count-only heuristic always routed it to Case
-            // 3's centroid logic instead of the direct pairwise Case 4 comparison it
-            // should be).
-            let mut file_order: Vec<&str> = Vec::new();
-            for (_, path) in all_sequences {
-                if !file_order.contains(&path.as_str()) {
-                    file_order.push(path.as_str());
-                }
-            }
-            let mut num_contig_files = 0usize;
-            for &path in &file_order {
-                let file_records = all_sequences.iter().filter(|(_, p)| p.as_str() == path);
-                if is_contig_like(file_records) {
-                    num_contig_files += 1;
-                }
-            }
-
-            if num_contig_files == file_order.len() {
-                // Every input file is contigs as a whole — direct pairwise comparison.
-                UseCase::ContigsOnly
-            } else if num_contig_files >= 1 {
-                // A mix of contig files and read files — centroid + reads (Case 3).
-                // generate_task_list's Case 3 branch still assumes the *first* input
-                // file holds the contigs (an existing, narrower assumption this fix
-                // does not change); inputs ordered contigs-file-then-reads-file(s)
-                // match it.
-                UseCase::ContigsWithReads
-            } else {
-                // No file looks like contigs — nothing to build a coordinate system
-                // from (reads-only, no reference, is not supported).
-                UseCase::ReadsOnly
-            }
-        } else {
-            // Single file, multiple sequences, no reference: Case 4 MSA
-            // (contigs-only). Unlike the multi-file branch above, this path is not
-            // part of B1's misclassification — a single multi-record file with no
-            // reference has always meant "compare these sequences to each other",
-            // regardless of record length, and existing tests rely on that.
-            UseCase::ContigsOnly
-        }
-    } else {
-        // Reads only, no reference — not supported
-        UseCase::ReadsOnly
-    }
-}
-
-/// Generate task list based on use case and input characteristics.
-///
-/// A reference file with N records is N reference spaces (AGENTS.md: reference spaces
-/// are content-hashed and mechanical, never collapsed to "whatever sat at index 0").
-/// Case 2 / Case 4-with-reference therefore generate the full read/contig × reference-space
-/// cross product, matching the align-time superposition semantics (ADR-0011): every query is
-/// tasked against every reference record, not just the first.
-fn generate_task_list(
-    use_case: &UseCase,
-    _num_input_files: usize,
-    num_ref_seqs: usize,
     sketches: &[MinimizerSketch],
     sequence_to_file_index: &[usize],
+    all_sequences: &[(Sequence, String)],
     min_homology: Option<f64>,
 ) -> Vec<(u32, u32)> {
-    match use_case {
-        UseCase::ReadsWithRef => {
-            // Case 2: N reads + M reference records (M ≥ 1). Tasks: every read against
-            // every reference record (reference indices are always 0..num_ref_seqs).
-            let mut tasks = Vec::new();
-            for read_id in num_ref_seqs..sketches.len() {
-                for ref_id in 0..num_ref_seqs {
-                    tasks.push((read_id as u32, ref_id as u32));
-                }
+    if num_ref_seqs > 0 {
+        // With reference: cross-product. Every query (reads or contigs after the
+        // reference records) is tasked against every reference record.
+        let mut tasks = Vec::new();
+        for query_id in num_ref_seqs..sketches.len() {
+            for ref_id in 0..num_ref_seqs {
+                tasks.push((query_id as u32, ref_id as u32));
             }
-            tasks
         }
-        UseCase::ContigsWithReads => {
-            // Case 3: M contigs + N reads, select centroid from contigs
-            // Contigs are in the first input file (or first two if there's a reference)
-            let mut tasks = Vec::new();
+        tasks
+    } else {
+        let num_input_sequences = all_sequences.len();
 
-            // Determine contig indices (all sequences from the first input file)
-            let first_input_file_index = if num_ref_seqs > 0 { 1 } else { 0 };
-            let contig_indices: Vec<usize> = sequence_to_file_index
-                .iter()
-                .enumerate()
-                .filter(|(_, &file_idx)| file_idx == first_input_file_index)
-                .map(|(seq_idx, _)| seq_idx)
-                .collect();
-
-            if contig_indices.is_empty() {
-                return tasks; // No contigs found
-            }
-
-            // Select centroid from contigs only
-            let contig_sketches: Vec<_> = contig_indices
-                .iter()
-                .map(|&i| sketches[i].clone())
-                .collect();
-            let centroid_offset = select_centroid(&contig_sketches).unwrap_or(0);
-            let centroid_idx = contig_indices[centroid_offset];
-
-            eprintln!("Case 3: Selected centroid contig at index {}", centroid_idx);
-
-            // Generate tasks: all other contigs and reads to centroid
-            for (seq_idx, _) in sketches.iter().enumerate() {
-                if seq_idx != centroid_idx {
-                    tasks.push((seq_idx as u32, centroid_idx as u32));
-                }
-            }
-
-            tasks
-        }
-        UseCase::ContigsOnly => {
-            let mut tasks = Vec::new();
-            if num_ref_seqs > 0 {
-                // Case 4 with reference: reference record(s) at 0..num_ref_seqs, contigs
-                // after. Every contig is tasked against every reference record.
-                for contig_id in num_ref_seqs..sketches.len() {
-                    for ref_id in 0..num_ref_seqs {
-                        tasks.push((contig_id as u32, ref_id as u32));
+        if num_input_files > 1 || (num_input_files == 1 && num_input_sequences > 1) {
+            if num_input_files > 1 {
+                // Multiple files, no reference. Classify each file independently.
+                let mut file_order: Vec<&str> = Vec::new();
+                for (_, path) in all_sequences {
+                    if !file_order.contains(&path.as_str()) {
+                        file_order.push(path.as_str());
                     }
+                }
+                let mut num_contig_files = 0usize;
+                for &path in &file_order {
+                    let file_records = all_sequences.iter().filter(|(_, p)| p.as_str() == path);
+                    if is_contig_like(file_records) {
+                        num_contig_files += 1;
+                    }
+                }
+
+                if num_contig_files == file_order.len() {
+                    // Every input file is contigs — gated all-pairs comparison.
+                    gated_all_pairs(sketches, min_homology)
+                } else if num_contig_files >= 1 {
+                    // Mix of contig and read files — centroid selection (Case 3).
+                    centroid_tasks(sketches, sequence_to_file_index)
+                } else {
+                    // Reads only, no reference — not supported.
+                    Vec::new()
                 }
             } else {
-                // Case 4 MSA: gated all-pairs (CSP2 spike finding B3). Two draft
-                // assemblies with a few hundred contigs each produce O(n·m) pairs if
-                // ungated, almost all between contigs that share no real homology
-                // (unrelated regions, host contamination, distinct plasmids). Gate by
-                // minimizer-sketch Jaccard similarity — already computed at plan time,
-                // so this costs one set-intersection per candidate pair, not new
-                // sketching. `--no-homology-gate` (min_homology = None) restores the
-                // full dense all-pairs list.
-                for i in 0..sketches.len() {
-                    for j in (i + 1)..sketches.len() {
-                        let above_threshold = match min_homology {
-                            Some(threshold) => {
-                                jaccard_similarity(&sketches[i], &sketches[j]) >= threshold
-                            }
-                            None => true,
-                        };
-                        if above_threshold {
-                            tasks.push((i as u32, j as u32));
-                        }
-                    }
-                }
+                // Single file, multiple sequences, no reference: gated all-pairs (Case 4 MSA)
+                gated_all_pairs(sketches, min_homology)
             }
-            tasks
-        }
-        UseCase::ReadsOnly => {
-            // Reads only, no reference — not supported
-            // For now, return empty task list
+        } else {
+            // Reads only, no reference — not supported.
             Vec::new()
         }
     }
 }
 
-fn use_case_number(use_case: &UseCase) -> u32 {
-    match use_case {
-        UseCase::ReadsWithRef => 2,
-        UseCase::ReadsOnly => 1,
-        UseCase::ContigsWithReads => 3,
-        UseCase::ContigsOnly => 4,
+/// Gated all-pairs task list for Case 4 (contigs-only MSA). Two draft assemblies
+/// with a few hundred contigs each produce O(n·m) pairs if ungated, almost all
+/// between contigs that share no real homology (unrelated regions, host
+/// contamination, distinct plasmids). Gate by minimizer-sketch Jaccard similarity
+/// — already computed at plan time, so this costs one set-intersection per
+/// candidate pair, not new sketching. `--no-homology-gate` (min_homology = None)
+/// restores the full dense all-pairs list.
+fn gated_all_pairs(sketches: &[MinimizerSketch], min_homology: Option<f64>) -> Vec<(u32, u32)> {
+    let mut tasks = Vec::new();
+    for i in 0..sketches.len() {
+        for j in (i + 1)..sketches.len() {
+            let above_threshold = match min_homology {
+                Some(threshold) => jaccard_similarity(&sketches[i], &sketches[j]) >= threshold,
+                None => true,
+            };
+            if above_threshold {
+                tasks.push((i as u32, j as u32));
+            }
+        }
     }
+    tasks
+}
+
+/// Centroid selection tasks for Case 3 (contigs + reads, no reference).
+/// All sequences other than the centroid are tasked against it.
+fn centroid_tasks(
+    sketches: &[MinimizerSketch],
+    sequence_to_file_index: &[usize],
+) -> Vec<(u32, u32)> {
+    let mut tasks = Vec::new();
+
+    // Contigs are in the first input file (file index 0, since no reference).
+    let contig_indices: Vec<usize> = sequence_to_file_index
+        .iter()
+        .enumerate()
+        .filter(|(_, &file_idx)| file_idx == 0)
+        .map(|(seq_idx, _)| seq_idx)
+        .collect();
+
+    if contig_indices.is_empty() {
+        return tasks;
+    }
+
+    // Select centroid from contigs only
+    let contig_sketches: Vec<_> = contig_indices
+        .iter()
+        .map(|&i| sketches[i].clone())
+        .collect();
+    let centroid_offset = select_centroid(&contig_sketches).unwrap_or(0);
+    let centroid_idx = contig_indices[centroid_offset];
+
+    eprintln!("Case 3: Selected centroid contig at index {}", centroid_idx);
+
+    // Generate tasks: all other sequences to centroid
+    for (seq_idx, _) in sketches.iter().enumerate() {
+        if seq_idx != centroid_idx {
+            tasks.push((seq_idx as u32, centroid_idx as u32));
+        }
+    }
+
+    tasks
 }
 
 fn run_merge(

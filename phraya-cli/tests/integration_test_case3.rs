@@ -77,7 +77,7 @@ fn write_case3_fixtures(dir: &Path) -> (PathBuf, PathBuf) {
     (contigs_path, reads_path)
 }
 
-/// [AC4] Case 3 detection: 3 contigs + 5 reads → UseCase::ContigsWithReads detected
+/// [AC4] Case 3 detection: 3 contigs + 5 reads → centroid-based task list
 #[test]
 fn issue_86_case3_use_case_detected() {
     let dir = TempDir::new().unwrap();
@@ -102,12 +102,20 @@ fn issue_86_case3_use_case_detected() {
     );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
+    // Case 3 (contigs + reads, no reference) → centroid selection.
+    // 3 contigs + 5 reads = 8 sequences; centroid is one of the contigs, so
+    // 7 tasks each targeting the centroid.
     assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsWithReads,
-        "3 contigs + 5 reads (no reference) should produce ContigsWithReads, got {:?}",
-        plan.use_case
+        plan.task_list.len(),
+        7,
+        "Case 3 should produce 7 centroid tasks (8 seqs - 1 centroid), got {:?}",
+        plan.task_list
     );
+    let centroid = plan.task_list[0].1;
+    for (query_id, target_id) in &plan.task_list {
+        assert_eq!(*target_id, centroid, "all tasks should target the centroid");
+        assert_ne!(*query_id, centroid, "centroid should not be a query");
+    }
 }
 
 /// [AC1 + AC4 + AC5] Case 3 plan has centroid_id metadata and correct task count
@@ -213,16 +221,14 @@ fn issue_86_case3_align_contig_to_centroid() {
     // Write plan directly: ContigsWithReads, tasks = (1, 0) (ctg1 → ctg0 centroid)
     {
         use std::collections::HashMap;
-        use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+        use phraya_io::plan::{write_plan, PhrayaPlan};
 
-        let plan = PhrayaPlan::new(
-            UseCase::ContigsWithReads,
-            vec![contigs_path.to_string_lossy().to_string()],
-            "2026-06-02T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![(1, 0)], // ctg1 aligns to ctg0 (centroid)
-        );
+        let plan = PhrayaPlan::new(vec![contigs_path.to_string_lossy().to_string()],
+        "2026-06-02T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![(1, 0)], // ctg1 aligns to ctg0 (centroid)
+);
         write_plan(&plan_path, &plan).unwrap();
     }
 
@@ -270,16 +276,14 @@ fn issue_86_case3_align_read_to_centroid() {
     // Write plan directly: ContigsWithReads, tasks = (1, 0) (read0 → ctg0 centroid)
     {
         use std::collections::HashMap;
-        use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
+        use phraya_io::plan::{write_plan, PhrayaPlan};
 
-        let plan = PhrayaPlan::new(
-            UseCase::ContigsWithReads,
-            vec![seqs_path.to_string_lossy().to_string()],
-            "2026-06-02T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![(1, 0)], // read0 aligns to ctg0 (centroid)
-        );
+        let plan = PhrayaPlan::new(vec![seqs_path.to_string_lossy().to_string()],
+        "2026-06-02T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![(1, 0)], // read0 aligns to ctg0 (centroid)
+);
         write_plan(&plan_path, &plan).unwrap();
     }
 

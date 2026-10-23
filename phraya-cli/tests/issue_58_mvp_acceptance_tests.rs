@@ -102,20 +102,18 @@ fn create_phraya_file(
 /// Test: .phrayaplan file can be written and read back
 #[test]
 fn issue_58_phrayaplan_format_round_trip() {
-    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
+    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan};
 
     let temp_dir = TempDir::new().unwrap();
     let plan_path = temp_dir.path().join("test.phrayaplan");
 
     // Create a plan
-    let plan = PhrayaPlan::new(
-        UseCase::ReadsWithRef,
-        vec!["ref.fa".to_string(), "reads.fq".to_string()],
-        "2026-06-01T12:00:00Z".to_string(),
-        HashMap::new(),               // sketches
-        HashMap::new(),       // kmer_uniqueness
-        vec![(1, 0), (2, 0)], // task_list
-    );
+    let plan = PhrayaPlan::new(vec!["ref.fa".to_string(), "reads.fq".to_string()],
+    "2026-06-01T12:00:00Z".to_string(),
+    HashMap::new(),               // sketches
+    HashMap::new(),       // kmer_uniqueness
+    vec![(1, 0), (2, 0)], // task_list
+);
 
     // Write plan
     write_plan(&plan_path, &plan).expect("should write plan");
@@ -128,11 +126,6 @@ fn issue_58_phrayaplan_format_round_trip() {
     // Read plan back
     let read_back = read_plan(&plan_path).expect("should read plan");
 
-    // Verify contents
-    assert_eq!(
-        read_back.use_case, plan.use_case,
-        "use_case should be preserved"
-    );
     assert_eq!(
         read_back.input_files.len(),
         2,
@@ -147,7 +140,7 @@ fn issue_58_phrayaplan_format_round_trip() {
 /// Test: .phrayaplan contains all required fields
 #[test]
 fn issue_58_phrayaplan_contains_required_fields() {
-    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
+    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan};
 
     let temp_dir = TempDir::new().unwrap();
     let plan_path = temp_dir.path().join("test.phrayaplan");
@@ -156,14 +149,11 @@ fn issue_58_phrayaplan_contains_required_fields() {
     uniqueness.insert(0u32, 0.95);
     uniqueness.insert(100u32, 0.75);
 
-    let plan = PhrayaPlan::new(
-        UseCase::ContigsWithReads,
-        vec!["contigs.fa".to_string(), "reads.fq".to_string()],
-        "2026-06-01T12:00:00Z".to_string(),
-        HashMap::new(), // sketches
-        uniqueness,
-        vec![(0, 1), (1, 0), (2, 0)],
-    );
+    let plan = PhrayaPlan::new(vec!["contigs.fa".to_string(), "reads.fq".to_string()],
+    "2026-06-01T12:00:00Z".to_string(),
+    HashMap::new(), // sketches
+    uniqueness,
+    vec![(0, 1), (1, 0), (2, 0)],);
 
     write_plan(&plan_path, &plan).unwrap();
     let read_back = read_plan(&plan_path).unwrap();
@@ -259,10 +249,12 @@ fn issue_58_use_case_case2_reads_with_reference() {
     assert!(output_path.exists(), "plan file should be created");
 
     let plan = phraya_io::plan::read_plan(&output_path).expect("plan should be readable");
+    // Case 2 (reads + reference) → cross-product: 2 reads × 1 ref = 2 tasks
     assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ReadsWithRef,
-        "should detect Case 2: reads with reference"
+        plan.task_list.len(),
+        2,
+        "Case 2 should produce 2 cross-product tasks, got {:?}",
+        plan.task_list
     );
 }
 
@@ -322,11 +314,19 @@ fn issue_58_use_case_case3_contigs_with_reads() {
     );
 
     let plan = phraya_io::plan::read_plan(&output_path).expect("plan should be readable");
+    // Case 3 (contigs + reads, no reference) → centroid selection.
+    // 3 sequences (2 contigs + 1 read), centroid is one of the contigs → 2 tasks.
     assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsWithReads,
-        "should detect Case 3: contigs with reads"
+        plan.task_list.len(),
+        2,
+        "Case 3 should produce 2 centroid tasks (3 seqs - 1 centroid), got {:?}",
+        plan.task_list
     );
+    let centroid = plan.task_list[0].1;
+    for (query_id, target_id) in &plan.task_list {
+        assert_eq!(*target_id, centroid, "all tasks should target the centroid");
+        assert_ne!(*query_id, centroid, "centroid should not be a query");
+    }
 }
 
 /// Test: Case 4 detection - Contigs only
@@ -374,11 +374,17 @@ fn issue_58_use_case_case4_contigs_only() {
     assert!(output.status.success(), "phraya plan should succeed");
 
     let plan = phraya_io::plan::read_plan(&output_path).expect("plan should be readable");
+    // Case 4 (3 contigs, single file, no reference) → gated all-pairs.
+    // All 3 contigs are ~identical → all C(3,2)=3 pairs pass the homology gate.
     assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsOnly,
-        "should detect Case 4: contigs only"
+        plan.task_list.len(),
+        3,
+        "Case 4 should produce 3 all-pairs tasks for 3 contigs, got {:?}",
+        plan.task_list
     );
+    for (query_id, target_id) in &plan.task_list {
+        assert!(*query_id < *target_id, "all-pairs tasks must have query < target");
+    }
 }
 
 // ============================================================================
@@ -388,20 +394,18 @@ fn issue_58_use_case_case4_contigs_only() {
 /// Test: Task list for Case 2 (reads + ref) has one task per read
 #[test]
 fn issue_58_task_list_case2_one_per_read() {
-    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
+    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan};
 
     let temp_dir = TempDir::new().unwrap();
     let plan_path = temp_dir.path().join("test.phrayaplan");
 
     // 1 reference + 3 reads = 3 tasks
-    let plan = PhrayaPlan::new(
-        UseCase::ReadsWithRef,
-        vec!["ref.fa".to_string(), "reads.fq".to_string()],
-        "2026-06-01T12:00:00Z".to_string(),
-        HashMap::new(), // sketches
-        HashMap::new(),
-        vec![(1, 0), (2, 0), (3, 0)], // 3 tasks: each read vs reference
-    );
+    let plan = PhrayaPlan::new(vec!["ref.fa".to_string(), "reads.fq".to_string()],
+    "2026-06-01T12:00:00Z".to_string(),
+    HashMap::new(), // sketches
+    HashMap::new(),
+    vec![(1, 0), (2, 0), (3, 0)], // 3 tasks: each read vs reference
+);
 
     write_plan(&plan_path, &plan).unwrap();
     let read_plan = read_plan(&plan_path).unwrap();
@@ -422,19 +426,17 @@ fn issue_58_task_list_case2_one_per_read() {
 /// Test: Task list contains valid (query_id, target_id) tuples
 #[test]
 fn issue_58_task_list_structure_valid() {
-    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan, UseCase};
+    use phraya_io::plan::{read_plan, write_plan, PhrayaPlan};
 
     let temp_dir = TempDir::new().unwrap();
     let plan_path = temp_dir.path().join("test.phrayaplan");
 
-    let plan = PhrayaPlan::new(
-        UseCase::ContigsOnly,
-        vec!["contigs.fa".to_string()],
-        "2026-06-01T12:00:00Z".to_string(),
-        HashMap::new(), // sketches
-        HashMap::new(),
-        vec![(0, 1), (0, 2), (1, 2)], // pairwise
-    );
+    let plan = PhrayaPlan::new(vec!["contigs.fa".to_string()],
+    "2026-06-01T12:00:00Z".to_string(),
+    HashMap::new(), // sketches
+    HashMap::new(),
+    vec![(0, 1), (0, 2), (1, 2)], // pairwise
+);
 
     write_plan(&plan_path, &plan).unwrap();
     let read_back = read_plan(&plan_path).unwrap();

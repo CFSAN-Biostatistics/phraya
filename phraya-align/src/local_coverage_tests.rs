@@ -14,14 +14,11 @@ mod issue_130_local_coverage_tests {
 
     /// Helper: create a plan for testing
     fn create_test_plan() -> PhrayaPlan {
-        PhrayaPlan::new(
-            phraya_io::plan::UseCase::ReadsWithRef,
-            vec!["test".to_string()],
-            "2026-06-03T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        )
+        PhrayaPlan::new(vec!["test".to_string()],
+        "2026-06-03T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],)
     }
 
     /// Deterministic non-periodic DNA (LCG), so alignments have one unambiguous diagonal.

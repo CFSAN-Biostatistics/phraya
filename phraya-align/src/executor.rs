@@ -1731,8 +1731,7 @@ mod tests {
     use super::*;
 
     fn make_plan() -> PhrayaPlan {
-        PhrayaPlan::new(phraya_io::plan::UseCase::ReadsWithRef,
-        vec!["test".to_string()],
+        PhrayaPlan::new(vec!["test".to_string()],
         "2026-06-01T00:00:00Z".to_string(),
         HashMap::new(),
         HashMap::new(),

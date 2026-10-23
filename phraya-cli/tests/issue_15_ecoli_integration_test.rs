@@ -107,13 +107,11 @@ fn issue_15_variant_count_within_tolerance() {
     kmer_index.insert(seq1_obj.id().to_string(), seq1_sketch);
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
-    let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
-        vec![fasta_path.to_string_lossy().to_string()],
-        "2026-06-07T00:00:00Z".to_string(),
-        kmer_index,
-        HashMap::new(),
-        vec![(1, 0)], // query=contig2 (index 1), target=contig1 (index 0)
+    let plan = phraya_io::plan::PhrayaPlan::new(vec![fasta_path.to_string_lossy().to_string()],
+    "2026-06-07T00:00:00Z".to_string(),
+    kmer_index,
+    HashMap::new(),
+    vec![(1, 0)], // query=contig2 (index 1), target=contig1 (index 0));
     );
 
     // Perform alignment
@@ -187,14 +185,11 @@ fn issue_15_mean_confidence_exceeds_threshold() {
     kmer_index.insert(seq1_obj.id().to_string(), seq1_sketch);
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
-    let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
-        vec![fasta_path.to_string_lossy().to_string()],
-        "2026-06-07T00:00:00Z".to_string(),
-        kmer_index,
-        HashMap::new(),
-        vec![(1, 0)],
-    );
+    let plan = phraya_io::plan::PhrayaPlan::new(vec![fasta_path.to_string_lossy().to_string()],
+    "2026-06-07T00:00:00Z".to_string(),
+    kmer_index,
+    HashMap::new(),
+    vec![(1, 0)],);
 
     // Perform alignment
     let result = phraya_align::executor::align_task_with_config(
@@ -260,14 +255,11 @@ fn issue_15_full_pipeline_with_plan_file() {
     kmer_index.insert(seq1_obj.id().to_string(), seq1_sketch);
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
-    let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
-        vec![fasta_path.to_string_lossy().to_string()],
-        "2026-06-07T00:00:00Z".to_string(),
-        kmer_index,
-        HashMap::new(),
-        vec![(1, 0)],
-    );
+    let plan = phraya_io::plan::PhrayaPlan::new(vec![fasta_path.to_string_lossy().to_string()],
+    "2026-06-07T00:00:00Z".to_string(),
+    kmer_index,
+    HashMap::new(),
+    vec![(1, 0)],);
 
     let plan_path = dir.path().join("test.phrayaplan");
     phraya_io::plan::write_plan(&plan_path, &plan).expect("failed to write plan");
@@ -356,14 +348,11 @@ fn issue_15_perfect_match_no_variants() {
     kmer_index.insert(seq1_obj.id().to_string(), seq1_sketch);
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
-    let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
-        vec![fasta_path.to_string_lossy().to_string()],
-        "2026-06-07T00:00:00Z".to_string(),
-        kmer_index,
-        HashMap::new(),
-        vec![(1, 0)],
-    );
+    let plan = phraya_io::plan::PhrayaPlan::new(vec![fasta_path.to_string_lossy().to_string()],
+    "2026-06-07T00:00:00Z".to_string(),
+    kmer_index,
+    HashMap::new(),
+    vec![(1, 0)],);
 
     // Perform alignment
     let result = phraya_align::executor::align_task_with_config(
@@ -419,14 +408,11 @@ fn issue_15_coverage_track_valid() {
     kmer_index.insert(seq1_obj.id().to_string(), seq1_sketch);
     kmer_index.insert(seq2_obj.id().to_string(), seq2_sketch);
 
-    let plan = phraya_io::plan::PhrayaPlan::new(
-        phraya_io::plan::UseCase::ContigsOnly,
-        vec![fasta_path.to_string_lossy().to_string()],
-        "2026-06-07T00:00:00Z".to_string(),
-        kmer_index,
-        HashMap::new(),
-        vec![(1, 0)],
-    );
+    let plan = phraya_io::plan::PhrayaPlan::new(vec![fasta_path.to_string_lossy().to_string()],
+    "2026-06-07T00:00:00Z".to_string(),
+    kmer_index,
+    HashMap::new(),
+    vec![(1, 0)],);
 
     // Perform alignment
     let result = phraya_align::executor::align_task_with_config(

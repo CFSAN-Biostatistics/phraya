@@ -10,17 +10,14 @@
 use std::collections::HashMap;
 use phraya_align::executor::{align_task_with_config, AlignConfig};
 use phraya_core::types::Sequence;
-use phraya_io::plan::{PhrayaPlan, UseCase};
+use phraya_io::plan::PhrayaPlan;
 
 fn make_plan_with_hotspots(hotspot_intervals: Vec<(u32, u32)>) -> PhrayaPlan {
-    let mut plan = PhrayaPlan::new(
-        UseCase::ReadsWithRef,
-        vec!["test".to_string()],
-        "2026-06-07T00:00:00Z".to_string(),
-        HashMap::new(),
-        HashMap::new(),
-        vec![],
-    );
+    let mut plan = PhrayaPlan::new(vec!["test".to_string()],
+    "2026-06-07T00:00:00Z".to_string(),
+    HashMap::new(),
+    HashMap::new(),
+    vec![],);
     plan.hotspot_intervals = hotspot_intervals;
     plan
 }

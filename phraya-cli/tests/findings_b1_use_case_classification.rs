@@ -1,8 +1,8 @@
-/// Regression tests for CSP2 spike finding B1: use-case misclassification with no
-/// override. Two independent bugs, both in `detect_use_case` (`phraya-cli/src/main.rs`):
+/// Regression tests for CSP2 spike finding B1: input-shape detection now internal to
+/// `generate_task_list` (no stored `UseCase` enum in plans). The classification bugs were:
 ///
 /// 1. The with-reference branch required *every* non-reference record to be
-///    contig-length (`.all(|seq| seq.len() >= 5000)`). A single short contig (a
+///    contig-length (`.all(|seq| len >= 5000)`). A single short contig (a
 ///    plasmid, an assembly tail) mixed into an otherwise-contig draft assembly flipped
 ///    the whole comparison to Case 2 (reads-with-ref) instead of Case 4.
 /// 2. The no-reference branch treated "more than one input file" as sufficient evidence
@@ -10,9 +10,6 @@
 ///    two draft assemblies passed as plain positional inputs with neither flagged
 ///    `--reference`, was always misclassified as Case 3 instead of the direct pairwise
 ///    Case 4 comparison it should be.
-///
-/// Also covers the `--use-case` override flag added as the escape hatch for whatever
-/// heuristic edge case comes next.
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -86,12 +83,14 @@ fn findings_b1_two_assemblies_no_ref_flag_classify_as_contigs_only() {
     );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
+    // Two contig-only assemblies, no reference → gated all-pairs (Case 4 MSA).
+    // All 5 sequences are identical-content ACGT repeats, so all 10 pairs pass
+    // the homology gate.
     assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsOnly,
-        "two contig-only assemblies with no --reference flag should classify as \
-         ContigsOnly (Case 4), got {:?}",
-        plan.use_case
+        plan.task_list.len(),
+        10,
+        "two contig-only assemblies should produce all-pairs tasks (not centroid), got {:?}",
+        plan.task_list
     );
 }
 
@@ -136,75 +135,16 @@ fn findings_b1_one_short_contig_does_not_flip_classification_to_reads() {
     );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
+    // Contigs + reference → cross-product (every query × every reference).
+    // 5 input sequences × 1 reference = 5 tasks, each targeting ref at index 0.
     assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsOnly,
-        "one short contig among four contig-length records should not flip \
-         classification away from ContigsOnly, got {:?}",
-        plan.use_case
+        plan.task_list.len(),
+        5,
+        "contigs + reference should produce cross-product tasks, got {:?}",
+        plan.task_list
     );
-}
-
-/// `--use-case contigs-only` forces Case 4 even on inputs the auto-detection heuristic
-/// would otherwise route to Case 2 (short reads + reference).
-#[test]
-fn findings_b1_use_case_override_forces_contigs_only() {
-    let dir = TempDir::new().unwrap();
-    let p = dir.path();
-
-    // Short (150bp) records: auto-detection would classify this as ReadsWithRef.
-    let reads = write_fasta(p, "reads.fa", &["read1", "read2"], 150);
-    let reference = write_fasta(p, "ref.fa", &["ref"], 5120);
-    let plan_path = p.join("plan.phrayaplan");
-
-    let out = phraya(&[
-        "plan",
-        "--inputs",
-        reads.to_str().unwrap(),
-        "--reference",
-        reference.to_str().unwrap(),
-        "--use-case",
-        "contigs-only",
-        "--output",
-        plan_path.to_str().unwrap(),
-    ]);
-    assert!(
-        out.status.success(),
-        "phraya plan failed:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
-    assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsOnly,
-        "--use-case contigs-only should override auto-detection"
-    );
-}
-
-/// An invalid `--use-case` value is a clear CLI error, not a silent fallback.
-#[test]
-fn findings_b1_use_case_rejects_invalid_value() {
-    let dir = TempDir::new().unwrap();
-    let p = dir.path();
-
-    let reads = write_fasta(p, "reads.fa", &["read1"], 150);
-    let reference = write_fasta(p, "ref.fa", &["ref"], 5120);
-    let plan_path = p.join("plan.phrayaplan");
-
-    let out = phraya(&[
-        "plan",
-        "--inputs",
-        reads.to_str().unwrap(),
-        "--reference",
-        reference.to_str().unwrap(),
-        "--use-case",
-        "bogus-value",
-        "--output",
-        plan_path.to_str().unwrap(),
-    ]);
-    assert!(
-        !out.status.success(),
-        "an invalid --use-case value should be rejected, not silently accepted"
-    );
+    for (query_id, target_id) in &plan.task_list {
+        assert_eq!(*target_id, 0, "all tasks should target the reference at index 0");
+        assert!(*query_id >= 1, "query should be a non-reference sequence");
+    }
 }

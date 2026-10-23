@@ -42,17 +42,17 @@ pub fn read_content_hash(bytes: &[u8]) -> u64 {
 }
 
 /// PhrayaPlan format version for forward compatibility
-pub const PHRAYAPLAN_VERSION: u32 = 7;
+pub const PHRAYAPLAN_VERSION: u32 = 8;
 
-/// Magic bytes at the start of a v7 plan file to distinguish from older single-frame format.
+/// Magic bytes at the start of a v7+ plan file to distinguish from older single-frame format.
 /// ASCII "PHR7" — chosen to be invalid zstd frame magic (0xFD2FB528) so old readers fail fast.
 const V7_MAGIC: [u8; 4] = [b'P', b'H', b'R', b'7'];
 
-/// Table of contents for a v7 chunk-addressable plan file.
+/// Table of contents for a v7+ chunk-addressable plan file.
 /// Stored as the first frame after the 4-byte magic + 8-byte TOC-length prefix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanToc {
-    /// Format version (must be 7)
+    /// Format version (must be 8)
     pub version: u32,
     /// Reserved for future extension (set to 0)
     pub flags: u64,
@@ -70,7 +70,6 @@ pub struct PlanToc {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SharedFrame {
     pub version: u32,
-    pub use_case: UseCase,
     pub reference_space: Vec<ReferenceSpace>,
     pub input_files: Vec<String>,
     pub timestamp: String,
@@ -167,19 +166,6 @@ pub enum PlanError {
     IoError(String),
     #[error("version mismatch: expected {expected}, got {got}")]
     VersionMismatch { expected: u32, got: u32 },
-}
-
-/// Use case detected from input sequences
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum UseCase {
-    /// N reads + reference genome
-    ReadsWithRef = 1,
-    /// N reads only, no reference (MSA)
-    ReadsOnly = 2,
-    /// M contigs + N reads, no reference
-    ContigsWithReads = 3,
-    /// M contigs only
-    ContigsOnly = 4,
 }
 
 /// K-mer sketching parameters used during planning
@@ -288,8 +274,6 @@ impl InsertSizeDistribution {
 pub struct PhrayaPlan {
     /// Format version
     pub version: u32,
-    /// Detected use case
-    pub use_case: UseCase,
     /// Content-addressed reference space (ADR-0011): optional reference with
     /// content hash, name, and sketches. Used in plan v6+.
     #[serde(default)]
@@ -386,7 +370,6 @@ pub struct PhrayaPlan {
 impl PhrayaPlan {
     /// Create a new plan
     pub fn new(
-        use_case: UseCase,
         input_files: Vec<String>,
         timestamp: String,
         kmer_index: HashMap<String, MinimizerSketch>,
@@ -395,7 +378,6 @@ impl PhrayaPlan {
     ) -> Self {
         PhrayaPlan {
             version: PHRAYAPLAN_VERSION,
-            use_case,
             input_files,
             timestamp,
             kmer_index,
@@ -598,7 +580,7 @@ fn partition_read_data(plan: &PhrayaPlan, num_chunks: usize) -> Vec<ChunkFrame> 
     chunks
 }
 
-/// Write PhrayaPlan to a v7 chunk-addressable file with seekable zstd frames.
+/// Write PhrayaPlan to a v8 chunk-addressable file with seekable zstd frames.
 ///
 /// File layout:
 ///   [4B magic "PHR7"] [8B LE toc_offset] [shared_zstd] [chunk_0_zstd] ... [chunk_N-1_zstd] [toc_msgpack]
@@ -614,7 +596,6 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
     // Build shared frame
     let shared = SharedFrame {
         version: PHRAYAPLAN_VERSION,
-        use_case: plan.use_case,
         reference_space: plan.reference_space.clone(),
         input_files: plan.input_files.clone(),
         timestamp: plan.timestamp.clone(),
@@ -789,7 +770,6 @@ fn assemble_plan(shared: SharedFrame, chunks: Vec<ChunkFrame>) -> PhrayaPlan {
 
     PhrayaPlan {
         version: shared.version,
-        use_case: shared.use_case,
         reference_space: shared.reference_space,
         input_files: shared.input_files,
         timestamp: shared.timestamp,
@@ -962,7 +942,6 @@ mod tests {
         for alphabet in [phraya_core::types::Alphabet::Dna, phraya_core::types::Alphabet::Protein] {
             let shared = SharedFrame {
                 version: PHRAYAPLAN_VERSION,
-                use_case: UseCase::ReadsWithRef,
                 reference_space: Vec::new(),
                 input_files: vec!["a".to_string()],
                 timestamp: "t".to_string(),
@@ -1011,7 +990,6 @@ mod tests {
     fn shared_frame_roundtrips_with_nonempty_head_field_and_fully_skipped_tail() {
         let shared = SharedFrame {
             version: PHRAYAPLAN_VERSION,
-            use_case: UseCase::ContigsOnly,
             reference_space: Vec::new(),
             input_files: vec!["ref.fa".to_string(), "contigs.fa".to_string()],
             timestamp: "t".to_string(),
@@ -1039,7 +1017,6 @@ mod tests {
             .unwrap_or_else(|e| panic!("roundtrip failed: {e}"));
         assert_eq!(back.sequence_ids, shared.sequence_ids);
         assert_eq!(back.task_list, shared.task_list);
-        assert_eq!(back.use_case, shared.use_case);
         assert!(back.insert_size_distribution.is_none());
         assert!(!back.sparse_mode);
     }
@@ -1061,14 +1038,11 @@ mod tests {
     fn populate_dense_sketches_skips_sequences_absent_from_kmer_index() {
         // Only "known" is in kmer_index; "unknown" is present in `sequences` but
         // must be skipped rather than gaining a dense sketch of its own.
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-05-31T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec![],
+        "2026-05-31T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
         plan.kmer_index.insert(
             "known".to_string(),
             phraya_core::types::sketch(b"ACGTACGTACGTACGTACGTACGTACGTACGT", 21, 11),
@@ -1103,34 +1077,27 @@ mod tests {
 
     #[test]
     fn round_trip_empty_plan() {
-        let plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-05-31T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let plan = PhrayaPlan::new(vec![],
+        "2026-05-31T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let temp = NamedTempFile::new().unwrap();
         write_plan(temp.path(), &plan).unwrap();
         let read_plan = read_plan(temp.path()).unwrap();
 
-        assert_eq!(read_plan.use_case, plan.use_case);
         assert_eq!(read_plan.input_files, plan.input_files);
         assert_eq!(read_plan.task_list, plan.task_list);
     }
 
     #[test]
     fn round_trip_with_files() {
-        let plan = PhrayaPlan::new(
-            UseCase::ContigsWithReads,
-            vec!["input.fa".to_string(), "reads.fq".to_string()],
-            "2026-05-31T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![(1, 2), (1, 3), (2, 3)],
-        );
+        let plan = PhrayaPlan::new(vec!["input.fa".to_string(), "reads.fq".to_string()],
+        "2026-05-31T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![(1, 2), (1, 3), (2, 3)],);
 
         let temp = NamedTempFile::new().unwrap();
         write_plan(temp.path(), &plan).unwrap();
@@ -1147,14 +1114,11 @@ mod tests {
         uniqueness.insert(100u32, 0.5);
         uniqueness.insert(200u32, 0.25);
 
-        let plan = PhrayaPlan::new(
-            UseCase::ReadsOnly,
-            vec![],
-            "2026-05-31T12:00:00Z".to_string(),
-            HashMap::new(),
-            uniqueness.clone(),
-            vec![],
-        );
+        let plan = PhrayaPlan::new(vec![],
+        "2026-05-31T12:00:00Z".to_string(),
+        HashMap::new(),
+        uniqueness.clone(),
+        vec![],);
 
         let temp = NamedTempFile::new().unwrap();
         write_plan(temp.path(), &plan).unwrap();
@@ -1170,14 +1134,11 @@ mod tests {
             tasks.push((i as u32, (i + 1) as u32));
         }
 
-        let plan = PhrayaPlan::new(
-            UseCase::ContigsOnly,
-            vec![],
-            "2026-05-31T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            tasks.clone(),
-        );
+        let plan = PhrayaPlan::new(vec![],
+        "2026-05-31T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        tasks.clone(),);
 
         let temp = NamedTempFile::new().unwrap();
         write_plan(temp.path(), &plan).unwrap();
@@ -1189,7 +1150,7 @@ mod tests {
 
     #[test]
     fn version_mismatch_handling() {
-        // Simulate a future-version v7 file: TOC at end with version=999
+        // Simulate a future-version v8 file: TOC at end with version=999
         let future_toc = PlanToc {
             version: 999,
             flags: 0,
@@ -1225,20 +1186,52 @@ mod tests {
     }
 
     #[test]
+    fn v7_plan_rejected_by_version_check() {
+        // Build a minimal v7-format plan file: valid PHR7 magic, but TOC version=7
+        // (the last version before `UseCase` was removed from SharedFrame).
+        // This must be rejected with VersionMismatch{expected: 8, got: 7}, not
+        // silently mis-deserialized (rmp_serde positional arrays shift fields).
+        let v7_toc = PlanToc {
+            version: 7,
+            flags: 0,
+            num_chunks: 1,
+            shared_frame_offset: 12,
+            shared_frame_len: 50,
+            chunk_frame_offsets: vec![(62, 50)],
+        };
+        let toc_bytes = rmp_serde::to_vec(&v7_toc).unwrap();
+        let temp = NamedTempFile::new().unwrap();
+        let mut file_bytes = Vec::new();
+        file_bytes.extend_from_slice(&V7_MAGIC);
+        let toc_offset: u64 = 12 + 200;
+        file_bytes.extend_from_slice(&toc_offset.to_le_bytes());
+        file_bytes.extend(vec![0u8; 200]);
+        file_bytes.extend_from_slice(&toc_bytes);
+        std::fs::write(temp.path(), &file_bytes).unwrap();
+
+        let result = read_plan(temp.path());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PlanError::VersionMismatch { expected, got } => {
+                assert_eq!(expected, 8);
+                assert_eq!(got, 7);
+            }
+            e => panic!("Expected VersionMismatch, got: {:?}", e),
+        }
+    }
+
+    #[test]
     fn compression_ratio() {
         let mut tasks = Vec::new();
         for i in 0..1000 {
             tasks.push((i as u32, (i + 1) as u32));
         }
 
-        let plan = PhrayaPlan::new(
-            UseCase::ContigsWithReads,
-            vec!["file1.fa".to_string(), "file2.fq".to_string()],
-            "2026-05-31T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            tasks,
-        );
+        let plan = PhrayaPlan::new(vec!["file1.fa".to_string(), "file2.fq".to_string()],
+        "2026-05-31T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        tasks,);
 
         let temp = NamedTempFile::new().unwrap();
         write_plan(temp.path(), &plan).unwrap();
@@ -1246,31 +1239,6 @@ mod tests {
         let file_size = std::fs::metadata(temp.path()).unwrap().len();
         // Compressed file should be reasonably small (task_list is repetitive)
         assert!(file_size < 100_000);
-    }
-
-    #[test]
-    fn use_case_serialization() {
-        for use_case in &[
-            UseCase::ReadsWithRef,
-            UseCase::ReadsOnly,
-            UseCase::ContigsWithReads,
-            UseCase::ContigsOnly,
-        ] {
-            let plan = PhrayaPlan::new(
-                *use_case,
-                vec![],
-                "2026-05-31T12:00:00Z".to_string(),
-                HashMap::new(),
-                HashMap::new(),
-                vec![],
-            );
-
-            let temp = NamedTempFile::new().unwrap();
-            write_plan(temp.path(), &plan).unwrap();
-            let read_plan = read_plan(temp.path()).unwrap();
-
-            assert_eq!(read_plan.use_case, *use_case);
-        }
     }
 
     #[test]
@@ -1290,14 +1258,11 @@ mod tests {
 
     #[test]
     fn round_trip_v3_batch_fields() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["reads_1.fq".to_string(), "reads_2.fq".to_string()],
-            "2026-06-09T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["reads_1.fq".to_string(), "reads_2.fq".to_string()],
+        "2026-06-09T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         plan.reads_per_file = vec![1000, 1000];
         plan.total_read_count = 2000;
@@ -1372,14 +1337,11 @@ mod tests {
     /// syntax must compile — it does not today, because the field does not exist.
     #[test]
     fn issue_196_phraya_plan_has_reference_space_field() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["reference.fa".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec!["reference.fa".to_string()],
+        "2026-07-08T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let plan = PhrayaPlan {
             reference_space: vec![ReferenceSpace {
@@ -1403,14 +1365,11 @@ mod tests {
         let sketch = phraya_core::types::sketch(b"ACGTACGTACGTACGTACGTACGTACGTACGT", 21, 11);
         sketches.insert("ref".to_string(), sketch.clone());
 
-        let base_plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["reference.fa".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec!["reference.fa".to_string()],
+        "2026-07-08T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let plan = PhrayaPlan {
             reference_space: vec![ReferenceSpace {
@@ -1436,14 +1395,11 @@ mod tests {
     /// round-trip cleanly — the field is optional, not mandatory.
     #[test]
     fn issue_196_plan_without_reference_space_round_trips() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-07-08T12:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec![],
+        "2026-07-08T12:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let plan = PhrayaPlan {
             reference_space: Vec::new(),
@@ -1550,14 +1506,11 @@ mod tests {
     /// it does not today, since the field is `Option`, which can hold at most one.
     #[test]
     fn issue_197_reference_space_is_a_vec_not_an_option() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["a.fa".to_string(), "b.fa".to_string()],
-            "2026-07-13T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec!["a.fa".to_string(), "b.fa".to_string()],
+        "2026-07-13T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let space_a = ReferenceSpace {
             content_hash: "hash_a".to_string(),
@@ -1585,14 +1538,11 @@ mod tests {
     /// reference" case now that the field is a Vec.
     #[test]
     fn issue_197_empty_palette_round_trips() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ReadsOnly,
-            vec![],
-            "2026-07-13T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec![],
+        "2026-07-13T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let plan = PhrayaPlan {
             reference_space: vec![],
@@ -1611,14 +1561,11 @@ mod tests {
     /// space's hash, name, and sketches preserved, in order.
     #[test]
     fn issue_197_multi_space_palette_round_trips() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ContigsWithReads,
-            vec!["a.fa".to_string(), "b.fa".to_string(), "c.fa".to_string()],
-            "2026-07-13T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec!["a.fa".to_string(), "b.fa".to_string(), "c.fa".to_string()],
+        "2026-07-13T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let mut sketches_a = HashMap::new();
         sketches_a.insert(
@@ -1663,14 +1610,11 @@ mod tests {
     /// accessor pattern.
     #[test]
     fn issue_197_get_reference_space_by_hash_looks_up_in_palette() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ContigsWithReads,
-            vec!["a.fa".to_string(), "b.fa".to_string()],
-            "2026-07-13T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec!["a.fa".to_string(), "b.fa".to_string()],
+        "2026-07-13T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let space_a = ReferenceSpace {
             content_hash: "hash_a".to_string(),
@@ -1824,14 +1768,11 @@ mod tests {
     /// keyed by sequence ID string and holds reference/target sketches).
     #[test]
     fn issue_200_phraya_plan_has_read_sketches_field() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-07-13T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec![],
+        "2026-07-13T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let read_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
         let hash = read_content_hash(read_bases);
@@ -1854,14 +1795,11 @@ mod tests {
     /// reference sketches — returns `None` for an unstored hash.
     #[test]
     fn issue_200_get_read_sketch_looks_up_by_hash() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-07-13T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec![],
+        "2026-07-13T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let read_bases = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
         let hash = read_content_hash(read_bases);
@@ -1884,14 +1822,11 @@ mod tests {
     /// both preserved exactly.
     #[test]
     fn issue_200_read_sketches_round_trip_through_phrayaplan() {
-        let base_plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-07-13T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let base_plan = PhrayaPlan::new(vec![],
+        "2026-07-13T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let read_a = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
         let read_b = b"TGCATGCATGCATGCATGCATGCATGCATGCA";
@@ -1923,14 +1858,11 @@ mod tests {
     /// the field is additive with a sensible empty default, not mandatory.
     #[test]
     fn issue_200_plan_without_read_sketches_round_trips() {
-        let plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-07-13T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let plan = PhrayaPlan::new(vec![],
+        "2026-07-13T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let temp = NamedTempFile::new().unwrap();
         write_plan(temp.path(), &plan).unwrap();
@@ -1946,39 +1878,32 @@ mod tests {
     /// v7 round-trip: an empty plan (no reads, no chunks) writes and reads as v7.
     #[test]
     fn issue_201_v7_round_trip_empty_plan() {
-        let plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string()],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![(1, 0)],
-        );
+        let plan = PhrayaPlan::new(vec!["ref.fa".to_string()],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![(1, 0)],);
 
         let temp = NamedTempFile::new().unwrap();
         write_plan(temp.path(), &plan).unwrap();
 
         // Verify magic bytes
         let raw = std::fs::read(temp.path()).unwrap();
-        assert_eq!(&raw[0..4], b"PHR7", "v7 file must start with PHR7 magic");
+        assert_eq!(&raw[0..4], b"PHR7", "v8 file must start with PHR7 magic");
 
         let loaded = read_plan(temp.path()).unwrap();
         assert_eq!(loaded.version, PHRAYAPLAN_VERSION);
-        assert_eq!(loaded.use_case, UseCase::ReadsWithRef);
         assert_eq!(loaded.task_list, vec![(1, 0)]);
     }
 
     /// v7 round-trip with read sketches (single chunk, N=1 default).
     #[test]
     fn issue_201_v7_round_trip_with_read_sketches() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string(), "reads.fq".to_string()],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["ref.fa".to_string(), "reads.fq".to_string()],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let read_a = b"ACGTACGTACGTACGTACGTACGTACGTACGT";
         let read_b = b"TGCATGCATGCATGCATGCATGCATGCATGCA";
@@ -2004,14 +1929,11 @@ mod tests {
     /// v7 with pre-split chunks (N=4): each chunk gets its subset.
     #[test]
     fn issue_201_v7_pre_split_chunks() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string()],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["ref.fa".to_string()],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         // Insert 8 read sketches
         let mut hashes = Vec::new();
@@ -2042,14 +1964,11 @@ mod tests {
     /// Worker load: worker 0 of 4 gets only its chunk's sketches.
     #[test]
     fn issue_201_v7_worker_loads_only_own_chunk() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string()],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["ref.fa".to_string()],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         // 8 reads, 4 chunks → 2 reads per chunk
         let mut hashes = Vec::new();
@@ -2087,20 +2006,16 @@ mod tests {
 
         // Shared data (metadata) should be present in all workers
         assert_eq!(worker_plan.version, PHRAYAPLAN_VERSION);
-        assert_eq!(worker_plan.use_case, UseCase::ReadsWithRef);
     }
 
     /// Worker isolation: no overlap between workers' sketch sets.
     #[test]
     fn issue_201_v7_worker_chunks_are_disjoint() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string()],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["ref.fa".to_string()],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let mut hashes = Vec::new();
         for i in 0u64..12 {
@@ -2151,14 +2066,11 @@ mod tests {
     /// Fallback: N=1 plan with worker_count > 1 filters in-memory.
     #[test]
     fn issue_201_v7_fallback_n1_with_multiple_workers() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string()],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["ref.fa".to_string()],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
 
         let mut hashes = Vec::new();
         for i in 0u64..6 {
@@ -2196,14 +2108,11 @@ mod tests {
     #[test]
     fn issue_201_v7_rejects_non_v7_file() {
         // Write a raw zstd-compressed msgpack blob (simulating a v6 file)
-        let fake_v6_plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec![],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let fake_v6_plan = PhrayaPlan::new(vec![],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
         let serialized = rmp_serde::to_vec(&fake_v6_plan).unwrap();
         let compressed = zstd::encode_all(&serialized[..], 3).unwrap();
 
@@ -2214,7 +2123,7 @@ mod tests {
         assert!(result.is_err(), "v6 format must be rejected");
         match result.unwrap_err() {
             PlanError::VersionMismatch { expected, got } => {
-                assert_eq!(expected, 7);
+                assert_eq!(expected, 8);
                 assert_eq!(got, 6);
             }
             other => panic!("Expected VersionMismatch, got {:?}", other),
@@ -2224,14 +2133,11 @@ mod tests {
     /// TOC inspection: read_plan_toc returns correct metadata.
     #[test]
     fn issue_201_v7_toc_inspection() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string()],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["ref.fa".to_string()],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
         plan.batch_num_chunks = Some(5);
         plan.total_read_count = 10;
         for i in 0u64..10 {
@@ -2246,7 +2152,7 @@ mod tests {
         write_plan(temp.path(), &plan).unwrap();
 
         let toc = read_plan_toc(temp.path()).unwrap();
-        assert_eq!(toc.version, 7);
+        assert_eq!(toc.version, 8);
         assert_eq!(toc.flags, 0);
         assert_eq!(toc.num_chunks, 5);
         assert_eq!(toc.chunk_frame_offsets.len(), 5);
@@ -2257,14 +2163,11 @@ mod tests {
     /// Byte determinism: writing the same plan twice produces identical bytes.
     #[test]
     fn issue_201_v7_byte_deterministic() {
-        let mut plan = PhrayaPlan::new(
-            UseCase::ReadsWithRef,
-            vec!["ref.fa".to_string()],
-            "2026-07-23T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["ref.fa".to_string()],
+        "2026-07-23T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![],);
         for i in 0u64..4 {
             let bases: Vec<u8> = test_dna_sequence(i + 200, 32);
             let hash = read_content_hash(&bases);

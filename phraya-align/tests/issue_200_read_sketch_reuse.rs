@@ -19,18 +19,15 @@
 
 use phraya_align::executor::{align_read, AlignConfig, Strategy, TargetContext};
 use phraya_core::types::{sketch_sequence_default, MinimizerSketch, Sequence};
-use phraya_io::plan::{read_content_hash, PhrayaPlan, UseCase};
+use phraya_io::plan::{read_content_hash, PhrayaPlan};
 use std::collections::HashMap;
 
 fn make_plan() -> PhrayaPlan {
-    PhrayaPlan::new(
-        UseCase::ReadsWithRef,
-        vec!["test".to_string()],
-        "2026-07-13T00:00:00Z".to_string(),
-        HashMap::new(),
-        HashMap::new(),
-        vec![],
-    )
+    PhrayaPlan::new(vec!["test".to_string()],
+    "2026-07-13T00:00:00Z".to_string(),
+    HashMap::new(),
+    HashMap::new(),
+    vec![],)
 }
 
 fn diverse_dna(len: usize, seed: u64) -> Vec<u8> {

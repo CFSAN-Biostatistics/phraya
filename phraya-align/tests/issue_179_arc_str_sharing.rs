@@ -1,6 +1,6 @@
 use phraya_align::executor::{align_task_with_config, AlignConfig};
 use phraya_core::types::{Sequence, VariantObservation};
-use phraya_io::plan::{PhrayaPlan, UseCase};
+use phraya_io::plan::PhrayaPlan;
 /// Issue #179: Share per-variant CIGAR/provenance to cut allocations (Tier 4)
 ///
 /// Tests verify that:
@@ -16,14 +16,11 @@ use std::sync::Arc;
 
 /// Helper: Create a simple test plan
 fn make_test_plan() -> PhrayaPlan {
-    PhrayaPlan::new(
-        UseCase::ReadsWithRef,
-        vec!["test".to_string()],
-        "2026-07-13T00:00:00Z".to_string(),
-        HashMap::new(),
-        HashMap::new(),
-        vec![],
-    )
+    PhrayaPlan::new(vec!["test".to_string()],
+    "2026-07-13T00:00:00Z".to_string(),
+    HashMap::new(),
+    HashMap::new(),
+    vec![],)
 }
 
 /// Test that VariantObservation can be constructed and field types accept Arc<str>

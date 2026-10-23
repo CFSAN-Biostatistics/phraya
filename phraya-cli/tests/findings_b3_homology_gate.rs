@@ -107,7 +107,7 @@ fn findings_b3_default_gate_keeps_related_pairs_drops_unrelated() {
     );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
-    assert_eq!(plan.use_case, phraya_io::plan::UseCase::ContigsOnly);
+
 
     let a = ids.iter().position(|&x| x == "contigA").unwrap() as u32;
     let a_mut = ids.iter().position(|&x| x == "contigA_mut").unwrap() as u32;

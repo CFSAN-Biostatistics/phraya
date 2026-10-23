@@ -19,14 +19,11 @@ mod issue_185_strategy_density_subselection {
         dense_kmer_index: HashMap<String, MinimizerSketch>,
         w11_membership: HashMap<String, Vec<bool>>,
     ) -> PhrayaPlan {
-        let mut plan = PhrayaPlan::new(
-            phraya_io::plan::UseCase::ReadsWithRef,
-            vec!["test.fasta".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            kmer_index,
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["test.fasta".to_string()],
+        "2026-07-08T12:00:00Z".to_string(),
+        kmer_index,
+        HashMap::new(),
+        vec![],);
         plan.dense_kmer_index = dense_kmer_index;
         plan.w11_membership = w11_membership;
         plan.sparse_mode = false;
@@ -74,14 +71,11 @@ mod issue_185_strategy_density_subselection {
         // Create two plans: one w=11-only, one with dense
         let mut w11_kmer = HashMap::new();
         w11_kmer.insert("ref_identity".to_string(), w11_sketch.clone());
-        let w11_plan = PhrayaPlan::new(
-            phraya_io::plan::UseCase::ReadsWithRef,
-            vec!["test".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            w11_kmer,
-            HashMap::new(),
-            vec![],
-        );
+        let w11_plan = PhrayaPlan::new(vec!["test".to_string()],
+        "2026-07-08T12:00:00Z".to_string(),
+        w11_kmer,
+        HashMap::new(),
+        vec![],);
 
         let mut dense_kmer = HashMap::new();
         dense_kmer.insert("ref_identity".to_string(), w11_sketch.clone());
@@ -162,14 +156,11 @@ mod issue_185_strategy_density_subselection {
 
         let mut w11_kmer = HashMap::new();
         w11_kmer.insert("ref_balanced".to_string(), w11_sketch.clone());
-        let w11_plan = PhrayaPlan::new(
-            phraya_io::plan::UseCase::ReadsWithRef,
-            vec!["test".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            w11_kmer,
-            HashMap::new(),
-            vec![],
-        );
+        let w11_plan = PhrayaPlan::new(vec!["test".to_string()],
+        "2026-07-08T12:00:00Z".to_string(),
+        w11_kmer,
+        HashMap::new(),
+        vec![],);
 
         let mut dense_kmer = HashMap::new();
         dense_kmer.insert("ref_balanced".to_string(), w11_sketch.clone());
@@ -359,14 +350,11 @@ mod issue_185_strategy_density_subselection {
         let mut sparse_kmer = HashMap::new();
         let w11_sketch = phraya_core::types::sketch_sequence_default(&target);
         sparse_kmer.insert("ref_sparse".to_string(), w11_sketch);
-        let mut plan = PhrayaPlan::new(
-            phraya_io::plan::UseCase::ReadsWithRef,
-            vec!["test".to_string()],
-            "2026-07-08T12:00:00Z".to_string(),
-            sparse_kmer,
-            HashMap::new(),
-            vec![],
-        );
+        let mut plan = PhrayaPlan::new(vec!["test".to_string()],
+        "2026-07-08T12:00:00Z".to_string(),
+        sparse_kmer,
+        HashMap::new(),
+        vec![],);
         plan.sparse_mode = true; // SPARSE: no dense sketches
 
         // AC#4: Sensitive on sparse plan should degrade gracefully (no panic)

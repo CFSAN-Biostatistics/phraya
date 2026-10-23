@@ -267,12 +267,19 @@ fn issue_89_plan_detects_case3_contigs_with_reads() {
     );
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
+    // Case 3 (contigs + reads, no reference) → centroid selection.
+    // 5 contigs + 50 reads = 55 sequences; centroid is one of the contigs → 54 tasks.
     assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsWithReads,
-        "should detect Case 3: contigs with reads, got {:?}",
-        plan.use_case
+        plan.task_list.len(),
+        54,
+        "Case 3 should produce 54 centroid tasks (55 seqs - 1 centroid), got {:?}",
+        plan.task_list
     );
+    let centroid = plan.task_list[0].1;
+    for (query_id, target_id) in &plan.task_list {
+        assert_eq!(*target_id, centroid, "all tasks should target the centroid");
+        assert_ne!(*query_id, centroid, "centroid should not be a query");
+    }
 }
 
 // ── Test 2: centroid selected and logged ──────────────────────────────────

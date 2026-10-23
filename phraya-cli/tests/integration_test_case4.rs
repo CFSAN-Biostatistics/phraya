@@ -7,7 +7,7 @@ fn manifest() -> PathBuf {
 }
 
 /// Write a FASTA file where each sequence is `seq_len` bp (all 'A').
-/// seq_len ≥ 5000 → classify_input treats them as contigs.
+/// seq_len ≥ 5000 → `generate_task_list` classifies them as contigs.
 fn write_fasta(dir: &Path, name: &str, ids: &[&str], seq_len: usize) -> PathBuf {
     let path = dir.join(name);
     let seq = "ACGTACGTACGTACGT".repeat(seq_len / 16 + 1);
@@ -33,13 +33,13 @@ fn phraya(args: &[&str]) -> std::process::Output {
 
 // ── Tracer bullet ────────────────────────────────────────────────────────────
 
-/// phraya plan with contigs + reference stores UseCase::ContigsOnly, not ReadsWithRef
+/// phraya plan with contigs + reference produces cross-product task list (every contig × ref)
 #[test]
 fn issue_87_case4_with_ref_use_case_is_contigs_only() {
     let dir = TempDir::new().unwrap();
     let p = dir.path();
 
-    // 5 contig-length sequences (≥5kb each → classified as contigs)
+    // 5 contig-length sequences (≥5kb each)
     let contigs = write_fasta(
         p,
         "contigs.fa",
@@ -58,12 +58,8 @@ fn issue_87_case4_with_ref_use_case_is_contigs_only() {
     assert!(out.status.success(), "phraya plan failed:\n{}", String::from_utf8_lossy(&out.stderr));
 
     let plan = phraya_io::plan::read_plan(&plan_path).unwrap();
-    assert_eq!(
-        plan.use_case,
-        phraya_io::plan::UseCase::ContigsOnly,
-        "contigs + reference should produce ContigsOnly, got {:?}",
-        plan.use_case
-    );
+    // Contigs + reference → cross-product: 5 contigs × 1 ref = 5 tasks
+    assert_eq!(plan.task_list.len(), 5, "contigs + reference should produce 5 cross-product tasks, got {:?}", plan.task_list);
 }
 
 // ── Slice 2 ──────────────────────────────────────────────────────────────────
@@ -130,15 +126,12 @@ fn issue_87_case4_align_contig_to_reference() {
     // Write plan directly: ContigsOnly, tasks = (1,0) and (2,0)
     {
         use std::collections::HashMap;
-        use phraya_io::plan::{write_plan, PhrayaPlan, UseCase};
-        let plan = PhrayaPlan::new(
-            UseCase::ContigsOnly,
-            vec![seqs.to_string_lossy().to_string()],
-            "2026-06-02T00:00:00Z".to_string(),
-            HashMap::new(),
-            HashMap::new(),
-            vec![(1, 0), (2, 0)],
-        );
+        use phraya_io::plan::{write_plan, PhrayaPlan};
+        let plan = PhrayaPlan::new(vec![seqs.to_string_lossy().to_string()],
+        "2026-06-02T00:00:00Z".to_string(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![(1, 0), (2, 0)],);
         write_plan(&plan_path, &plan).unwrap();
     }
 
