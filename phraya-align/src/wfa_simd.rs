@@ -1074,6 +1074,29 @@ pub fn fill_wfa_affine_fitting_impl(
     let edit_distance = levenshtein_from_cigar(&cigar);
     Some((cigar, edit_distance, t_end))
 }
+/// Gap-affine global alignment — the affine counterpart to [`fill_wfa`].
+///
+/// Both sequences are fully consumed (global mode). Affine gap costs (`gap_open +
+/// L * gap_extend` per L-base gap) steer the search toward consolidating a real
+/// multi-base indel into a single gap rather than the linear model's indifference
+/// to scattering it as cost-equivalent mismatches. Without this, a dense
+/// SNP+indel cluster (e.g. 3 SNPs + a 3 bp insertion in 7 bp) can be mis-resolved
+/// as 4D+1I instead of 2X+3I — same Levenshtein cost, wrong variant calls.
+///
+/// Returns `(cigar, edit_distance)` where `edit_distance` is the traditional
+/// Levenshtein count via [`levenshtein_from_cigar`], identical in meaning to
+/// [`fill_wfa`]'s return type, so callers see no change in reported distance.
+pub fn fill_wfa_affine(
+    q: &[u8],
+    t: &[u8],
+    costs: AffineCosts,
+    max_s_cap: Option<usize>,
+) -> Option<(String, usize)> {
+    let cap = max_s_cap.map(|c| c.min(i32::MAX as usize) as i32);
+    let (cigar, _affine_score, _t_end) = fill_wfa_affine_generic(q, t, costs, false, cap)?;
+    let edit_distance = levenshtein_from_cigar(&cigar);
+    Some((cigar, edit_distance))
+}
 
 /// Find a valid fitting-end diagonal: any k where `wf[k] >= qn` and `0 <= qn - k <= tn`.
 /// Returns `(t_end, k)` for the diagonal that consumes the most target (maximum t_end = qn - k).

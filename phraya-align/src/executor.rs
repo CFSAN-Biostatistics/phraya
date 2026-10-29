@@ -1468,8 +1468,13 @@ fn push_op(ops: &mut Vec<(usize, char)>, n: usize, op: char) {
 }
 
 /// Globally align the gap between two consecutive segments, appending its CIGAR to `ops`.
-/// Returns the gap's edit distance, or `None` if the WFA cap is exhausted (the block is
-/// split there and `ops` is left untouched).
+/// Uses gap-affine WFA (`fill_wfa_affine`) rather than the linear `fill_wfa`: affine costs
+/// consolidate a real multi-base indel into one gap, so a dense SNP+indel cluster (e.g. 2
+/// SNPs flanking a 3 bp insertion in 7 bp) resolves as 3I+2X instead of the linear model's
+/// equally-cheap 4D+1I, which would turn flanking SNPs into spurious indels. The reported
+/// `edit_distance` is Levenshtein (see [`fill_wfa_affine`]), so block identity is unchanged
+/// for non-clustered gaps. Returns `None` if the WFA cap is exhausted (the block is split
+/// there and `ops` is left untouched).
 fn fill_gap(q: &[u8], t: &[u8], ops: &mut Vec<(usize, char)>) -> Option<usize> {
     match (q.is_empty(), t.is_empty()) {
         (true, true) => Some(0),
@@ -1484,7 +1489,9 @@ fn fill_gap(q: &[u8], t: &[u8], ops: &mut Vec<(usize, char)>) -> Option<usize> {
         }
         (false, false) => {
             let cap = crate::wfa_simd::default_max_s_cap(q.len(), t.len());
-            let (cigar, edit_distance) = crate::wfa_simd::fill_wfa(q, t, Some(cap))?;
+            let (cigar, edit_distance) = crate::wfa_simd::fill_wfa_affine(
+                q, t, crate::wfa_simd::AffineCosts::default(), Some(cap),
+            )?;
             for (n, op) in phraya_core::cigar::parse_ops(&cigar) {
                 push_op(ops, n, op);
             }
@@ -3312,6 +3319,39 @@ mod tests {
         }
         let summary: Vec<String> = results.iter().map(|(s, c)| format!("{s}bp:{c}")).collect();
         eprintln!("cluster spacing sweep: {}", summary.join(", "));
+    }
+    /// §4 follow-up: a dense cluster of SNPs **and** an indel (not just pure SNPs) in a
+    /// 7 bp window — the 455/458 real-data pattern. Linear-gap WFA resolves 2X+3I and
+    /// 4D+1I at the same cost, picking the latter and turning the two flanking SNPs into
+    /// spurious indels (1/3 SNP recall). Affine WFA prefers the correct 2X+3I resolution
+    /// (2 SNPs + 1 insertion). Asserts both flanking SNPs are called as SNPs, not indels.
+    #[test]
+    fn assembly_snp_flanked_by_insertion_calls_all_snps() {
+        use phraya_core::types::VariantType;
+        let target = assembly_dna(8_000, 7);
+        let center = 4_000usize;
+        // Build query: SNP at center-3, 3 bp insertion at center, SNP at center+4.
+        let mut query = target.to_vec();
+        for p in [center - 3, center + 4] {
+            query[p] = match query[p] {
+                b'A' => b'C',
+                b'C' => b'G',
+                b'G' => b'T',
+                _ => b'A',
+            };
+        }
+        query.splice(center..center, b"CAT".iter().copied());
+        let r = align_assembly_pair(&query, &target).expect("aligns");
+        let snp_count = r.variants.iter().filter(|v| v.variant_type() == VariantType::Snp).count();
+        let ins_count = r.variants.iter()
+            .filter(|v| v.variant_type() == VariantType::Insertion)
+            .count();
+        assert_eq!(
+            snp_count, 2,
+            "expected 2 SNPs around the insertion, got {}; blocks={:?}",
+            snp_count, block_spans(&r),
+        );
+        assert_eq!(ins_count, 1, "expected 1 insertion, got {}", ins_count);
     }
 
 }
