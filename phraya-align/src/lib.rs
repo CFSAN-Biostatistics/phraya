@@ -3,7 +3,6 @@ pub mod executor;
 pub mod seeding;
 pub mod wfa_simd;
 pub mod wfa_simd_dispatch;
-pub mod short_read_aligner;
 // (long-read alignment is implemented in executor.rs as extend_chains_longread)
 pub use chaining::{chain_seeds, Chain, ChainParams};
 pub use executor::{
@@ -14,7 +13,6 @@ pub use seeding::{
     find_seeds, find_seeds_indexed, find_seeds_indexed_capped, seed_occurrence_cap,
     MinimizerIndex, Seed,
 };
-pub use short_read_aligner::{PairedEndConfig, ShortReadAligner, ShortReadScoring, MateRescueResult};
 // (LongReadAligner removed: long-read extend_chains_longread in executor.rs no longer uses it)
 #[cfg(test)]
 mod local_coverage_tests;
