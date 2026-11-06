@@ -45,7 +45,8 @@ fn plan_and_align(
     strategy: &str,
     gap_model: Option<&str>,
 ) -> (Output, PathBuf) {
-    let plan_path = dir.join(format!("plan_{strategy}_{:?}.phrayaplan", gap_model));
+    let gm = gap_model.unwrap_or("default");
+    let plan_path = dir.join(format!("plan_{strategy}_{gm}.phrayaplan"));
     let plan_out = run(&[
         "plan",
         "--inputs",
@@ -57,7 +58,7 @@ fn plan_and_align(
     ]);
     assert!(plan_out.status.success(), "plan failed: {}", String::from_utf8_lossy(&plan_out.stderr));
 
-    let out_path = dir.join(format!("out_{strategy}_{:?}.phraya", gap_model));
+    let out_path = dir.join(format!("out_{strategy}_{gm}.phraya"));
     let mut args = vec![
         "align",
         plan_path.to_str().unwrap(),

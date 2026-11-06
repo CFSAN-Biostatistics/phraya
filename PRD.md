@@ -91,7 +91,7 @@ pub trait Aligner: Send + Sync {
 | Aligner | Input | Algorithm Family | Key Techniques |
 |---|---|---|---|
 | `ContigAligner` | Assembly | Seed-chain-extend | FM-index OR minimizer seeding → WFA extension |
-| `ShortReadAligner` | Illumina reads | Seed-extend-rescue | FMD-index seeding → banded Smith-Waterman → paired-end rescue |
+| Short reads | Illumina reads | Seed-chain-extend | Minimizer seeding → Myers/WFA (strategy ladder); paired-end placement via `phraya filter`. A dedicated `ShortReadAligner` component was scoped out — short reads ship through the same executor path as other strategies. |
 | `LongReadAligner` | ONT/PacBio | Minimizer-chain-align | Minimizer seeding → WFA with adaptive banding |
 | `HybridAligner` | Reads + assembly | Targeted deployment | Contig alignment first, then targeted read mapping at uncertain sites only |
 
@@ -267,7 +267,7 @@ Key flags:
 
 **Rationale**: Phase 1 proves the technical foundation. Packaging now means Phase 3+ features ship to users immediately via `conda upgrade phraya` or `docker pull`, not blocked waiting for "eventual packaging." Early packaging surfaces cross-platform issues (Windows, M1 SIMD) before they compound. Addresses PRD deployment problem: "Installing BWA + MUMmer + samtools + their dependencies across platforms is fragile"—Phraya's zero-dependency design only helps if users can *get* the binary easily.
 
-**Phase 3** (10 weeks): Reads + SIMD hardening (`ShortReadAligner`, AVX2/AVX-512 dispatch, `exact`/`fast` strategies, `phraya filter`) ✅ **COMPLETE** (AVX2/AVX-512 runtime dispatch, `exact`/`fast`/`long-read`/`assembly` strategies, `Strategy::LongRead` tuning, and `phraya filter` with VCF/TSV/phraya/snpdiffs/core-snp/distance-matrix formats are shipped. Short reads align through the executor's strategy ladder — no separate CLI path. `ShortReadAligner` was a scaffolding module (unwired config/prediction helpers); removed as a dead end since mate-rescue filtering is deferred to `phraya filter`.)
+**Phase 3** (10 weeks): Reads + SIMD hardening (`ShortReadAligner`, AVX2/AVX-512 dispatch, `exact`/`fast` strategies, `phraya filter`) ✅ **COMPLETE** (AVX2/AVX-512 runtime dispatch, `exact`/`fast`/`long-read`/`assembly` strategies, `Strategy::LongRead` tuning, and `phraya filter` with VCF/TSV/phraya/snpdiffs/core-snp/distance-matrix formats are shipped. Short reads align through the executor's strategy ladder — no separate CLI path. The planned dedicated `ShortReadAligner` component was dropped as a dead end: its config/prediction helpers never touched the alignment engine, mirroring the earlier `LongReadAligner` removal; mate-rescue filtering is deferred to `phraya filter`.)
 
 **Phase 4** (12 weeks): Hybrid + GPU (`HybridAligner`, CUDA batch kernel, mixed manifest, `sketch` strategy, long read scaffold) ⏳ **NOT STARTED** — `HybridAligner` (#243), the CUDA batch kernel and `--gpu` flag (#242), the `sketch` strategy and `--auto-ref` are not implemented; no CUDA sources exist.
 
