@@ -201,7 +201,7 @@ enum Commands {
         #[arg(long, value_name = "F")]
         min_kmer_uniqueness: Option<f64>,
 
-        /// Output format (vcf, tsv, phraya, snpdiffs)
+        /// Output format (vcf, tsv, phraya, snpdiffs, core-snp, distance-matrix)
         #[arg(long, value_name = "FORMAT", default_value = "vcf")]
         format: String,
 

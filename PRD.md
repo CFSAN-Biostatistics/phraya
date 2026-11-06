@@ -193,7 +193,15 @@ Every variant has full structured evidence. Users filter via `phraya filter` wit
 
 ---
 
-## CLI Sketch
+> **Note** (2026-11-05): the CLI sketch below is the original PRD design spec, not the current CLI. The shipped `phraya` command set is **`plan`**, **`plan-tasks`**, **`align`**, **`merge`**, **`filter`**, **`qc`** (see README · CLI Reference). The commands and flags below are planned/unimplemented and are not accepted by the CLI yet:
+
+| Flag / command | Status | Replacement / note |
+|---|---|
+| `phraya snp --manifest` | ⏳ planned | Shipped equivalent: `phraya plan --inputs … --reference …` then `phraya align …` then `phraya plan-tasks` |
+| `--preset {strict-surveillance\|research\|assembly-only\|hybrid}` | ⏳ planned | Shipped: `--preset {strict\|tolerant}` on `phraya filter` |
+| `phraya screen --gpu` | ⏳ planned (Phase 4, #242) | No `--gpu` flag exists yet; no CUDA sources |
+| `--strategy sketch` | ⏳ planned (Phase 4) | Not implemented |
+| `--auto-ref <N>` | ⏳ planned | Not implemented |
 
 ```bash
 phraya snp --manifest samples.tsv --reference ref.fasta --strategy balanced --outdir results
@@ -253,22 +261,20 @@ Key flags:
 
 **Phase 2** (7 weeks): Packaging & Distribution — Multi-channel distribution infrastructure addressing the PRD's deployment problem
 
-- **Tier 1** (Weeks 1-2): Binary rename (`phraya` not `phraya-cli`), crates.io metadata polish, GitHub Releases workflow (prebuilt binaries for x86_64-linux portable/native, aarch64-linux, x86_64-darwin, aarch64-darwin)
-- **Tier 2** (Weeks 3-5): Docker (multi-arch, push to ghcr.io), Bioconda recipe (PR to bioconda-recipes), Homebrew formula (test locally, PR to homebrew-core)
-- **Tier 3** (Weeks 6-7): Deferred packaging (pixi, .deb, .rpm, Windows native) revisited based on demand
+- **Tier 1** (Weeks 1-2): Binary rename (`phraya` not `phraya-cli`, done), crates.io metadata polish, GitHub Releases workflow (prebuilt binaries for x86_64-linux portable/native, aarch64-linux, x86_64-darwin, aarch64-darwin) ✅ **COMPLETE**
+- **Tier 2** (Weeks 3-5): Docker (multi-arch, push to ghcr.io) ✅ **COMPLETE**; Bioconda recipe in-repo (`recipe/meta.yaml`) ⏳ submission pending (#167); Homebrew formula in-repo (`brew/Formula/phraya.rb`) ⏳ submission pending (#168)
+- **Tier 3** (Weeks 6-7): Deferred packaging (pixi, .deb, .rpm, Windows native) revisited based on demand ⏳ held
 
 **Rationale**: Phase 1 proves the technical foundation. Packaging now means Phase 3+ features ship to users immediately via `conda upgrade phraya` or `docker pull`, not blocked waiting for "eventual packaging." Early packaging surfaces cross-platform issues (Windows, M1 SIMD) before they compound. Addresses PRD deployment problem: "Installing BWA + MUMmer + samtools + their dependencies across platforms is fragile"—Phraya's zero-dependency design only helps if users can *get* the binary easily.
 
-**Phase 3** (10 weeks): Reads + SIMD hardening (`ShortReadAligner`, AVX2/AVX-512 dispatch, `exact`/`fast` strategies, `phraya filter`)
+**Phase 3** (10 weeks): Reads + SIMD hardening (`ShortReadAligner`, AVX2/AVX-512 dispatch, `exact`/`fast` strategies, `phraya filter`) 🚧 **IN PROGRESS** (AVX2/AVX-512 runtime dispatch, `exact`/`fast`/`long-read`/`assembly` strategies, `Strategy::LongRead` tuning, and `phraya filter` with VCF/TSV/phraya/snpdiffs/core-snp/distance-matrix formats are shipped. `ShortReadAligner` API has unit tests but is not wired into the CLI; the CLI invokes the executor directly.)
 
-**Phase 4** (12 weeks): Hybrid + GPU (`HybridAligner`, CUDA batch kernel, mixed manifest, `sketch` strategy, long read scaffold)
+**Phase 4** (12 weeks): Hybrid + GPU (`HybridAligner`, CUDA batch kernel, mixed manifest, `sketch` strategy, long read scaffold) ⏳ **NOT STARTED** — `HybridAligner` (#243), the CUDA batch kernel and `--gpu` flag (#242), the `sketch` strategy and `--auto-ref` are not implemented; no CUDA sources exist.
 
-**Phase 5** (14 weeks): Long reads + polish (`LongReadAligner` complete, docs, benchmarks, publication, v1.0)
+**Phase 5** (14 weeks): Long reads + polish (`LongReadAligner` complete, docs, benchmarks, publication, v1.0) 🚧 **IN PROGRESS** (`Strategy::LongRead` with WFA+chunking, tuned score floor; benchmark suite live and run on SLURM). `LongReadAligner` as a distinct aligner (#244) is still open; docs, publication-grade benchmarks, and v1.0 remain.
 
-**Total to v1.0**: ~51 weeks
 
 ---
-
 ## Open Questions
 
 1. **Confidence scoring**: How to merge assembly identity + read depth into calibrated probability? Proposed: logistic regression on simulated ground truth.

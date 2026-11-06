@@ -53,7 +53,7 @@ phraya merge sample_*.phraya --output cohort_merged.phraya
 
 # 4. Filter with different parameters (no re-alignment needed)
 phraya filter cohort_merged.phraya --min-coverage 10 --min-mapq 30 --format vcf > variants.vcf
-phraya filter cohort_merged.phraya --min-coverage 5 --max-multi-map-fraction 0.3 --format tsv > variants.tsv
+phraya filter cohort_merged.phraya --min-coverage 5 --min-identity 0.98 --format tsv > variants.tsv
 ```
 
 ## Inputs
@@ -86,6 +86,102 @@ across all reference contigs (like `delta-filter -1`) and writes CSP2's `.snpdif
 one BED row per kept block, `.` rows for uncovered regions, and one row per variant inside a
 kept block, with header coverage computed from those blocks (ADR-0015).
 
+### Depletion and typing against several reference spaces
+
+```bash
+phraya plan --inputs reads.fastq --reference host.fasta --reference target.fasta --output dep.phrayaplan
+phraya align dep.phrayaplan --reference host.fasta --reference target.fasta --output aln/
+# aln/<space>.phraya per space + aln/cross_space.phraya.queries
+phraya filter aln/target.phraya --queries-sidecar aln/cross_space.phraya.queries --deplete-space host
+phraya filter --queries-sidecar aln/cross_space.phraya.queries --classify-by-space > typing.tsv
+```
+
+Align keeps every read's placements in every space (ADR-0011); `filter` decides. Reads whose
+best two spaces are within `--min-margin` identity are kept as ambiguous rather than depleted.
+
+## CLI Reference
+
+`phraya <COMMAND> --help` is authoritative; this section mirrors it.
+
+### `phraya plan`
+
+| Flag | Description |
+|---|---|
+| `--inputs <FILE>` | Input files (FASTA/FASTQ/BAM/CRAM). Required |
+| `--reference <FILE>` | Reference file, repeatable. Every record is its own reference space; every query is tasked against every reference record |
+| `--output <FILE>` | Output `.phrayaplan`. Required |
+| `--alphabet {auto\|dna\|protein}` | Sequence alphabet (ADR-0013). Default `auto` (content-sniffed) |
+| `--min-homology <F>` | Minimum sketch Jaccard for a contigs-only all-pairs task. Default `0.1`; ignored with a reference |
+| `--no-homology-gate` | Generate the full dense all-pairs contig task list |
+| `--chunks <N>` | Pre-split read sketches into N seekable chunk frames. Default `1` |
+| `--batch-to <N>` / `--batch-by <N>` | Batch mode: split reads into N chunks / N reads per chunk |
+| `--batch-output-pattern <PATTERN>` | Per-worker output pattern with `{worker}`; required with `--batch-to`/`--batch-by` |
+
+### `phraya plan-tasks <PLAN_FILE>`
+
+Prints the plan's task list as TSV (query ID, target ID) for GNU Parallel, SLURM, WDL or Nextflow.
+
+### `phraya align <PLAN_FILE> [QUERY_ID] [TARGET_ID]`
+
+Three mutually exclusive modes: a single task (`QUERY_ID TARGET_ID`), batch (`--worker`/`--ensure`), or reference palette (`--reference`).
+
+| Flag | Description |
+|---|---|
+| `--output <FILE>` | Output `.phraya`; a directory in `--reference` mode; unused with `--worker` |
+| `--strategy <STRATEGY>` | Strategy preset, default `balanced` (see below) |
+| `--coverage-window <N>` | Override the per-variant coverage-window radius (bp) |
+| `--gap-model {linear\|affine}` | Gap cost model (ADR-0014). Only with `--strategy sensitive`, where it defaults to `affine` |
+| `--worker <N>` | Batch mode: process chunk N (0-indexed) |
+| `--ensure` | Batch mode: process all missing chunks sequentially |
+| `--threads <N>` | Threads for `--ensure`. Default: auto-detect |
+| `--reference <FILE>` | Palette mode (ADR-0011), repeatable: align the plan's reads against each presented reference space, resolved by content hash. Writes `<output>/<space>.phraya` plus `<output>/cross_space.phraya.queries` |
+| `--sealed` | With `--reference`: a reference whose content hash is not in the plan is a hard error instead of a warning |
+
+| Strategy | Chain cap K | Engine | Coverage window | Use |
+|---|---|---|---|---|
+| `fast` | 1 | Myers, divergence cutoff | ±150 bp | Confident low-divergence reads; low sensitivity |
+| `balanced` | 2 | Myers fitting + WFA fallback | ±50 bp | Default |
+| `sensitive` | 50 | Seeded gap-affine WFA | ±25 bp | Divergent reads, indels |
+| `exact` | 250 | Full WFA | ±5 bp | Highest precision; small genomes, validation |
+| `long-read` | 100 | WFA + chunking | ±25 bp | ONT/PacBio reads, 10–50 kb |
+| `assembly` | every chain | Local blocks, WFA gap fills | ±5 bp | Contig vs contig (ADR-0015) |
+
+### `phraya merge --output <FILE> <FILE>...`
+
+Merges `.phraya` files (order-independent, provenance and assembly blocks preserved).
+
+### `phraya filter [INPUT]...`
+
+| Flag | Description |
+|---|---|
+| `--format <FORMAT>` | `vcf` (default), `tsv`, `phraya`, `snpdiffs`, `core-snp`, `distance-matrix` |
+| `--output <FILE>` | Output file; required for `--format phraya` |
+| `--preset {strict\|tolerant}` | Named threshold preset; individual flags override it |
+| `--expr <EXPR>` | Extra conjunctive predicate, e.g. `"identity >= 0.98 && coverage >= 10"` |
+| `--min-coverage` / `--max-coverage <N>` | Coverage bounds |
+| `--min-mapq` / `--max-mapq <N>` | MAPQ bounds |
+| `--min-kmer-uniqueness <F>` | Minimum k-mer uniqueness (0.0–1.0) |
+| `--min-identity <F>` | Minimum `1 − edit_distance / query_aligned_len` |
+| `--min-match-fraction <F>` | Minimum `M / (M+X+I+D)` |
+| `--min-aligned-length <N>` | Minimum alignment columns |
+| `--max-snp-density-15` / `-125` / `-1000 <N>` | Maximum other variant positions in a 15/125/1000 bp window |
+| `--min-edge-distance <N>` | Minimum distance to the query's nearest end |
+| `--exclude-discordant-pairs` | Drop pairs with insert size beyond mean ± `--discordant-sigma` (default `3.0`) σ |
+| `--require-proper-pairs <N>` | Minimum proper-pair fraction of covering reads (`0.9` or `90`) |
+| `--min-insert-size` / `--max-insert-size <N>` | Absolute insert-size bounds |
+| `--require-both-mates-mapped` | Require both mates mapped |
+| `--reference-fasta` / `--query-fasta <FILE>` | `snpdiffs`: assemblies for header metadata, coverage denominators, uncovered rows |
+| `--reference-id` / `--query-id <NAME>` | `snpdiffs`: header labels; default the FASTA file names |
+| `--sample-ids <ID1,ID2,...>` | `core-snp`/`distance-matrix`: one sample ID per input file |
+| `--queries-sidecar <FILE>` | Cross-space `.phraya.queries`; required by the two flags below |
+| `--deplete-space <SPACE>` | Drop reads that confidently align to this space; near-ties are kept |
+| `--min-margin <F>` | Identity gap below which two placements are near-ties. Default `0.02` |
+| `--classify-by-space` | Typing mode: TSV of `read_id, best_space, identity, margin` |
+
+### `phraya qc <FILE>...`
+
+One TSV row per `.phraya` file: variant count, coverage breadth, k-mer uniqueness summary.
+
 ## Key Features
 
 - **Multi-mapping storage**: Tracks alternative alignment positions (score ratio ≥ 0.95). Filter ambiguous variants post-hoc.
@@ -102,13 +198,13 @@ Workspace with 5 crates:
 
 - **phraya-core**: Core types (Sequence, VariantObservation, EvidenceLayer, CoverageTrack, MinimizerSketch), errors, k-mer sketching (via simd-minimizers), centroid selection, k-mer uniqueness
 - **phraya-io**: FASTA/FASTQ/BAM/CRAM parsing, `.phrayaplan`/`.phraya`/`.phraya.queries` formats (MessagePack + zstd)
-- **phraya-align**: WFA extension, SIMD diagonal fill (SSE4.2/NEON), seeding from minimizer sketches
-- **phraya-filter**: Filtering library (threshold/expression/preset), output formatters (VCF/TSV/phraya)
+- **phraya-align**: WFA (linear and gap-affine) and Myers extension, SIMD match extension (SSE2/NEON baseline, AVX2/AVX-512 runtime dispatch), seeding from minimizer sketches, assembly blocks
+- **phraya-filter**: Filtering library (threshold/expression/preset), one-to-one block selection, output formatters (VCF/TSV/phraya/snpdiffs/core-SNP/distance matrix)
 - **phraya** (`phraya-cli/`): Binary CLI (plan/plan-tasks/align/merge/filter/qc subcommands)
 
 ## File Formats
 
-- **`.phrayaplan`** (v7): Plan file (k-mer evidence + task list + read/contig sketches). Read-only during alignment. Chunk-addressable, seekable zstd frames; workers load only the chunk they need.
+- **`.phrayaplan`** (v8): Plan file (k-mer evidence + task list + read/contig sketches + reference palette). Read-only during alignment. Chunk-addressable, seekable zstd frames; workers load only the chunk they need.
 - **`.phraya`** (v2): Position index (variant observations + coverage track, plus the local alignment blocks of `--strategy assembly`). Mergeable. Binary MessagePack + zstd. v1 files still read.
 - **`.phraya.queries`**: Query index (multi-mapping alternatives per read). Sidecar file. Binary MessagePack + zstd.
 
@@ -209,7 +305,7 @@ We use canonical minimizers with default parameters k=21, w=11 (appropriate for 
 - **Alphabet auto-detection**: content is classified `Protein` iff it contains any of E/F/I/L/P/Q — one-letter amino-acid codes with no IUPAC nucleotide meaning (every other amino-acid letter doubles as a valid DNA base or ambiguity code). `--alphabet {dna|protein}` overrides detection for the one genuine ambiguity: a short peptide spelled entirely in residues that are also valid nucleotide letters (e.g. only A/C/G/T-coding residues) is indistinguishable from DNA by content alone.
 - **Gap-affine scoring in `sensitive`** (ADR-0014): `gap_open=4, gap_extend=1, mismatch=2` (hard-coded). `gap_open+gap_extend=5 > mismatch` keeps an isolated SNP cheaper than opening any gap; `gap_extend=1` makes a run of ≥2 gap bases cheaper than the equivalent run of mismatches once a gap is open, so real multi-base indels consolidate into one CIGAR op instead of scattering across cost-tied mismatches. The affine cost only steers *which* alignment the search picks — reported `edit_distance` stays the traditional mismatches+indel-bases count either way. `balanced`/`fast` are unaffected (Myers-primary, no affine mode); `--gap-model linear` opts `sensitive` back into the old uniform-cost path.
 - **Coverage quantization**: Depths below 5 stored exact (the boundary that matters most for coverage-breadth thresholds); 5 and above round to nearest 5. Enables RLE compression with negligible precision loss for variant calling decisions.
-- **Sketch reuse**: Plan-time sketches stored in `.phrayaplan` (v7) keyed by sequence ID; alignment reuses them rather than recomputing.
+- **Sketch reuse**: Plan-time sketches stored in `.phrayaplan` (v8) keyed by sequence ID; alignment reuses them rather than recomputing.
 
 ## Inspired By
 
@@ -226,7 +322,7 @@ Phraya differentiates on:
 
 - Reads + reference, contigs + reads (auto-centroid), contigs-only — all working end-to-end
 - Automatic centroid selection for contigs + reads without a reference; `--reference` overrides it
-- `.phrayaplan` v7 with sketch reuse (chunk-addressable, seekable zstd frames)
+- `.phrayaplan` v8 with sketch reuse (chunk-addressable, seekable zstd frames)
 - Real WFA O(s·n) alignment (wavefront-based)
 - SIMD-accelerated match extension (`count_matching_prefix`: SSE2/NEON/AVX2/AVX-512 with runtime dispatch)
 - Local coverage (±50bp window), mapq, avg base quality, confidence from input data
@@ -236,7 +332,15 @@ Phraya differentiates on:
 - QC-layer filter fields: `identity`, `match_fraction`, `aligned_length`, `edge_distance`, `snp_density_15/125/1000`; `phraya qc` coverage-breadth report
 - `phraya merge` preserves per-observation QC fields (tandem repeat, variant type, k-mer uniqueness, strand, mate info)
 
-**Phase 2+:**
+**Since Phase 1** (unreleased):
+
+- Strategy ladder: `fast`, `balanced`, `sensitive` (gap-affine), `exact`, `long-read`, `assembly`
+- Multiple content-hashed reference spaces per plan, `align --reference` palette mode, `--sealed`
+- `filter`: depletion (`--deplete-space`) and typing (`--classify-by-space`) over the cross-space sidecar
+- `filter` formats: `snpdiffs` (CSP2/dnadiff replacement), `core-snp`, `distance-matrix`
+- Packaging: GitHub Releases binaries, multi-arch Docker on ghcr.io, crates.io; Bioconda and Homebrew recipes in-repo, channel submissions pending (#167, #168)
+
+**Planned:**
 
 - Reads-only MSA without a reference
 - Two-tier evidence (k-mer → alignment refinement)
