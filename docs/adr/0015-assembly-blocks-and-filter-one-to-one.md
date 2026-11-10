@@ -74,6 +74,25 @@ contig pair, then `delta-filter -1` keeps each reference and query base in at mo
    Inputs with observations but no blocks are rejected with a message to re-run with
    `--strategy assembly`; the previous aggregate output is not kept as a fallback.
 
+4. **Block-end refinement** (`refine_block`, applied to each chain's block before the floors).
+   Exact seeds bound a block, so a divergent stretch between the first or last seed and the
+   clean body is gap-filled into it and pulls its identity under CSP2's `min_iden`, which then
+   purges the true SNPs in the clean part (found on Contig_35 and Contig_65 of the CSP2 divergent
+   pairs). The CIGAR is scored (match +1, mismatch -19, indel run -(40 + 2 per base)); the
+   break-even identity is 0.95. The maximal-scoring core is kept. A head or tail is dropped only
+   if it spans at least 200 reference bases, and clean runs of at least 100 bases inside what was
+   dropped become their own blocks. A block with no core of 100 bases is left to the identity
+   floor. Coordinates and `edit_distance` of every piece are recomputed from its CIGAR.
+   - The indel cost is affine so that a 42 bp indel followed by 374 clean bases does not split a
+     block (nucmer keeps gaps up to `maxgap` 90 inside one alignment).
+   - The 455/458 shape (3 SNPs and a 3 bp insertion in 141 bp) stays whole because the dropped
+     part is under 200 bases.
+
+5. **The snpdiffs `Indels` header counts indel bases**, not events. CSP2 halts a pair when
+   `SNPs + Indels + Invalid` exceeds 10,000, and nucmer's `.snps` has one row per indel base.
+   With event counts a planted pair of 9,900 events was 9,896 for Phraya and 10,201 for
+   dnadiff, so CSP2 would process one and halt the other. Rows stay one per event.
+
 ## Consequences
 
 - On synthetic assembly pairs (identical breakpoints, shifted breakpoints,
@@ -84,6 +103,16 @@ contig pair, then `delta-filter -1` keeps each reference and query base in at mo
   close to a contig end or homology break is not reported. dnadiff trims terminal mismatches
   too. If the real-data comparison shows edge loss above 0.5% of SNPs, the next step is an
   X-drop extension from the outermost segments.
+- A 400 bp planted query insertion never reaches `refine_block` inside one block: the insertion
+  contains no exact seeds, so chaining already splits the block on either side of it. Verified by
+  `cmp` of `--strategy assembly` output with and without a large-indel split pass (byte-identical)
+  and by scanning every `.phraya` alignment for I/D runs: zero runs ≥100 bp exist in any emitted
+  block on real SRR pairs or the mid-band planted pair. The split pass was tried and reverted; it
+  was dead code. `refine_block`'s end-trimming (§4) is what moved CSP2-filtered kept counts on
+  442/443 (46→49) and 454/455 (46→49), halving the dnadiff-only residual (6→3 each). The
+  remaining 3 dnadiff-only sites per pair and the 140 on the mid-band pair are undiagnosed: raw
+  variant counts nearly match (7370 vs 7306), so the divergence is in per-row alignment length and
+  identity assignment, or CSP2 edge/density filtering — not block identity dilution.
 - Greedy selection approximates `delta-filter -1` (the intersection of its `-r` and `-q`
   weighted-LIS filters). Where the two disagree, it is in repeated regions such as rRNA
   operons, which copy gets a query region. If the P4 gate against dnadiff fails there, port

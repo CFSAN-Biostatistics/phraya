@@ -1543,10 +1543,143 @@ fn chain_blocks(seeds: &[crate::Seed], query: &[u8], target: &[u8], k: usize) ->
     blocks
 }
 
+/// Cost of one mismatch or gap column when scoring a block for end refinement; a match earns 1.
+/// The break-even identity is `P / (P + 1)`: 19 gives 0.95, so a stretch below 95% identity
+/// scores negative. Calibrated on the CSP2 near-clonal pairs: Contig_35's SNP-storm prefix
+/// (20-50% mismatches) and Contig_65's tail (86-95% identity) both score negative, and
+/// trimming them restores dnadiff's extents.
+const ASSEMBLY_TRIM_PENALTY: i64 = 19;
+
+/// An insertion or deletion run costs `OPEN + EXTEND * len` instead of the per-column mismatch
+/// penalty, so a moderate indel inside a clean alignment does not split it (the Contig_65 shape:
+/// a 42 bp indel costs 124, less than the 374 clean columns after it earn). nucmer keeps gaps up
+/// to `maxgap` (90 bp) inside one alignment; this keeps one of about that size on a clean flank
+/// of a few hundred bases.
+const ASSEMBLY_TRIM_GAP_OPEN: i64 = 40;
+
+/// Affine gap-extend penalty for trim scoring (`OPEN + EXTEND * len`). A 42 bp indel (the
+/// Contig_65 shape) costs 124, less than the clean columns after it earn, so it stays in one block.
+const ASSEMBLY_TRIM_GAP_EXTEND: i64 = 2;
+
+/// A divergent block end is trimmed only if it spans at least this many reference bases, so a
+/// short dense cluster at a block edge (the 455/458 shape: 3 SNPs and a 3 bp insertion in 141 bp)
+/// is never clipped to a stub.
+const ASSEMBLY_TRIM_MIN_DROP: usize = 200;
+
+/// Reference bases spanned by an op list (`M`, `X` and `I` consume the target).
+fn target_span(ops: &[(usize, char)]) -> usize {
+    ops.iter().filter(|(_, op)| matches!(op, 'M' | 'X' | 'I')).map(|(n, _)| n).sum()
+}
+
+/// The maximal-scoring run of `ops` as op indices `[start, end)` (match +1 per column,
+/// `X`/`I`/`D` -[`ASSEMBLY_TRIM_PENALTY`] per column; earliest wins ties). Scores only rise
+/// inside an `M` run, so the run starts and ends on one. `None` if `ops` has no `M`.
+fn best_segment(ops: &[(usize, char)]) -> Option<(usize, usize)> {
+    let mut best: Option<(i64, usize, usize)> = None;
+    let (mut cur, mut start) = (0i64, 0usize);
+    for (i, &(n, op)) in ops.iter().enumerate() {
+        cur += match op {
+            'M' => n as i64,
+            'X' => -(n as i64) * ASSEMBLY_TRIM_PENALTY,
+            _ => -(ASSEMBLY_TRIM_GAP_OPEN + ASSEMBLY_TRIM_GAP_EXTEND * n as i64),
+        };
+        if cur <= 0 {
+            cur = 0;
+            start = i + 1;
+        } else if op == 'M' && best.map_or(true, |(score, _, _)| cur > score) {
+            best = Some((cur, start, i + 1));
+        }
+    }
+    best.map(|(_, start, end)| (start, end))
+}
+
+/// The block made of `ops[i..j]` of `parent`, whose ops start at `(parent.q_start,
+/// parent.t_start)`. Coordinates are walked from the CIGAR (`M`/`X` advance both axes, `D` the
+/// query only, `I` the target only, per [`fill_gap`]) and `edit_distance` is recomputed as the
+/// `X`, `I` and `D` columns, which is the Levenshtein cost of the CIGAR.
+fn block_from_ops(parent: &LocalBlock, ops: &[(usize, char)], i: usize, j: usize) -> LocalBlock {
+    let (mut q, mut t) = (parent.q_start, parent.t_start);
+    let advance = |q: &mut usize, t: &mut usize, n: usize, op: char| match op {
+        'M' | 'X' => {
+            *q += n;
+            *t += n;
+        }
+        'D' => *q += n,
+        _ => *t += n,
+    };
+    for &(n, op) in &ops[..i] {
+        advance(&mut q, &mut t, n, op);
+    }
+    let (q_start, t_start) = (q, t);
+    let mut merged: Vec<(usize, char)> = Vec::new();
+    let mut edit_distance = 0;
+    for &(n, op) in &ops[i..j] {
+        advance(&mut q, &mut t, n, op);
+        if op != 'M' {
+            edit_distance += n;
+        }
+        push_op(&mut merged, n, op);
+    }
+    LocalBlock {
+        q_start,
+        q_end: q,
+        t_start,
+        t_end: t,
+        cigar: merged.iter().map(|(n, op)| format!("{n}{op}")).collect(),
+        edit_distance,
+    }
+}
+
+/// Recover the clean runs inside a dropped end `ops[lo..hi]`: its best segment, then the same
+/// on either side of it. Runs shorter than [`ASSEMBLY_MIN_BLOCK_LEN`] reference bases would be
+/// dropped by the floor anyway and are not built.
+fn salvage_runs(parent: &LocalBlock, ops: &[(usize, char)], lo: usize, hi: usize, out: &mut Vec<LocalBlock>) {
+    if lo >= hi {
+        return;
+    }
+    let Some((a, b)) = best_segment(&ops[lo..hi]) else { return };
+    let (a, b) = (lo + a, lo + b);
+    if target_span(&ops[a..b]) < ASSEMBLY_MIN_BLOCK_LEN {
+        return;
+    }
+    salvage_runs(parent, ops, lo, a, out);
+    out.push(block_from_ops(parent, ops, a, b));
+    salvage_runs(parent, ops, b, hi, out);
+}
+
+/// Block-end refinement for `Strategy::Assembly` (CSP2 verification handoff, Contig_35 and
+/// Contig_65). Exact seeds bound a block, so a divergent stretch between the first or last seed
+/// and the clean body is gap-filled into the block and pulls its identity under CSP2's
+/// `min_iden`, which purges the true SNPs in the clean part. nucmer stops extending there.
+///
+/// Scores the CIGAR (match +1, `X`/`I`/`D` -[`ASSEMBLY_TRIM_PENALTY`]) and keeps the
+/// maximal-scoring core. A head or tail is dropped only if it spans at least
+/// [`ASSEMBLY_TRIM_MIN_DROP`] reference bases; clean runs of at least [`ASSEMBLY_MIN_BLOCK_LEN`]
+/// bases inside what was dropped come back as their own blocks. A block with no core of that
+/// size (uniformly divergent) is returned unchanged for the identity floor to judge.
+fn refine_block(block: LocalBlock) -> Vec<LocalBlock> {
+    let ops = phraya_core::cigar::parse_ops(&block.cigar);
+    let Some((i, j)) = best_segment(&ops) else { return vec![block] };
+    if target_span(&ops[i..j]) < ASSEMBLY_MIN_BLOCK_LEN {
+        return vec![block];
+    }
+    let i = if target_span(&ops[..i]) >= ASSEMBLY_TRIM_MIN_DROP { i } else { 0 };
+    let j = if target_span(&ops[j..]) >= ASSEMBLY_TRIM_MIN_DROP { j } else { ops.len() };
+    if i == 0 && j == ops.len() {
+        return vec![block];
+    }
+    let mut out = Vec::new();
+    salvage_runs(&block, &ops, 0, i, &mut out);
+    out.push(block_from_ops(&block, &ops, i, j));
+    salvage_runs(&block, &ops, j, ops.len(), &mut out);
+    out
+}
+
 /// `Strategy::Assembly` (ADR-0015): every chain in either orientation becomes local
 /// alignment blocks, replacing anchor selection, whole-query extension and the orientation
-/// winner. Blocks shorter than [`ASSEMBLY_MIN_BLOCK_LEN`] or below
-/// [`ASSEMBLY_MIN_BLOCK_IDENTITY`] are dropped; variants come from every kept block. Returns
+/// winner. Each block is first refined ([`refine_block`]); pieces shorter than
+/// [`ASSEMBLY_MIN_BLOCK_LEN`] or below [`ASSEMBLY_MIN_BLOCK_IDENTITY`] are dropped; variants
+/// come from every kept block. Returns
 /// the result and the outcome to record (`Placed` iff a block is kept).
 #[allow(clippy::too_many_arguments)]
 fn align_assembly(
@@ -1569,7 +1702,7 @@ fn align_assembly(
     for (strand, bytes, chains, k) in orientations {
         let Some(k) = k else { continue };
         for chain in chains {
-            for block in chain_blocks(&chain.seeds, bytes, target, k) {
+            for block in chain_blocks(&chain.seeds, bytes, target, k).into_iter().flat_map(refine_block) {
                 built += 1;
                 let identity =
                     phraya_core::cigar::CigarStats::parse(&block.cigar).identity(block.edit_distance as u32);
@@ -3352,6 +3485,116 @@ mod tests {
             snp_count, block_spans(&r),
         );
         assert_eq!(ins_count, 1, "expected 1 insertion, got {}", ins_count);
+    }
+
+    /// Block-end refinement (CSP2 verification handoff, Contig_35/Contig_65): exact seeds bound a
+    /// block, so a SNP storm between the first exact seed and the clean body is gap-filled into
+    /// the block and drags its identity down. A divergent prefix must be trimmed, leaving the
+    /// exact head as its own block and no variants called inside the storm.
+    #[test]
+    fn assembly_trims_divergent_prefix_from_block() {
+        let target = assembly_dna(6_000, 21);
+        // 80 substitutions, one per 5 bp, in 100..500: no exact 21-mer survives inside.
+        let storm: Vec<usize> = (100..500).step_by(5).collect();
+        let query = with_snps(&target, &storm);
+        let r = align_assembly_pair(&query, &target).expect("aligns");
+        let mut spans = block_spans(&r);
+        spans.sort_unstable();
+        assert_eq!(
+            spans,
+            vec![(0, 100, 0, 100), (496, 6_000, 496, 6_000)],
+            "the storm (100..496) must not be inside any block"
+        );
+        let called: Vec<u32> = r.variants.iter().map(|v| v.position()).filter(|p| (100..496).contains(p)).collect();
+        assert!(called.is_empty(), "variants called inside the trimmed storm: {called:?}");
+    }
+
+    fn lb(coords: (usize, usize, usize, usize), cigar: &str, edit_distance: usize) -> LocalBlock {
+        LocalBlock {
+            q_start: coords.0,
+            q_end: coords.1,
+            t_start: coords.2,
+            t_end: coords.3,
+            cigar: cigar.to_string(),
+            edit_distance,
+        }
+    }
+
+    #[test]
+    fn refine_leaves_a_clean_block_unchanged() {
+        let b = block((0, 2_000, 0, 2_000), "2000M");
+        assert_eq!(refine_block(b.clone()), vec![b]);
+    }
+
+    #[test]
+    fn refine_trims_a_divergent_prefix_and_shifts_both_axes() {
+        // 396 bp prefix at ~84% identity (66 x "5M1X"), then 600 clean bases.
+        let cigar = format!("{}600M", "5M1X".repeat(66));
+        let b = lb((100, 1_096, 5_000, 5_996), &cigar, 66);
+        assert_eq!(refine_block(b), vec![lb((496, 1_096, 5_396, 5_996), "600M", 0)]);
+    }
+
+    #[test]
+    fn refine_trims_a_divergent_tail_and_recomputes_edit_distance() {
+        // 12,001 clean columns with one interior mismatch, then a 500 bp tail at 90% identity.
+        let cigar = format!("6000M1X6000M{}", "1X9M".repeat(50));
+        let b = lb((0, 12_501, 0, 12_501), &cigar, 51);
+        assert_eq!(refine_block(b), vec![lb((0, 12_001, 0, 12_001), "6000M1X6000M", 1)]);
+    }
+
+    #[test]
+    fn refine_keeps_a_short_dense_cluster_whole() {
+        // The 455/458 shape: 3 SNPs and a 3 bp insertion inside 141 reference bases. The cluster
+        // is net-negative at the trim penalty, but dropping 63 bp of it would leave a stub.
+        let b = lb((0, 144, 1_000, 1_141), "55M1X3M1X2M3D1X78M", 6);
+        assert_eq!(refine_block(b.clone()), vec![b]);
+        // The same cluster flanked by long clean runs stays inside one block.
+        let long = lb((0, 6_008, 0, 6_005), "3000M1X3M1X2M3D1X2997M", 6);
+        assert_eq!(refine_block(long.clone()), vec![long]);
+    }
+
+    #[test]
+    fn refine_splits_at_an_interior_island_longer_than_its_flanks() {
+        // 500 clean, a 400 bp island at 67% identity ("1X" then 133 x "2M1X"), 500 clean: the
+        // island costs more than either flank earns, so the clean halves become separate blocks.
+        // Both flanks meet the island at an X so neither piece absorbs island matches.
+        let cigar = format!("500M1X{}500M", "2M1X".repeat(133));
+        let b = lb((0, 1_400, 0, 1_400), &cigar, 134);
+        assert_eq!(
+            refine_block(b),
+            vec![lb((0, 500, 0, 500), "500M", 0), lb((900, 1_400, 900, 1_400), "500M", 0)]
+        );
+    }
+
+    #[test]
+    fn refine_walks_insertions_and_deletions_in_the_dropped_tail() {
+        // 1,000 clean columns, then a 240 bp storm, a 10 bp query insertion ('D' consumes query
+        // only in this crate's alphabet), 100 clean, a 10 bp target insertion ('I' consumes
+        // target only) and 100 clean. The clean runs around the gaps come back as one piece at
+        // shifted offsets on each axis, with the 'I' counted in its edit distance and extent.
+        let cigar = format!("1000M{}10D100M10I100M", "1X5M".repeat(40));
+        let b = lb((0, 1_450, 0, 1_450), &cigar, 60);
+        assert_eq!(
+            refine_block(b),
+            vec![lb((0, 1_000, 0, 1_000), "1000M", 0), lb((1_250, 1_450, 1_240, 1_450), "100M10I100M", 10)]
+        );
+    }
+
+    #[test]
+    fn refine_keeps_a_block_whole_across_a_moderate_indel() {
+        // The Contig_65 shape: 11,644 clean columns, a 42 bp query insertion, then 374 clean
+        // columns. nucmer keeps this one alignment (maxgap 90); charging an indel column like a
+        // mismatch would split it and leave the right piece under CSP2's 500 bp min_len.
+        let b = lb((0, 12_060, 0, 12_018), "11644M42D374M", 42);
+        assert_eq!(refine_block(b.clone()), vec![b]);
+    }
+
+    #[test]
+    fn refine_leaves_a_uniformly_divergent_block_alone() {
+        // 90% identity throughout: every clean run is tiny, so there is no core to keep and
+        // trimming would only shrink the block to a stub. The identity floor decides instead.
+        let b = lb((0, 2_000, 0, 2_000), &"9M1X".repeat(200), 200);
+        assert_eq!(refine_block(b.clone()), vec![b]);
     }
 
 }

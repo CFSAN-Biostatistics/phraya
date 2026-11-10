@@ -69,6 +69,44 @@ fn compute_fasta_meta(path: &Path) -> Result<FastaMeta, String> {
     })
 }
 
+/// Query contig sequences by FASTA ID, for recovering inserted sequences.
+fn load_query_sequences(path: &Path) -> Result<HashMap<String, Vec<u8>>, String> {
+    let mut parser = SequenceParser::from_path(path).map_err(|e| e.to_string())?;
+    let mut sequences = HashMap::new();
+    while let Some(result) = parser.next() {
+        let seq = result.map_err(|e| e.to_string())?;
+        sequences.insert(seq.id().to_string(), seq.bases().to_ascii_uppercase());
+    }
+    Ok(sequences)
+}
+
+/// The bases an insertion row carries, in reference orientation, read from the query contig.
+///
+/// The observation stores only a base-to-count map, which loses order and repeated bases
+/// (`AAT` is `{A:2, T:1}`), so the sequence comes from the block instead: the `D` run's length
+/// and the observation's strand-local query offset locate it. `None` (the caller falls back to
+/// the map) if the contig is unavailable or the run is out of range.
+fn inserted_sequence(
+    obs: &VariantObservation,
+    kept: &KeptBlock,
+    queries: Option<&HashMap<String, Vec<u8>>>,
+) -> Option<String> {
+    if obs.variant_type() != VariantType::Insertion {
+        return None;
+    }
+    let len = kept.block.indel_len(obs)? as usize;
+    let contig = queries?.get(&*kept.block.query_id)?;
+    let start = obs.query_position() as usize;
+    let bases = match kept.block.strand {
+        Strand::Forward => contig.get(start..start + len)?.to_vec(),
+        Strand::Reverse => {
+            let end = contig.len().checked_sub(start)?;
+            phraya_core::types::reverse_complement(contig.get(end.checked_sub(len)?..end)?)
+        }
+    };
+    Some(String::from_utf8_lossy(&bases).into_owned())
+}
+
 /// Compute N-x and L-x statistics for a given fraction (e.g. 0.5 for N50/L50).
 fn n_stats(sorted_desc_lengths: &[usize], total_bases: usize, fraction: f64) -> (usize, usize) {
     if total_bases == 0 || sorted_desc_lengths.is_empty() {
@@ -254,7 +292,13 @@ fn format_block_row(kept: &KeptBlock, ref_contig: &str, ref_len: u32) -> String 
 /// Alignment columns come from the kept block containing the variant; `Query_Pos` is the
 /// forward query coordinate. `Query_Base` is in reference orientation (the complement of the
 /// query FASTA base on `-1` rows), as `show-snps` reports it.
-fn format_variant_row(obs: &VariantObservation, kept: &KeptBlock, ref_contig: &str, ref_len: u32) -> String {
+fn format_variant_row(
+    obs: &VariantObservation,
+    kept: &KeptBlock,
+    ref_contig: &str,
+    ref_len: u32,
+    inserted: Option<String>,
+) -> String {
     let b: &AlignmentBlock = &kept.block;
     let ref_pos = obs.position() + 1;
     let query_pos = b.forward_query_position(obs.query_position()) + 1;
@@ -275,7 +319,7 @@ fn format_variant_row(obs: &VariantObservation, kept: &KeptBlock, ref_contig: &s
         b.q_start,
         b.q_end,
         format_ref_base(obs.ref_base(), obs.variant_type()),
-        best_alt_allele(obs.ref_base(), obs.all_alleles(), obs.variant_type()),
+        inserted.unwrap_or_else(|| best_alt_allele(obs.ref_base(), obs.all_alleles(), obs.variant_type())),
         ref_pos.min(ref_len.saturating_sub(ref_pos)),
         query_pos.min(b.query_len.saturating_sub(query_pos)),
         b.t_end - b.t_start,
@@ -354,6 +398,14 @@ pub fn format_snpdiffs(
         .collect();
     let selection = select_one_to_one(&spaces);
 
+    // Insertion rows need the inserted sequence, which only the query FASTA holds.
+    let queries = match query_fasta {
+        Some(path) if files.iter().any(|(_, obs)| obs.iter().any(|o| o.variant_type() == VariantType::Insertion)) => {
+            Some(load_query_sequences(path).map_err(|message| SnpdiffsError { message })?)
+        }
+        _ => None,
+    };
+
     // Variant rows: observations inside a kept block, one per (space, position, kind).
     let mut variant_rows = Vec::new();
     let mut seen = HashSet::new();
@@ -372,9 +424,11 @@ pub fn format_snpdiffs(
             if kind == 0 {
                 snps += 1;
             } else {
-                indels += 1;
+                // One row per event, but the header counts bases (see AlignmentBlock::indel_len).
+                indels += kept.block.indel_len(obs).unwrap_or(1) as usize;
             }
-            variant_rows.push(format_variant_row(obs, kept, &file.header.sample_id, file.header.reference_length));
+            let inserted = inserted_sequence(obs, kept, queries.as_ref());
+            variant_rows.push(format_variant_row(obs, kept, &file.header.sample_id, file.header.reference_length, inserted));
         }
     }
 
@@ -584,14 +638,55 @@ mod tests {
 
     #[test]
     fn indels_are_counted_and_formatted() {
-        // 2 bp deletion from the query at reference 500-501.
+        // 2 bp deletion from the query at reference 500-501: one row, two indel bases in the header.
         let del = variant(VariantType::Deletion, 500, b'G', b'.', "q0", 500, Strand::Forward);
         let files = [space("r0", 1_000, vec![del], vec![block("q0", 998, 0, 0, "500M2I498M", Strand::Forward)])];
         let p = parse(&render(&files, None, None).unwrap());
-        assert_eq!((p.header["SNPs"].as_str(), p.header["Indels"].as_str()), ("0", "1"));
+        assert_eq!(p.variants.len(), 1);
+        assert_eq!((p.header["SNPs"].as_str(), p.header["Indels"].as_str()), ("0", "2"));
         let row: Vec<&str> = p.variants[0].split('\t').collect();
         assert_eq!((row[12], row[13], row[20]), ("G", ".", "Indel"));
         assert_eq!((row[16], row[17]), ("1000", "998"));
+    }
+
+    /// Write a FASTA with explicit sequences.
+    fn write_fasta_seq(dir: &Path, name: &str, records: &[(&str, &str)]) -> PathBuf {
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        for (id, seq) in records {
+            writeln!(f, ">{id}\n{seq}").unwrap();
+        }
+        path
+    }
+
+    /// An insertion's observation keeps only a base-to-count map, so `AAT` collapsed to `AT`.
+    /// With the query FASTA the row carries the real inserted sequence, in reference orientation.
+    #[test]
+    fn insertion_rows_carry_the_inserted_sequence() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let inserted = "AAT";
+        let forward = format!("{}{inserted}{}", "A".repeat(40), "C".repeat(60));
+        let ins = |q: &str, strand| variant(VariantType::Insertion, 40, b'.', b'A', q, 40, strand);
+
+        let qry_fa = write_fasta_seq(dir.path(), "fwd.fa", &[("q0", &forward)]);
+        let files = [space("r0", 200, vec![ins("q0", Strand::Forward)], vec![block("q0", 103, 0, 0, "40M3D60M", Strand::Forward)])];
+        let p = parse(&render(&files, None, Some(&qry_fa)).unwrap());
+        let row: Vec<&str> = p.variants[0].split('\t').collect();
+        assert_eq!((row[12], row[13], row[20]), (".", "AAT", "Indel"));
+        assert_eq!(p.header["Indels"], "3");
+
+        // Reverse strand: the CIGAR walks the reverse complement, so the FASTA holds the
+        // reverse complement of `forward` and the row still reads AAT in reference orientation.
+        let rc: String = forward
+            .bytes()
+            .rev()
+            .map(|b| match b { b'A' => 'T', b'C' => 'G', b'G' => 'C', _ => 'A' })
+            .collect();
+        let rev_fa = write_fasta_seq(dir.path(), "rev.fa", &[("q0", &rc)]);
+        let files = [space("r0", 200, vec![ins("q0", Strand::Reverse)], vec![block("q0", 103, 0, 0, "40M3D60M", Strand::Reverse)])];
+        let p = parse(&render(&files, None, Some(&rev_fa)).unwrap());
+        let row: Vec<&str> = p.variants[0].split('\t').collect();
+        assert_eq!(row[13], "AAT");
     }
 
     #[test]
@@ -651,7 +746,10 @@ mod tests {
             variant(VariantType::Insertion, 152, b'.', b'A', "q0", 150, Strand::Forward),
         ], vec![b])];
         let p = parse(&render(&files, None, None).unwrap());
-        assert_eq!((p.header["SNPs"].as_str(), p.header["Indels"].as_str()), ("0", "2"));
+        // Two indel rows (one per event), but the header counts indel bases (2 deleted + 2
+        // inserted) as CSP2's SNP_Cutoff does: nucmer's .snps has one row per indel base.
+        assert_eq!(p.variants.len(), 2);
+        assert_eq!((p.header["SNPs"].as_str(), p.header["Indels"].as_str()), ("0", "4"));
     }
 
     #[test]

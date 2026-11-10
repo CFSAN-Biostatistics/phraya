@@ -163,14 +163,27 @@ impl AlignmentBlock {
     /// repeat blocks, accepting query offsets the block does not pair with that reference position.
     /// The real test is geometric, by variant type (see [`AlignmentBlock::cigar_runs`]).
     pub fn contains_observation(&self, obs: &VariantObservation) -> bool {
+        obs.provenance() == &*self.query_id && obs.strand() == self.strand && self.matching_run(obs).is_some()
+    }
+
+    /// Length in bases of the deletion (`I` run) or insertion (`D` run) `obs` was extracted
+    /// from; `None` for a SNP or an observation this block does not contain. CSP2's
+    /// `SNP_Cutoff` counts one `.snps` row per indel base, so the snpdiffs `Indels` header
+    /// sums this rather than counting events.
+    pub fn indel_len(&self, obs: &VariantObservation) -> Option<u32> {
         if obs.provenance() != &*self.query_id || obs.strand() != self.strand {
-            return false;
+            return None;
         }
+        self.matching_run(obs).filter(|r| r.op == 'I' || r.op == 'D').map(|r| r.len)
+    }
+
+    /// The CIGAR run `obs` sits on, by variant type.
+    fn matching_run(&self, obs: &VariantObservation) -> Option<CigarRun> {
         let runs = self.cigar_runs();
         match obs.variant_type() {
             // SNP: the X (mismatch) column must cover this reference position and pair it with
             // the observation's query offset.
-            VariantType::Snp => runs.iter().any(|r| {
+            VariantType::Snp => runs.into_iter().find(|r| {
                 r.op == 'X'
                     && r.t <= obs.position()
                     && obs.position() < r.t + r.len
@@ -178,14 +191,14 @@ impl AlignmentBlock {
             }),
             // Deletion (I = target-extra): the first deleted reference base sits at the I run's
             // start; the observation carries that run's query offset.
-            VariantType::Deletion => runs.iter().any(|r| {
+            VariantType::Deletion => runs.into_iter().find(|r| {
                 r.op == 'I' && r.t <= obs.position() && obs.position() < r.t + r.len && r.q == obs.query_position()
             }),
             // Insertion (D = query-extra): the anchor reference base is the column just before the
             // D run, carried at the run's query start.
-            VariantType::Insertion => runs.iter().any(|r| {
-                r.op == 'D' && r.t == obs.position() && r.q == obs.query_position()
-            }),
+            VariantType::Insertion => {
+                runs.into_iter().find(|r| r.op == 'D' && r.t == obs.position() && r.q == obs.query_position())
+            }
         }
     }
 
