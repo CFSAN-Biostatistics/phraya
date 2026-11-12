@@ -1,5 +1,6 @@
 use phraya_core::types::MinimizerSketch;
 use serde::{Deserialize, Serialize};
+use phraya_core::fasthash::MinimizerBuildHasher;
 use std::collections::HashMap;
 
 /// A minimizer index: value -> the target positions where it occurs.
@@ -11,7 +12,7 @@ use std::collections::HashMap;
 /// `align`'s per-space setup.
 #[derive(Debug, Default)]
 pub struct MinimizerIndex {
-    slots: HashMap<u64, (u32, u32)>,
+    slots: HashMap<u64, (u32, u32), MinimizerBuildHasher>,
     positions: Vec<u32>,
 }
 
@@ -26,8 +27,8 @@ impl MinimizerIndex {
     /// sorting.
     pub fn build(target: &MinimizerSketch) -> Self {
         // One entry per distinct value; sized for the all-distinct case to avoid rehashing.
-        let mut slots: HashMap<u64, (u32, u32)> =
-            HashMap::with_capacity(target.minimizers.len());
+        let mut slots: HashMap<u64, (u32, u32), MinimizerBuildHasher> =
+            HashMap::with_capacity_and_hasher(target.minimizers.len(), MinimizerBuildHasher::default());
 
         // Pass 1: occurrence count per value.
         for &(val, _) in &target.minimizers {

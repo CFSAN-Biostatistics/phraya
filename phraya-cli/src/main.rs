@@ -1057,7 +1057,7 @@ fn run_align_reference(
     // Exact rather than heuristic: sharing a minimizer is a *necessary* condition for a
     // seed, so a skipped space could not have produced output. It stays per-space, so
     // composability holds — the decision reads only (reads, this space).
-    let read_minimizers: std::collections::HashSet<u64> =
+    let read_minimizers: std::collections::HashSet<u64, phraya_core::fasthash::MinimizerBuildHasher> =
         prepared.iter().flat_map(|p| p.minimizer_values()).collect();
     let max_read_len = reads.iter().map(|r| r.len()).max().unwrap_or(0);
 
@@ -1536,9 +1536,12 @@ fn run_plan(
         alphabet.unwrap_or_else(|| detect_alphabet(all_sequences[0].0.bases()));
     eprintln!("Detected alphabet: {:?}", alphabet);
 
-    // Compute sketches for all sequences (ordered Vec for task generation)
+    // Compute sketches for all sequences (ordered Vec for task generation). Per-sequence work
+    // is independent and `collect` on an indexed parallel iterator keeps input order, so the
+    // result — and the plan bytes — are identical to the serial map this replaces.
+    use rayon::prelude::*;
     let sketches: Vec<MinimizerSketch> = all_sequences
-        .iter()
+        .par_iter()
         .map(|(seq, _)| sketch_sequence_default_for(seq, alphabet))
         .collect();
 
@@ -2342,15 +2345,20 @@ fn run_filter(
         if let Some(space) = deplete_space {
             cross_filter = cross_filter.with_deplete_space(space);
         }
+        use std::io::Write;
+        // One buffered writer for every per-row mode: `println!` flushes at each newline,
+        // which is one write syscall per row (measured ~11 s for 354k rows on Windows).
+        let stdout = std::io::stdout();
+        let mut out = std::io::BufWriter::new(stdout.lock());
 
         if let Some(space) = deplete_space {
             // Depletion mode: output TSV with read_id, decision, reason
             let decisions = cross_filter.classify_all_depletion(&cross_index);
-            println!("read_id\tdecision\treason\tbest_space\tidentity\tmargin");
+            writeln!(out, "read_id\tdecision\treason\tbest_space\tidentity\tmargin")?;
             for (read_id, decision) in &decisions {
                 match decision {
                     phraya_filter::cross_ref::DepletionDecision::Drop { reason } => {
-                        println!("{}\tdrop\t{:?}\t\t\t", read_id, reason);
+                        writeln!(out, "{}\tdrop\t{:?}\t\t\t", read_id, reason)?;
                     }
                     phraya_filter::cross_ref::DepletionDecision::Keep { reason } => {
                         // Find the best placement for output
@@ -2359,9 +2367,9 @@ fn run_filter(
                             .filter(|p| p.identity >= cross_filter.min_identity)
                             .collect();
                     if let Some(best) = real.iter().max_by(|a, b| a.identity.partial_cmp(&b.identity).unwrap()) {
-                            println!("{}\tkeep\t{:?}\t{}\t{}\t{}", read_id, reason, best.space, best.identity, 0.0);
+                            writeln!(out, "{}\tkeep\t{:?}\t{}\t{}\t{}", read_id, reason, best.space, best.identity, 0.0)?;
                         } else {
-                            println!("{}\tkeep\t{:?}\t\t\t", read_id, reason);
+                            writeln!(out, "{}\tkeep\t{:?}\t\t\t", read_id, reason)?;
                         }
                     }
                 }
@@ -2371,22 +2379,23 @@ fn run_filter(
         if classify_by_space {
             // Typing mode: output TSV with read_id, best_space, identity, margin, classification
             let decisions = cross_filter.classify_all_typing(&cross_index);
-            println!("read_id\tbest_space\tidentity\tmargin\tclassification");
+            writeln!(out, "read_id\tbest_space\tidentity\tmargin\tclassification")?;
             for (read_id, decision) in &decisions {
                 match decision {
                     phraya_filter::cross_ref::TypingDecision::Assign { best_space, best_identity, margin } => {
-                        println!("{}\t{}\t{}\t{}\tassign", read_id, best_space, best_identity, margin);
+                        writeln!(out, "{}\t{}\t{}\t{}\tassign", read_id, best_space, best_identity, margin)?;
                     }
                     phraya_filter::cross_ref::TypingDecision::Ambiguous { best_space, best_identity, second_space, second_identity, margin } => {
-                        println!("{}\t{}\t{}\t{}\tambiguous", read_id, best_space, best_identity, margin);
+                        writeln!(out, "{}\t{}\t{}\t{}\tambiguous", read_id, best_space, best_identity, margin)?;
                     }
                     phraya_filter::cross_ref::TypingDecision::Unassigned => {
-                        println!("{}\t\t\t\tunassigned", read_id);
+                        writeln!(out, "{}\t\t\t\tunassigned", read_id)?;
                     }
                 }
             }
         }
 
+        out.flush()?;
         return Ok(());
     }
 
@@ -2477,8 +2486,12 @@ fn run_filter(
 fn output_tsv(
     observations: &[phraya_core::types::VariantObservation],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    // Buffered: `println!` is one write syscall per row, which dominated filter wall time.
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
     // Output TSV header
-    println!("position\tref_base\tall_alleles\tmapq\tconfidence\tcigar\tedit_distance\tcoverage\tavg_base_quality\tprovenance");
+    writeln!(out, "position\tref_base\tall_alleles\tmapq\tconfidence\tcigar\tedit_distance\tcoverage\tavg_base_quality\tprovenance")?;
 
     // Output each observation as a TSV line
     for obs in observations {
@@ -2496,7 +2509,8 @@ fn output_tsv(
             .collect::<Vec<_>>()
             .join(",");
 
-        println!(
+        writeln!(
+            out,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             obs.position(),
             obs.ref_base() as char,
@@ -2508,8 +2522,9 @@ fn output_tsv(
             coverage,
             obs.avg_base_quality(),
             obs.provenance(),
-        );
+        )?;
     }
 
+    out.flush()?;
     Ok(())
 }

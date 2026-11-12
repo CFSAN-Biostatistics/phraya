@@ -3710,22 +3710,6 @@ mod affine_wfa_tests {
 // O(n * ceil(m/w)) time, O(m/w) space for distance; O(nm/w) for CIGAR traceback.
 // ============================================================================
 
-/// Reconstruct column i of the DP matrix from stored (vp, vn) bitvectors.
-/// `bottom_score` = dp[m][j], returned column is dp[0..=m][j].
-/// Reconstruct an edit-distance DP column from Myers `(vp, vn)` bitvectors into a caller
-/// -provided buffer (`col.len()` must be `m + 1`). Fills in place so the backtrace can
-/// reuse two column buffers instead of allocating a fresh column per traceback step.
-fn reconstruct_into(vp: &[u64], vn: &[u64], m: usize, bottom_score: usize, col: &mut [usize]) {
-    col[m] = bottom_score;
-    for i in (0..m).rev() {
-        let block = i / 64;
-        let bit = i % 64;
-        let vp_bit = ((vp[block] >> bit) & 1) as isize;
-        let vn_bit = ((vn[block] >> bit) & 1) as isize;
-        col[i] = (col[i + 1] as isize - vp_bit + vn_bit) as usize;
-    }
-}
-
 /// Flat-buffer Myers forward pass: stores VP/VN bitvectors in a single pre-allocated
 /// Vec<u64> indexed as `[col * num_blocks * 2 + block]` (VP) and
 /// `[col * num_blocks * 2 + num_blocks + block]` (VN), plus a separate scores Vec<usize>.
@@ -3883,33 +3867,46 @@ pub fn myers_edit_distance_impl(query: &[u8], target: &[u8]) -> (usize, String) 
     (edit_distance, cigar)
 }
 
-/// Myers bit-parallel **fitting** alignment: the query must be fully consumed, but the
-/// target end is free (no penalty for an unconsumed target tail). This is the correct
-/// mode for aligning a read against a longer reference window, and mirrors
-/// [`fill_wfa_fitting`]'s semantics so the Myers and WFA alignment paths agree.
-///
-/// Returns `(edit_distance, cigar, target_consumed)` where `target_consumed` is the
-/// number of target bases in the chosen fitting alignment.
-///
-/// When the target is not substantially longer than the query (`n <= m + m/2 + 10`),
-/// delegates to the global path — exactly the threshold [`fill_wfa_fitting`] uses — so
-/// that terminal indels are not silently hidden by a free end gap.
-/// Reconstruct DP column `j` from flat MyersColumns into `buf[0..=m]`.
-fn fill_dp_column_flat(cols: &MyersColumns, m: usize, j: usize, buf: &mut [usize]) {
-    const W: usize = 64;
-    if j == 0 {
-        for (i, slot) in buf.iter_mut().enumerate().take(m + 1) {
-            *slot = i;
-        }
-    } else {
-        let vp = cols.vp_slice(j - 1);
-        let vn = cols.vn_slice(j - 1);
-        let bs = cols.score(j - 1);
-        reconstruct_into(vp, vn, m, bs, buf);
+/// Number of set bits among rows `[from, m)` of a Myers bit-vector (row `r` is bit `r % 64`
+/// of block `r / 64`). Rows at or beyond `m` are ignored.
+fn count_rows_from(bits: &[u64], from: usize, m: usize) -> usize {
+    if from >= m {
+        return 0;
     }
+    let first = from / 64;
+    let last = (m - 1) / 64;
+    let mut total = 0usize;
+    for block in first..=last {
+        let mut word = bits[block];
+        if block == first {
+            word &= u64::MAX << (from % 64);
+        }
+        let rows_in_block = m - block * 64;
+        if rows_in_block < 64 {
+            word &= (1u64 << rows_in_block) - 1;
+        }
+        total += word.count_ones() as usize;
+    }
+    total
 }
 
-/// Backtrace from flat MyersColumns (mirrors `myers_backtrace` logic).
+/// Edit-distance DP value at (`row`, `col`), read straight from the stored column vectors.
+///
+/// Column `col >= 1` is stored at index `col - 1` as vertical deltas (`vp`/`vn`) plus its
+/// bottom-row score, so `dp[row] = dp[m] - sum(vp[row..m]) + sum(vn[row..m])`: two masked
+/// popcounts over `ceil(m / 64)` words rather than rebuilding the whole column bit by bit.
+/// Column 0 is the boundary column, `dp[row][0] = row`.
+fn dp_value(cols: &MyersColumns, m: usize, row: usize, col: usize) -> usize {
+    if col == 0 {
+        return row;
+    }
+    let vp = cols.vp_slice(col - 1);
+    let vn = cols.vn_slice(col - 1);
+    cols.score(col - 1) + count_rows_from(vn, row, m) - count_rows_from(vp, row, m)
+}
+
+/// Backtrace from flat MyersColumns. Visits O(m + n) cells, each an O(m / 64) lookup;
+/// tie-breaking order (query-gap, then target-gap, then diagonal) is the textbook one.
 fn myers_backtrace_flat(
     query: &[u8],
     target: &[u8],
@@ -3920,13 +3917,6 @@ fn myers_backtrace_flat(
     let mut ops: Vec<u8> = Vec::with_capacity(m + end_ti);
     let mut qi = m;
     let mut ti = end_ti;
-
-    let mut cur_col = vec![0usize; m + 1];
-    let mut prev_col = vec![0usize; m + 1];
-    if ti > 0 {
-        fill_dp_column_flat(cols, m, ti, &mut cur_col);
-        fill_dp_column_flat(cols, m, ti - 1, &mut prev_col);
-    }
 
     while qi > 0 || ti > 0 {
         if qi == 0 {
@@ -3940,31 +3930,19 @@ fn myers_backtrace_flat(
             continue;
         }
 
-        let cur = cur_col[qi];
-        let diag_cost = if query[qi - 1] == target[ti - 1] { 0 } else { 1 };
-        let from_diag = prev_col[qi - 1] + diag_cost;
-        let from_above = cur_col[qi - 1] + 1;
-        let from_left = prev_col[qi] + 1;
-
-        if cur == from_above {
+        let cur = dp_value(cols, m, qi, ti);
+        if cur == dp_value(cols, m, qi - 1, ti) + 1 {
             ops.push(b'D');
             qi -= 1;
-        } else if cur == from_left {
+        } else if cur == dp_value(cols, m, qi, ti - 1) + 1 {
             ops.push(b'I');
             ti -= 1;
-            std::mem::swap(&mut cur_col, &mut prev_col);
-            if ti > 0 {
-                fill_dp_column_flat(cols, m, ti - 1, &mut prev_col);
-            }
         } else {
-            debug_assert_eq!(cur, from_diag);
+            let diag_cost = if query[qi - 1] == target[ti - 1] { 0 } else { 1 };
+            debug_assert_eq!(cur, dp_value(cols, m, qi - 1, ti - 1) + diag_cost);
             ops.push(if diag_cost == 0 { b'M' } else { b'X' });
             qi -= 1;
             ti -= 1;
-            std::mem::swap(&mut cur_col, &mut prev_col);
-            if ti > 0 {
-                fill_dp_column_flat(cols, m, ti - 1, &mut prev_col);
-            }
         }
     }
 
@@ -3972,25 +3950,37 @@ fn myers_backtrace_flat(
 
     let mut cigar = String::new();
     if !ops.is_empty() {
+        use std::fmt::Write;
         let mut count = 1usize;
         let mut cur_op = ops[0];
         for &op in &ops[1..] {
             if op == cur_op {
                 count += 1;
             } else {
-                cigar.push_str(&count.to_string());
+                let _ = write!(cigar, "{count}");
                 cigar.push(cur_op as char);
                 cur_op = op;
                 count = 1;
             }
         }
-        cigar.push_str(&count.to_string());
+        let _ = write!(cigar, "{count}");
         cigar.push(cur_op as char);
     }
 
     cigar
 }
 
+/// Myers bit-parallel **fitting** alignment: the query must be fully consumed, but the
+/// target end is free (no penalty for an unconsumed target tail). This is the correct
+/// mode for aligning a read against a longer reference window, and mirrors
+/// [`fill_wfa_fitting`]'s semantics so the Myers and WFA alignment paths agree.
+///
+/// Returns `(edit_distance, cigar, target_consumed)` where `target_consumed` is the
+/// number of target bases in the chosen fitting alignment.
+///
+/// When the target is not substantially longer than the query (`n <= m + m/2 + 10`),
+/// delegates to the global path — exactly the threshold [`fill_wfa_fitting`] uses — so
+/// that terminal indels are not silently hidden by a free end gap.
 pub fn myers_fitting_impl(query: &[u8], target: &[u8]) -> (usize, String, usize) {
     let m = query.len();
     let n = target.len();
@@ -4022,6 +4012,159 @@ pub fn myers_fitting_impl(query: &[u8], target: &[u8]) -> (usize, String, usize)
 
     let cigar = myers_backtrace_flat(query, target, &cols, best_consumed);
     (best_score, cigar, best_consumed)
+}
+
+/// The Myers traceback reads DP values out of bit-vectors with masked popcounts. These tests
+/// compare its CIGARs against a textbook full-matrix DP using the same tie-break order, with
+/// query lengths straddling the 64-bit block boundaries where an off-by-one in the masks
+/// would show up.
+#[cfg(test)]
+mod myers_backtrace_tests {
+    use super::{myers_edit_distance_impl, myers_fitting_impl};
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+        fn base(&mut self) -> u8 {
+            b"ACGT"[(self.next() % 4) as usize]
+        }
+        fn seq(&mut self, len: usize) -> Vec<u8> {
+            (0..len).map(|_| self.base()).collect()
+        }
+        /// SNPs at ~3% and single-base indels at ~1%.
+        fn mutate(&mut self, src: &[u8]) -> Vec<u8> {
+            let mut out = Vec::with_capacity(src.len() + 8);
+            for &b in src {
+                match self.next() % 100 {
+                    0..=2 => out.push(self.base()),
+                    3 => {}
+                    4 => {
+                        out.push(b);
+                        out.push(self.base());
+                    }
+                    _ => out.push(b),
+                }
+            }
+            out
+        }
+    }
+
+    fn rle(ops: &[char]) -> String {
+        let mut out = String::new();
+        let mut i = 0;
+        while i < ops.len() {
+            let mut j = i;
+            while j < ops.len() && ops[j] == ops[i] {
+                j += 1;
+            }
+            out.push_str(&format!("{}{}", j - i, ops[i]));
+            i = j;
+        }
+        out
+    }
+
+    /// Full DP matrix (top row and left column both counting up) and the traceback from
+    /// (`m`, `end`): query-gap `D`, then target-gap `I`, then diagonal.
+    fn reference_trace(query: &[u8], target: &[u8], end: usize, dp: &[Vec<usize>]) -> String {
+        let (mut i, mut j) = (query.len(), end);
+        let mut ops = Vec::new();
+        while i > 0 || j > 0 {
+            if i == 0 {
+                ops.push('I');
+                j -= 1;
+            } else if j == 0 {
+                ops.push('D');
+                i -= 1;
+            } else if dp[i][j] == dp[i - 1][j] + 1 {
+                ops.push('D');
+                i -= 1;
+            } else if dp[i][j] == dp[i][j - 1] + 1 {
+                ops.push('I');
+                j -= 1;
+            } else {
+                ops.push(if query[i - 1] == target[j - 1] { 'M' } else { 'X' });
+                i -= 1;
+                j -= 1;
+            }
+        }
+        ops.reverse();
+        rle(&ops)
+    }
+
+    fn matrix(query: &[u8], target: &[u8]) -> Vec<Vec<usize>> {
+        let (m, n) = (query.len(), target.len());
+        let mut dp = vec![vec![0usize; n + 1]; m + 1];
+        for (i, row) in dp.iter_mut().enumerate() {
+            row[0] = i;
+        }
+        for j in 0..=n {
+            dp[0][j] = j;
+        }
+        for i in 1..=m {
+            for j in 1..=n {
+                let sub = dp[i - 1][j - 1] + usize::from(query[i - 1] != target[j - 1]);
+                dp[i][j] = sub.min(dp[i - 1][j] + 1).min(dp[i][j - 1] + 1);
+            }
+        }
+        dp
+    }
+
+    const LENS: [usize; 11] = [1, 2, 31, 63, 64, 65, 127, 128, 129, 150, 200];
+
+    #[test]
+    fn global_cigar_matches_full_matrix_traceback() {
+        let mut rng = Lcg(0x5EED_0001);
+        for &m in &LENS {
+            for round in 0..6 {
+                let query = rng.seq(m);
+                let target = match round {
+                    0..=3 => rng.mutate(&query),
+                    4 => rng.seq(m + 7),
+                    _ => rng.seq(m.saturating_sub(5).max(1)),
+                };
+                let dp = matrix(&query, &target);
+                let (edit, cigar) = myers_edit_distance_impl(&query, &target);
+                assert_eq!(edit, dp[query.len()][target.len()], "edit distance, m={m} round={round}");
+                assert_eq!(
+                    cigar,
+                    reference_trace(&query, &target, target.len(), &dp),
+                    "cigar, m={m} round={round}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fitting_cigar_matches_full_matrix_traceback() {
+        let mut rng = Lcg(0x5EED_0002);
+        for &m in &[50usize, 63, 64, 65, 129, 150] {
+            for round in 0..8 {
+                let query = rng.seq(m);
+                // A related prefix followed by an unrelated tail, so the fitting end is
+                // well inside the window and the abandonment cutoff fires only after it.
+                let mut target = rng.mutate(&query);
+                target.extend(rng.seq(2 * m));
+                let dp = matrix(&query, &target);
+                let (mut best, mut end) = (m, 0usize);
+                for c in 1..=target.len() {
+                    if dp[m][c] < best {
+                        best = dp[m][c];
+                        end = c;
+                    }
+                }
+                let (edit, cigar, consumed) = myers_fitting_impl(&query, &target);
+                assert_eq!((edit, consumed), (best, end), "edit/consumed, m={m} round={round}");
+                assert_eq!(
+                    cigar,
+                    reference_trace(&query, &target, end, &dp),
+                    "cigar, m={m} round={round}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ rmp-serde = "1"
 zstd = "0.13"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
+rayon = { workspace = true }
 chrono = "0.4"
 noodles-bam = "0.67"
 noodles-cram = "0.68"

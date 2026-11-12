@@ -347,7 +347,7 @@ Phraya differentiates on:
 - Python / R bindings
 - Advanced coverage: per-base breakdown (not just ±50bp window)
 - CRAM parsing with external reference (currently only reference-free/unmapped CRAM records)
-- GPU acceleration
+- GPU acceleration — deferred (#242): profiling showed the alignment DP kernels are too small a share of runtime for a GPU to pay off
 
 ## For Maintainers
 

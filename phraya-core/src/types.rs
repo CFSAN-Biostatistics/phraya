@@ -2324,7 +2324,7 @@ pub fn compute_kmer_uniqueness(sketches: &[MinimizerSketch]) -> HashMap<u32, f64
     if sketches.is_empty() {
         return HashMap::new();
     }
-    let mut counts: HashMap<(u64, u32), usize> = HashMap::new();
+    let mut counts: HashMap<(u64, u32), usize, crate::fasthash::MinimizerBuildHasher> = HashMap::default();
     for sk in sketches {
         for &(val, pos) in &sk.minimizers {
             *counts.entry((val, pos)).or_insert(0) += 1;

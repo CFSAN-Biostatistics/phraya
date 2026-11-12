@@ -57,7 +57,7 @@ This is a false dichotomy. Reads and assemblies represent the same biology at di
 
 8. Long read support (ONT/PacBio)
 9. Hybrid mode: assembly scaffold + targeted read deployment at uncertain sites
-10. GPU acceleration (CUDA) for large-scale pairwise workloads
+10. GPU acceleration (CUDA) for large-scale pairwise workloads — ⏸ deferred (#242; measured DP share caps the GPU gain, see Platform Optimization)
 11. Automatic reference selection via k-mer sketching
 12. Caching of pairwise results for incremental cluster updates
 
@@ -142,10 +142,7 @@ appropriate algorithm and anchor policy.
 - Rayon work-stealing for pairwise batch dispatch
 - Threadripper 64–96 cores utilized transparently
 
-**GPU** (opt-in, `--gpu` flag, requires `--features cuda` build):
-- Pairwise `ContigAligner` batch offload
-- WFA inner loop as CUDA kernel
-- Target: ≥10× vs 64-core Threadripper for N≥100 assemblies
+**GPU** — ⏸ **DEFERRED** (2026-11-12, #242). Original plan: opt-in `--gpu` flag (`--features cuda` build), pairwise `ContigAligner` batch offload, WFA inner loop as a CUDA kernel, target ≥10× vs a 64-core Threadripper for N≥100 assemblies. Measured profile (single-thread, native release): the DP kernels are 5.7–8.0% of end-to-end time for real assembly pairs and 14.6–36.8% for reads. Even if DP were free, end-to-end speedup tops out at 1.06–1.09× for assemblies and ≤1.58× for reads, so ≥10× is unreachable. Seeding and chaining (53–60% of assembly align) are the real cost. Measurements are in the #242 comment. Revisit only if a profile shows DP dominating a target workload.
 
 ### Evidence Object
 
@@ -199,7 +196,7 @@ Every variant has full structured evidence. Users filter via `phraya filter` wit
 |---|---|
 | `phraya snp --manifest` | ⏳ planned | Shipped equivalent: `phraya plan --inputs … --reference …` then `phraya align …` then `phraya plan-tasks` |
 | `--preset {strict-surveillance\|research\|assembly-only\|hybrid}` | ⏳ planned | Shipped: `--preset {strict\|tolerant}` on `phraya filter` |
-| `phraya screen --gpu` | ⏳ planned (Phase 4, #242) | No `--gpu` flag exists yet; no CUDA sources |
+| `phraya screen --gpu` | ⏸ deferred (#242) | No `--gpu` flag or CUDA sources; deferred because DP-kernel share caps GPU gain at ≤1.1× for assemblies |
 | `--strategy sketch` | ⏳ planned (Phase 4) | Not implemented |
 | `--auto-ref <N>` | ⏳ planned | Not implemented |
 
@@ -251,7 +248,7 @@ Key flags:
 - Benchmark N=10/50/100/500 samples, reads/assemblies/mixed, all strategies
 - Hardware: x86 baseline (SSE), x86 AVX2, x86 AVX-512, Threadripper, ARM64/Graviton, Apple Silicon M4, NVIDIA A100
 - Baselines: BWA-MEM2, MUMmer 4, CSP2, Snippy
-- Targets: reads ≤2× BWA-MEM2, assemblies ≤1.5× MUMmer, GPU ≥10× CPU for N≥100
+- Targets: reads ≤2× BWA-MEM2, assemblies ≤1.5× MUMmer (GPU ≥10× target deferred with #242)
 
 ---
 
@@ -269,7 +266,7 @@ Key flags:
 
 **Phase 3** (10 weeks): Reads + SIMD hardening (`ShortReadAligner`, AVX2/AVX-512 dispatch, `exact`/`fast` strategies, `phraya filter`) ✅ **COMPLETE** (AVX2/AVX-512 runtime dispatch, `exact`/`fast`/`long-read`/`assembly` strategies, `Strategy::LongRead` tuning, and `phraya filter` with VCF/TSV/phraya/snpdiffs/core-snp/distance-matrix formats are shipped. Short reads align through the executor's strategy ladder — no separate CLI path. The planned dedicated `ShortReadAligner` component was dropped as a dead end: its config/prediction helpers never touched the alignment engine, mirroring the earlier `LongReadAligner` removal; mate-rescue filtering is deferred to `phraya filter`.)
 
-**Phase 4** (12 weeks): Hybrid + GPU (`HybridAligner`, CUDA batch kernel, mixed manifest, `sketch` strategy, long read scaffold) ⏳ **NOT STARTED** — `HybridAligner` (#243), the CUDA batch kernel and `--gpu` flag (#242), the `sketch` strategy and `--auto-ref` are not implemented; no CUDA sources exist.
+**Phase 4** (12 weeks): Hybrid + GPU (`HybridAligner`, CUDA batch kernel, mixed manifest, `sketch` strategy, long read scaffold) ⏳ **NOT STARTED** — `HybridAligner` (#243), the `sketch` strategy, and `--auto-ref` are not implemented. The CUDA batch kernel and `--gpu` flag (#242) are ⏸ **deferred**: the DP kernels' share of runtime caps any GPU gain at ≤1.1× for assemblies (see GPU section).
 
 **Phase 5** (14 weeks): Long reads + polish (`LongReadAligner` complete, docs, benchmarks, publication, v1.0) 🚧 **IN PROGRESS** (`Strategy::LongRead` with WFA+chunking, tuned score floor; benchmark suite live and run on SLURM). `LongReadAligner` as a distinct aligner (#244) is still open; docs, publication-grade benchmarks, and v1.0 remain.
 

@@ -603,45 +603,53 @@ pub fn write_plan(path: &Path, plan: &PhrayaPlan) -> Result<(), PlanError> {
 
     let num_chunks = plan.batch_num_chunks.unwrap_or(1).max(1);
 
-    // Build shared frame
-    let shared = SharedFrame {
-        version: PHRAYAPLAN_VERSION,
-        reference_space: plan.reference_space.clone(),
-        input_files: plan.input_files.clone(),
-        timestamp: plan.timestamp.clone(),
-        kmer_index: plan.kmer_index.clone(),
-        kmer_uniqueness: plan.kmer_uniqueness.clone(),
-        task_list: plan.task_list.clone(),
-        hotspot_intervals: plan.hotspot_intervals.clone(),
-        reads_per_file: plan.reads_per_file.clone(),
-        total_read_count: plan.total_read_count,
-        kmer_params: plan.kmer_params.clone(),
-        batch_num_chunks: plan.batch_num_chunks,
-        batch_reads_per_chunk: plan.batch_reads_per_chunk,
-        batch_output_paths: plan.batch_output_paths.clone(),
-        insert_size_distribution: plan.insert_size_distribution.clone(),
-        dense_kmer_index: plan.dense_kmer_index.clone(),
-        w11_membership: plan.w11_membership.clone(),
-        sparse_mode: plan.sparse_mode,
-        alphabet: plan.alphabet,
-        sequence_ids: plan.sequence_ids.clone(),
-    };
-
-    let shared_bytes = rmp_serde::to_vec(&shared)
-        .map_err(|e| PlanError::SerializationError(e.to_string()))?;
-    let shared_compressed = zstd::encode_all(&shared_bytes[..], 3)
-        .map_err(|e| PlanError::CompressionError(e.to_string()))?;
-
-    // Build and compress chunk frames
-    let chunk_frames = partition_read_data(plan, num_chunks);
-    let mut chunk_compressed: Vec<Vec<u8>> = Vec::with_capacity(num_chunks);
-    for frame in &chunk_frames {
-        let bytes = rmp_serde::to_vec(frame)
-            .map_err(|e| PlanError::SerializationError(e.to_string()))?;
-        let compressed = zstd::encode_all(&bytes[..], 3)
-            .map_err(|e| PlanError::CompressionError(e.to_string()))?;
-        chunk_compressed.push(compressed);
-    }
+    // The shared frame and each chunk frame are independent msgpack + zstd streams, so encode
+    // them concurrently. Frame bytes are unchanged (same serializer, same zstd level, every
+    // frame compressed on its own) and are laid out in order below.
+    use rayon::prelude::*;
+    let (shared_compressed, chunk_compressed) = rayon::join(
+        || -> Result<Vec<u8>, PlanError> {
+            let shared = SharedFrame {
+                version: PHRAYAPLAN_VERSION,
+                reference_space: plan.reference_space.clone(),
+                input_files: plan.input_files.clone(),
+                timestamp: plan.timestamp.clone(),
+                kmer_index: plan.kmer_index.clone(),
+                kmer_uniqueness: plan.kmer_uniqueness.clone(),
+                task_list: plan.task_list.clone(),
+                hotspot_intervals: plan.hotspot_intervals.clone(),
+                reads_per_file: plan.reads_per_file.clone(),
+                total_read_count: plan.total_read_count,
+                kmer_params: plan.kmer_params.clone(),
+                batch_num_chunks: plan.batch_num_chunks,
+                batch_reads_per_chunk: plan.batch_reads_per_chunk,
+                batch_output_paths: plan.batch_output_paths.clone(),
+                insert_size_distribution: plan.insert_size_distribution.clone(),
+                dense_kmer_index: plan.dense_kmer_index.clone(),
+                w11_membership: plan.w11_membership.clone(),
+                sparse_mode: plan.sparse_mode,
+                alphabet: plan.alphabet,
+                sequence_ids: plan.sequence_ids.clone(),
+            };
+            let shared_bytes = rmp_serde::to_vec(&shared)
+                .map_err(|e| PlanError::SerializationError(e.to_string()))?;
+            zstd::encode_all(&shared_bytes[..], 3)
+                .map_err(|e| PlanError::CompressionError(e.to_string()))
+        },
+        || -> Result<Vec<Vec<u8>>, PlanError> {
+            partition_read_data(plan, num_chunks)
+                .par_iter()
+                .map(|frame| {
+                    let bytes = rmp_serde::to_vec(frame)
+                        .map_err(|e| PlanError::SerializationError(e.to_string()))?;
+                    zstd::encode_all(&bytes[..], 3)
+                        .map_err(|e| PlanError::CompressionError(e.to_string()))
+                })
+                .collect()
+        },
+    );
+    let shared_compressed = shared_compressed?;
+    let chunk_compressed = chunk_compressed?;
 
     // Compute layout: TOC goes at the end, so all data offsets are known first.
     // Header: [4B magic][8B toc_offset] = 12 bytes
@@ -818,13 +826,19 @@ pub fn read_plan(path: &Path) -> Result<PhrayaPlan, PlanError> {
         });
     }
     let toc = read_toc(&data)?;
-    let shared: SharedFrame = read_frame(&data, toc.shared_frame_offset, toc.shared_frame_len)?;
-    let mut chunks = Vec::with_capacity(toc.num_chunks as usize);
-    for &(offset, len) in &toc.chunk_frame_offsets {
-        let chunk: ChunkFrame = read_frame(&data, offset, len)?;
-        chunks.push(chunk);
-    }
-    Ok(assemble_plan(shared, chunks))
+    // Frames are independent zstd + msgpack streams: decode the shared frame and the chunk
+    // frames concurrently. `collect` keeps chunk order, so `assemble_plan` sees the same input.
+    use rayon::prelude::*;
+    let (shared, chunks) = rayon::join(
+        || read_frame::<SharedFrame>(&data, toc.shared_frame_offset, toc.shared_frame_len),
+        || {
+            toc.chunk_frame_offsets
+                .par_iter()
+                .map(|&(offset, len)| read_frame::<ChunkFrame>(&data, offset, len))
+                .collect::<Result<Vec<_>, _>>()
+        },
+    );
+    Ok(assemble_plan(shared?, chunks?))
 }
 
 /// Read PhrayaPlan from a chunk-addressable file, loading only the specified worker's chunk.
